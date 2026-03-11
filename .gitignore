@@ -1,0 +1,98 @@
+## =========================
+## .NET / C#
+## =========================
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+*.userprefs
+.vs/
+*.DotSettings.user
+project.lock.json
+TestResults/
+BenchmarkDotNet.Artifacts/
+
+## =========================
+## NuGet
+## =========================
+*.nupkg
+*.snupkg
+packages/
+!packages/repositories.config
+
+## =========================
+## Unity
+## =========================
+[Ll]ibrary/
+[Tt]emp/
+[Oo]bj/
+[Bb]uild/
+[Bb]uilds/
+[Ll]ogs/
+[Uu]serSettings/
+[Mm]emoryCaptures/
+[Rr]ecordings/
+Asset[Ss]tore[Tt]ools/
+
+# Unity auto-generated files
+*.csproj
+*.unityproj
+*.sln
+*.pidb
+*.booproj
+*.svd
+*.pdb
+*.mdb
+*.opendb
+*.VC.db
+
+# Crashlytics
+crashlytics-build.properties
+sysinfo.txt
+
+# Unity code coverage
+CodeCoverage/
+
+## =========================
+## IDE
+## =========================
+.idea/
+*.swp
+*.swo
+*~
+
+# VS Code — keep settings
+.vscode/*
+!.vscode/settings.json
+
+# JetBrains Rider
+*.DotSettings
+
+# Visual Studio
+*.rsuser
+*.aps
+*.ncb
+*.opensdf
+*.sdf
+*.cachefile
+*.psess
+*.vsp
+*.vspx
+*.sap
+
+## =========================
+## OS
+## =========================
+.DS_Store
+.DS_Store?
+._*
+Thumbs.db
+ehthumbs.db
+desktop.ini
+$RECYCLE.BIN/
