@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
 using System.Threading;
 using VContainer;
-using VContainer.Internal;
 using System.Linq;
 
 namespace RuntimeFlow.Contexts
@@ -315,7 +314,7 @@ namespace RuntimeFlow.Contexts
             // Apply consolidated instance registrations
             foreach (var (_, (instance, interfaces)) in _instanceRegistrations)
             {
-                var rb = new RuntimeFlowInstanceRegistration(instance);
+                var rb = new RuntimeFlowInstanceRegistrationBuilder(instance);
                 foreach (var t in interfaces)
                     rb.As(t);
                 builder.Register(rb);
@@ -353,62 +352,31 @@ namespace RuntimeFlow.Contexts
         }
 
         /// <summary>
-        /// Custom VContainer IRegistrationBuilder for pre-existing instances.
-        /// VContainer's InstanceRegistrationBuilder is internal, so we need our own.
+        /// Custom RegistrationBuilder subclass for pre-existing instances.
+        /// hadashiA VContainer's internal InstanceRegistrationBuilder is not accessible,
+        /// so we provide our own that returns a Registration with a fixed instance provider.
         /// </summary>
-        private sealed class RuntimeFlowInstanceRegistration : IRegistrationBuilder
+        private sealed class RuntimeFlowInstanceRegistrationBuilder : RegistrationBuilder
         {
             private readonly object _instance;
 
-            public Type ImplementationType { get; }
-            public Lifetime Lifetime => Lifetime.Singleton;
-            public List<Type> InterfaceTypes { get; } = new();
-            public List<IInjectParameter> Parameters { get; } = new();
-            public BindingCondition Condition => default;
-
-            public RuntimeFlowInstanceRegistration(object instance)
+            public RuntimeFlowInstanceRegistrationBuilder(object instance)
+                : base(instance.GetType(), Lifetime.Singleton)
             {
                 _instance = instance;
-                ImplementationType = instance.GetType();
             }
 
-            public IRegistration Build()
+            public override Registration Build()
             {
-                return new RuntimeFlowInstanceRegistrationResult(
-                    ImplementationType, InterfaceTypes, new RuntimeFlowInstanceProvider(_instance));
+                var types = InterfaceTypes.Count > 0
+                    ? (IReadOnlyList<Type>)InterfaceTypes.ToList()
+                    : new List<Type> { ImplementationType };
+                return new Registration(
+                    ImplementationType,
+                    Lifetime,
+                    types,
+                    new RuntimeFlowInstanceProvider(_instance));
             }
-
-            public IRegistrationBuilder As<TInterface>() => As(typeof(TInterface));
-            public IRegistrationBuilder As<T1, T2>() { As(typeof(T1)); return As(typeof(T2)); }
-            public IRegistrationBuilder As<T1, T2, T3>() { As(typeof(T1)); As(typeof(T2)); return As(typeof(T3)); }
-            public IRegistrationBuilder As<T1, T2, T3, T4>() { As(typeof(T1)); As(typeof(T2)); As(typeof(T3)); return As(typeof(T4)); }
-            public IRegistrationBuilder AsSelf() => As(ImplementationType);
-            public IRegistrationBuilder AsImplementedInterfaces()
-            {
-                InterfaceTypes.AddRange(ImplementationType.GetInterfaces());
-                return this;
-            }
-
-            public IRegistrationBuilder As(Type interfaceType)
-            {
-                if (!InterfaceTypes.Contains(interfaceType))
-                    InterfaceTypes.Add(interfaceType);
-                return this;
-            }
-
-            public IRegistrationBuilder As(Type t1, Type t2) { As(t1); return As(t2); }
-            public IRegistrationBuilder As(Type t1, Type t2, Type t3) { As(t1); As(t2); return As(t3); }
-            public IRegistrationBuilder As(params Type[] interfaceTypes)
-            {
-                foreach (var t in interfaceTypes) As(t);
-                return this;
-            }
-            public IRegistrationBuilder WithParameter(Type type, object value) => this;
-            public IRegistrationBuilder WithParameter(string name, object value) => this;
-            public IRegistrationBuilder WithParameter<TParam>(TParam value) => this;
-            public IRegistrationBuilder WhenInjectedInto<T>() => this;
-            public IRegistrationBuilder WhenNotInjectedInto<T>() => this;
-            public void AddInterfaceType(Type interfaceType) => As(interfaceType);
         }
 
         private sealed class RuntimeFlowInstanceProvider : IInstanceProvider
@@ -416,25 +384,6 @@ namespace RuntimeFlow.Contexts
             private readonly object _instance;
             public RuntimeFlowInstanceProvider(object instance) => _instance = instance;
             public object SpawnInstance(IObjectResolver resolver) => _instance;
-        }
-
-        private sealed class RuntimeFlowInstanceRegistrationResult : IRegistration
-        {
-            public Type ImplementationType { get; }
-            public List<Type> InterfaceTypes { get; }
-            public Lifetime Lifetime => Lifetime.Singleton;
-            public IInstanceProvider Provider { get; }
-            public BindingCondition? Condition => null;
-
-            public RuntimeFlowInstanceRegistrationResult(
-                Type implementationType, List<Type> interfaceTypes, IInstanceProvider provider)
-            {
-                ImplementationType = implementationType;
-                InterfaceTypes = interfaceTypes;
-                Provider = provider;
-            }
-
-            public object SpawnInstance(IObjectResolver resolver) => Provider.SpawnInstance(resolver);
         }
     }
 }
