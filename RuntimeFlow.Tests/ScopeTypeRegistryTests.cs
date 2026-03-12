@@ -14,10 +14,10 @@ public sealed class ScopeTypeRegistryTests
     {
         var builder = new GameContextBuilder();
 
-        builder.DefineGlobalScope<GlobalScope>();
-        builder.DefineSessionScope<SessionScope>();
-        builder.DefineSceneScope<SceneScope>();
-        builder.DefineModuleScope<ModuleScope>();
+        builder.DefineGlobalScope();
+        builder.DefineSessionScope();
+        builder.Scene<SceneScope>();
+        builder.Module<ModuleScope>();
 
         AssertScopeMapping(builder, typeof(GlobalScope), GameContextType.Global);
         AssertScopeMapping(builder, typeof(SessionScope), GameContextType.Session);
@@ -29,9 +29,9 @@ public sealed class ScopeTypeRegistryTests
     public void DefineScope_DuplicateDeclaration_ThrowsDeterministicDiagnostic()
     {
         var builder = new GameContextBuilder();
-        builder.DefineSceneScope<SceneScope>();
+        builder.Scene<SceneScope>();
 
-        var exception = Assert.Throws<ScopeRegistrationException>(() => builder.DefineSceneScope<SceneScope>());
+        var exception = Assert.Throws<ScopeRegistrationException>(() => builder.Scene<SceneScope>());
 
         Assert.Contains("GBSR3001", exception.Message);
     }
@@ -40,21 +40,24 @@ public sealed class ScopeTypeRegistryTests
     public void DefineScope_ConflictingDeclaration_ThrowsDeterministicDiagnostic()
     {
         var builder = new GameContextBuilder();
-        builder.DefineSceneScope<SharedScope>();
+        builder.Scene<SharedScope>();
 
-        var exception = Assert.Throws<ScopeRegistrationException>(() => builder.DefineModuleScope<SharedScope>());
+        var exception = Assert.Throws<ScopeRegistrationException>(() => builder.Module<SharedScope>());
 
         Assert.Contains("GBSR3002", exception.Message);
     }
 
     [Fact]
-    public void ForScope_WithoutDeclaration_ThrowsDeterministicDiagnostic()
+    public async Task LoadSceneAsync_WithoutDeclaration_ThrowsDeterministicDiagnostic()
     {
-        var builder = new GameContextBuilder();
+        var pipeline = RuntimePipeline.Create(_ => { });
 
-        var exception = Assert.Throws<ScopeNotDeclaredException>(() => builder.For<SceneScope>());
+        await pipeline.InitializeAsync();
 
-        Assert.Equal(typeof(SceneScope), exception.ScopeType);
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => pipeline.LoadSceneAsync<SceneScope>());
+
+        Assert.Contains("SceneScope", exception.Message);
     }
 
     [Fact]
@@ -64,11 +67,10 @@ public sealed class ScopeTypeRegistryTests
 
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineSceneScope<SceneScope>();
-                builder.For<SceneScope>()
+                builder.Scene(new SceneScope(s => s
                     .Register<FluentSceneService>(Lifetime.Singleton)
                     .As<ITestSceneService>()
-                    .AsSelf();
+                    .AsSelf()));
             })
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, cancellationToken) =>
             {
@@ -88,11 +90,10 @@ public sealed class ScopeTypeRegistryTests
 
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineSceneScope<SceneScope>();
-                builder.For<SceneScope>()
+                builder.Scene(new SceneScope(s => s
                     .Register(typeof(FluentSceneService), Lifetime.Singleton)
                     .As(typeof(ITestSceneService))
-                    .AsSelf();
+                    .AsSelf()));
             })
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, cancellationToken) =>
             {
@@ -112,8 +113,8 @@ public sealed class ScopeTypeRegistryTests
 
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineSceneScope<SceneScope>();
-                builder.For<SceneScope>().RegisterInstance<ITestSceneService>(sceneService);
+                builder.Scene(new SceneScope(s => s
+                    .RegisterInstance<ITestSceneService>(sceneService)));
             })
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, cancellationToken) =>
             {
@@ -135,22 +136,22 @@ public sealed class ScopeTypeRegistryTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<SessionScope>();
-            builder.DefineSceneScope<SceneScope>();
-            builder.DefineModuleScope<ModuleScope>();
+            builder.DefineSessionScope();
 
-            builder.For<SessionScope>()
+            builder.Session()
                 .Register<FluentSessionService>(Lifetime.Singleton)
                 .As<ITestSessionService>()
                 .AsSelf();
-            builder.For<SceneScope>()
+
+            builder.Scene(new SceneScope(s => s
                 .Register<FluentSceneService>(Lifetime.Singleton)
                 .As<ITestSceneService>()
-                .AsSelf();
-            builder.For<ModuleScope>()
+                .AsSelf()));
+
+            builder.Module(new ModuleScope(s => s
                 .Register<FluentModuleService>(Lifetime.Singleton)
                 .As<ITestModuleService>()
-                .AsSelf();
+                .AsSelf()));
         });
 
         await pipeline.InitializeAsync();
@@ -170,11 +171,12 @@ public sealed class ScopeTypeRegistryTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSceneScope<SceneScope>();
-            builder.DefineModuleScope<ModuleScope>();
-            builder.For<SceneScope>().RegisterInstance<ITestSceneService>(
-                new AttemptControlledSceneService((_, _) => Task.CompletedTask));
-            builder.For<ModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+            builder.Scene(new SceneScope(s => s
+                .RegisterInstance<ITestSceneService>(
+                    new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
+
+            builder.Module(new ModuleScope(s => s
+                .RegisterInstance<ITestModuleService>(moduleService)));
         });
 
         await pipeline.InitializeAsync();
@@ -191,9 +193,9 @@ public sealed class ScopeTypeRegistryTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineModuleScope<ModuleScope>();
-            builder.For<ModuleScope>().RegisterInstance<ITestModuleService>(
-                new AttemptControlledModuleService((_, _) => Task.CompletedTask));
+            builder.Module(new ModuleScope(s => s
+                .RegisterInstance<ITestModuleService>(
+                    new AttemptControlledModuleService((_, _) => Task.CompletedTask))));
         });
 
         await pipeline.InitializeAsync();
@@ -215,17 +217,19 @@ public sealed class ScopeTypeRegistryTests
 
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineSessionScope<SessionScope>();
-                builder.DefineSceneScope<SceneScope>();
-                builder.DefineSceneScope<SecondarySceneScope>();
-                builder.DefineModuleScope<ModuleScope>();
-                builder.DefineModuleScope<SecondaryModuleScope>();
+                builder.DefineSessionScope();
 
-                builder.For<SessionScope>().RegisterInstance<ITestSessionService>(sessionService);
-                builder.For<SceneScope>().RegisterInstance<ITestSceneService>(selectedSceneService);
-                builder.For<SecondarySceneScope>().RegisterInstance<ITestSceneService>(alternateSceneService);
-                builder.For<ModuleScope>().RegisterInstance<ITestModuleService>(selectedModuleService);
-                builder.For<SecondaryModuleScope>().RegisterInstance<ITestModuleService>(alternateModuleService);
+                builder.Session().RegisterInstance<ITestSessionService>(sessionService);
+
+                builder.Scene(new SceneScope(s => s
+                    .RegisterInstance<ITestSceneService>(selectedSceneService)));
+                builder.Scene(new SecondarySceneScope(s => s
+                    .RegisterInstance<ITestSceneService>(alternateSceneService)));
+
+                builder.Module(new ModuleScope(s => s
+                    .RegisterInstance<ITestModuleService>(selectedModuleService)));
+                builder.Module(new SecondaryModuleScope(s => s
+                    .RegisterInstance<ITestModuleService>(alternateModuleService)));
             })
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, cancellationToken) =>
             {
@@ -252,8 +256,8 @@ public sealed class ScopeTypeRegistryTests
         var exception = Assert.Throws<InvalidOperationException>(() =>
             RuntimePipeline.Create(builder =>
             {
-                builder.DefineSceneScope<SceneScope>();
-                builder.For<SceneScope>().Register(typeof(OpenGenericFluentSceneService<>), Lifetime.Singleton);
+                builder.Scene(new SceneScope(s => s
+                    .Register(typeof(OpenGenericFluentSceneService<>), Lifetime.Singleton)));
             }));
 
         Assert.Contains("RFRC2003", exception.Message);
@@ -352,11 +356,60 @@ public sealed class ScopeTypeRegistryTests
 
     private sealed class OpenGenericFluentSceneService<T> where T : class { }
 
-    private sealed class GlobalScope { }
-    private sealed class SessionScope { }
-    private sealed class SceneScope { }
-    private sealed class SecondarySceneScope { }
-    private sealed class ModuleScope { }
-    private sealed class SecondaryModuleScope { }
-    private sealed class SharedScope { }
+    private sealed class SceneScope : ISceneScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+
+        public SceneScope() { }
+
+        public SceneScope(Action<IGameScopeRegistrationBuilder> configure)
+            => _configure = configure;
+
+        public void Configure(IGameScopeRegistrationBuilder builder)
+            => _configure?.Invoke(builder);
+    }
+
+    private sealed class SecondarySceneScope : ISceneScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+
+        public SecondarySceneScope() { }
+
+        public SecondarySceneScope(Action<IGameScopeRegistrationBuilder> configure)
+            => _configure = configure;
+
+        public void Configure(IGameScopeRegistrationBuilder builder)
+            => _configure?.Invoke(builder);
+    }
+
+    private sealed class ModuleScope : IModuleScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+
+        public ModuleScope() { }
+
+        public ModuleScope(Action<IGameScopeRegistrationBuilder> configure)
+            => _configure = configure;
+
+        public void Configure(IGameScopeRegistrationBuilder builder)
+            => _configure?.Invoke(builder);
+    }
+
+    private sealed class SecondaryModuleScope : IModuleScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+
+        public SecondaryModuleScope() { }
+
+        public SecondaryModuleScope(Action<IGameScopeRegistrationBuilder> configure)
+            => _configure = configure;
+
+        public void Configure(IGameScopeRegistrationBuilder builder)
+            => _configure?.Invoke(builder);
+    }
+
+    private sealed class SharedScope : ISceneScope, IModuleScope
+    {
+        public void Configure(IGameScopeRegistrationBuilder builder) { }
+    }
 }

@@ -22,8 +22,8 @@ public sealed class ChaosRecoveryMatrixTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSessionScope<TestSessionScope>();
-                    builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+                    builder.DefineSessionScope();
+                    builder.Session().RegisterInstance<ITestSessionService>(sessionService);
                 },
                 options =>
                 {
@@ -53,8 +53,8 @@ public sealed class ChaosRecoveryMatrixTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSessionScope<TestSessionScope>();
-                    builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+                    builder.DefineSessionScope();
+                    builder.Session().RegisterInstance<ITestSessionService>(sessionService);
                 },
                 options =>
                 {
@@ -85,8 +85,7 @@ public sealed class ChaosRecoveryMatrixTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSceneScope<TestSceneScope>();
-                    builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
+                    builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
                 },
                 options =>
                 {
@@ -136,10 +135,8 @@ public sealed class ChaosRecoveryMatrixTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
         });
 
         await pipeline.InitializeAsync();
@@ -171,10 +168,8 @@ public sealed class ChaosRecoveryMatrixTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSceneScope<TestSceneScope>();
-                    builder.DefineModuleScope<TestModuleScope>();
-                    builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-                    builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+                    builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+                    builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
                 },
                 options =>
                 {
@@ -214,8 +209,8 @@ public sealed class ChaosRecoveryMatrixTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(sessionService);
         });
 
         await pipeline.InitializeAsync();
@@ -242,8 +237,8 @@ public sealed class ChaosRecoveryMatrixTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSessionScope<TestSessionScope>();
-                    builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+                    builder.DefineSessionScope();
+                    builder.Session().RegisterInstance<ITestSessionService>(sessionService);
                 },
                 options =>
                 {
@@ -272,8 +267,8 @@ public sealed class ChaosRecoveryMatrixTests
 
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
-                builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+                builder.DefineSessionScope();
+                builder.Session().RegisterInstance<ITestSessionService>(sessionService);
             })
             .ConfigureFlow(new DelegateRuntimeFlowScenario((context, token) => context.InitializeAsync(token)));
 
@@ -291,8 +286,8 @@ public sealed class ChaosRecoveryMatrixTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
-                builder.For<TestSessionScope>()
+                builder.DefineSessionScope();
+                builder.Session()
                     .Register<HeadlessSessionBootstrapService>(Lifetime.Singleton)
                     .As<IHeadlessSessionBootstrapService>()
                     .AsSelf();

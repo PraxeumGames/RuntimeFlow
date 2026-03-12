@@ -19,13 +19,10 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSceneScope<FlowSceneScope>();
-                    builder.DefineModuleScope<FlowModuleScope>();
-                    builder.For<FlowSceneScope>()
-                        .Register<FlowSceneService>(Lifetime.Singleton)
+                    builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(Lifetime.Singleton)
                         .As<IFlowSceneService>()
-                        .AsSelf();
-                    builder.For<FlowModuleScope>().RegisterInstance<IFlowModuleService>(moduleService);
+                        .AsSelf()));
+                    builder.Module(new FlowModuleScope(m => m.RegisterInstance<IFlowModuleService>(moduleService)));
                 },
                 options => options.LoadingProgressObserver = observer)
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, token) =>
@@ -76,16 +73,12 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSceneScope<FlowSceneScope>();
-                    builder.DefineModuleScope<FlowModuleScope>();
-                    builder.For<FlowSceneScope>()
-                        .Register<FlowSceneService>(Lifetime.Singleton)
+                    builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(Lifetime.Singleton)
                         .As<IFlowSceneService>()
-                        .AsSelf();
-                    builder.For<FlowModuleScope>()
-                        .RegisterInstance<IHeavyFlowModuleStageA>(heavyService)
+                        .AsSelf()));
+                    builder.Module(new FlowModuleScope(m => m.RegisterInstance<IHeavyFlowModuleStageA>(heavyService)
                         .As<IHeavyFlowModuleStageB>()
-                        .As<IHeavyFlowModuleStageC>();
+                        .As<IHeavyFlowModuleStageC>()));
                 },
                 options => options.LoadingProgressObserver = observer);
 
@@ -119,13 +112,10 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSceneScope<FlowSceneScope>();
-                builder.DefineModuleScope<FlowModuleScope>();
-                builder.For<FlowSceneScope>()
-                    .Register<FlowSceneService>(Lifetime.Singleton)
+                builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(Lifetime.Singleton)
                     .As<IFlowSceneService>()
-                    .AsSelf();
-                builder.For<FlowModuleScope>().RegisterInstance<IActivatingFlowModuleService>(moduleService);
+                    .AsSelf()));
+                builder.Module(new FlowModuleScope(m => m.RegisterInstance<IActivatingFlowModuleService>(moduleService)));
             },
             options => options.LoadingProgressObserver = observer);
 
@@ -238,6 +228,18 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         }
     }
 
-    private sealed class FlowSceneScope { }
-    private sealed class FlowModuleScope { }
+    private sealed class FlowSceneScope : ISceneScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+        public FlowSceneScope() { }
+        public FlowSceneScope(Action<IGameScopeRegistrationBuilder> configure) => _configure = configure;
+        public void Configure(IGameScopeRegistrationBuilder builder) => _configure?.Invoke(builder);
+    }
+    private sealed class FlowModuleScope : IModuleScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+        public FlowModuleScope() { }
+        public FlowModuleScope(Action<IGameScopeRegistrationBuilder> configure) => _configure = configure;
+        public void Configure(IGameScopeRegistrationBuilder builder) => _configure?.Invoke(builder);
+    }
 }

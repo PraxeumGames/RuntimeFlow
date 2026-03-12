@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - Hierarchical DI scope system (Global → Session → Scene → Module)
+- Scope installer pattern — scene and module scopes implement `ISceneScope` / `IModuleScope` with `Configure()` method
 - Async service initialization DAG with topological ordering
 - Compile-time dependency graph validation via Roslyn source generator
 - Health supervision with configurable timeouts and auto-restart

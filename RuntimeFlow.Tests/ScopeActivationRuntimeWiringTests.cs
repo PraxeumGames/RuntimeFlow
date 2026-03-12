@@ -116,15 +116,17 @@ public sealed class ScopeActivationRuntimeWiringTests
     {
         return RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSessionScope>().RegisterInstance<IAlphaSessionActivationService>(new AlphaSessionActivationService(calls));
-            builder.For<TestSessionScope>().RegisterInstance<IBetaSessionActivationService>(new BetaSessionActivationService(calls));
-            builder.For<TestSceneScope>().RegisterInstance<IAlphaSceneActivationService>(new AlphaSceneActivationService(calls));
-            builder.For<TestSceneScope>().RegisterInstance<IBetaSceneActivationService>(new BetaSceneActivationService(calls));
-            builder.For<TestModuleScope>().RegisterInstance<IAlphaModuleActivationService>(new AlphaModuleActivationService(calls));
-            builder.For<TestModuleScope>().RegisterInstance<IBetaModuleActivationService>(new BetaModuleActivationService(calls));
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<IAlphaSessionActivationService>(new AlphaSessionActivationService(calls));
+            builder.Session().RegisterInstance<IBetaSessionActivationService>(new BetaSessionActivationService(calls));
+            builder.Scene(new TestSceneScope(s => {
+                s.RegisterInstance<IAlphaSceneActivationService>(new AlphaSceneActivationService(calls));
+                s.RegisterInstance<IBetaSceneActivationService>(new BetaSceneActivationService(calls));
+            }));
+            builder.Module(new TestModuleScope(m => {
+                m.RegisterInstance<IAlphaModuleActivationService>(new AlphaModuleActivationService(calls));
+                m.RegisterInstance<IBetaModuleActivationService>(new BetaModuleActivationService(calls));
+            }));
         });
     }
 

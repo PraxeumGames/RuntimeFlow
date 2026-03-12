@@ -16,10 +16,9 @@ public sealed class ScopePreloadingTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<SceneA>();
-            builder.For<SceneA>().RegisterInstance<ITrackingSceneService>(
-                new TrackingSceneService(initTimestamps, () => Interlocked.Increment(ref tickCounter)));
+            builder.DefineSessionScope();
+            builder.Scene(new SceneA(s => s.RegisterInstance<ITrackingSceneService>(
+                new TrackingSceneService(initTimestamps, () => Interlocked.Increment(ref tickCounter)))));
         });
 
         await pipeline.InitializeAsync();
@@ -42,12 +41,10 @@ public sealed class ScopePreloadingTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<SceneA>();
-            builder.DefineSceneScope<SceneB>();
-            builder.For<SceneA>().RegisterInstance<IDisposableSceneService>(
-                new DisposableSceneService(() => disposed = true));
-            builder.For<SceneB>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
+            builder.DefineSessionScope();
+            builder.Scene(new SceneA(s => s.RegisterInstance<IDisposableSceneService>(
+                new DisposableSceneService(() => disposed = true))));
+            builder.Scene(new SceneB(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
         });
 
         await pipeline.InitializeAsync();
@@ -67,9 +64,8 @@ public sealed class ScopePreloadingTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<SceneA>();
-            builder.For<SceneA>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
+            builder.DefineSessionScope();
+            builder.Scene(new SceneA(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
         });
 
         await pipeline.InitializeAsync();
@@ -87,9 +83,8 @@ public sealed class ScopePreloadingTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<SceneA>();
-            builder.For<SceneA>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
+            builder.DefineSessionScope();
+            builder.Scene(new SceneA(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
         });
 
         await pipeline.InitializeAsync();
@@ -103,8 +98,20 @@ public sealed class ScopePreloadingTests
     }
 
     // Scope markers
-    private sealed class SceneA;
-    private sealed class SceneB;
+    private sealed class SceneA : ISceneScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+        public SceneA() { }
+        public SceneA(Action<IGameScopeRegistrationBuilder> configure) => _configure = configure;
+        public void Configure(IGameScopeRegistrationBuilder builder) => _configure?.Invoke(builder);
+    }
+    private sealed class SceneB : ISceneScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+        public SceneB() { }
+        public SceneB(Action<IGameScopeRegistrationBuilder> configure) => _configure = configure;
+        public void Configure(IGameScopeRegistrationBuilder builder) => _configure?.Invoke(builder);
+    }
 
     // Service contracts
     private interface ITrackingSceneService : ISceneInitializableService;

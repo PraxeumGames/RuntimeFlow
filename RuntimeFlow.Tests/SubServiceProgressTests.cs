@@ -20,8 +20,8 @@ public sealed class SubServiceProgressTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestProgressAwareSessionService>(service);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestProgressAwareSessionService>(service);
         });
 
         await pipeline.InitializeAsync();
@@ -41,8 +41,8 @@ public sealed class SubServiceProgressTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestProgressAwareSessionService>(service);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestProgressAwareSessionService>(service);
         });
 
         await pipeline.InitializeAsync(recorder);
@@ -67,8 +67,8 @@ public sealed class SubServiceProgressTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestNonProgressAwareSessionService>(service);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestNonProgressAwareSessionService>(service);
         });
 
         await pipeline.InitializeAsync();
@@ -89,8 +89,8 @@ public sealed class SubServiceProgressTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestProgressAwareSessionService>(service);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestProgressAwareSessionService>(service);
         });
 
         await pipeline.InitializeAsync(recorder);

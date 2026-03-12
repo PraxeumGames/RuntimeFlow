@@ -43,7 +43,7 @@ Global (0)  →  Session (1)  →  Scene (2)  →  Module (3)
 
 - Each scope gets its own `GameContext` wrapping a VContainer `IObjectResolver`.
 - Services in a scope may depend only on services from the same or earlier scopes (enforced at compile time by the source generator — diagnostic `RF0003`).
-- Scope types are identified by empty marker classes (e.g., `sealed class MySceneScope { }`).
+- Scope types are identified by installer classes implementing `ISceneScope` or `IModuleScope` (with a `Configure` method that registers services). Global and Session scopes use built-in types.
 
 ### Initialization DAG
 
@@ -70,16 +70,26 @@ At runtime, services are initialized in topological order and disposed in revers
 ```csharp
 var pipeline = RuntimePipeline.Create(builder =>
 {
-    builder.DefineSessionScope<MySessionScope>();
-    builder.DefineSceneScope<MySceneScope>();
-    builder.DefineModuleScope<MyModuleScope>();
-
-    builder.For<MySessionScope>()
+    builder.Session()
         .Register<IMyService, MyService>(Lifetime.Singleton);
+
+    builder.Scene<MySceneScope>();
+    builder.Module<MyModuleScope>();
 });
 
 pipeline.ConfigureFlow(new MyFlowScenario());
 await pipeline.RunAsync(sceneLoader);
+```
+
+Scene and module scopes are installer classes:
+```csharp
+public class MySceneScope : ISceneScope
+{
+    public void Configure(IGameScopeRegistrationBuilder builder)
+    {
+        builder.Register<ISceneService, SceneService>(Lifetime.Singleton);
+    }
+}
 ```
 
 Top-level game flow is defined by implementing `IRuntimeFlowScenario.ExecuteAsync(IRuntimeFlowContext, CancellationToken)`.
@@ -117,7 +127,8 @@ VContainer resolves constructors by: `[Inject]` attribute first, then most-param
 
 - Tests use `RuntimePipeline.Create(...)` to wire the full pipeline, then assert on tracked state (attempt counters, call logs, observer collections).
 - Test services live in `RuntimeFlow.Tests/Services/` and use `AttemptControlled*` naming — they accept a `Func<int, CancellationToken, Task>` to control per-attempt behavior.
-- Scope markers for tests live in `RuntimeFlow.Tests/Scopes/` (e.g., `TestSessionScope`, `TestSceneScope`).
+- Test scope installers live in `RuntimeFlow.Tests/Scopes/` (e.g., `TestSceneScope : ISceneScope`, `TestModuleScope : IModuleScope`) — they accept an `Action<IGameScopeRegistrationBuilder>` lambda to configure registrations dynamically.
+- Session scope in tests uses `builder.DefineSessionScope()` (parameterless, built-in type) and `builder.Session()` for inline registration.
 - Test observers in `RuntimeFlow.Tests/Observers/` collect health metrics and retry events.
 - `TestDoubles/DelegateRuntimeFlowScenario` wraps a lambda as `IRuntimeFlowScenario`.
 - `TestDoubles/NoopSceneLoader` provides a no-op `IGameSceneLoader`.

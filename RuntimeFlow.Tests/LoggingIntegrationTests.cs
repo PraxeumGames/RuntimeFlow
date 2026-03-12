@@ -20,13 +20,11 @@ public sealed class LoggingIntegrationTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
-                builder.DefineSceneScope<TestSceneScope>();
-                builder.DefineModuleScope<TestModuleScope>();
-                builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                    new AttemptControlledSceneService((_, _) => Task.CompletedTask));
-                builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(
-                    new AttemptControlledModuleService((_, _) => Task.CompletedTask));
+                builder.DefineSessionScope();
+                builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                    new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
+                builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(
+                    new AttemptControlledModuleService((_, _) => Task.CompletedTask))));
             },
             loggerFactory: factory);
 
@@ -48,13 +46,11 @@ public sealed class LoggingIntegrationTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
-                builder.DefineSceneScope<TestSceneScope>();
-                builder.DefineModuleScope<TestModuleScope>();
-                builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                    new AttemptControlledSceneService((_, _) => Task.CompletedTask));
-                builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(
-                    new AttemptControlledModuleService((_, _) => Task.CompletedTask));
+                builder.DefineSessionScope();
+                builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                    new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
+                builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(
+                    new AttemptControlledModuleService((_, _) => Task.CompletedTask))));
             });
 
         await pipeline.InitializeAsync();
@@ -71,9 +67,7 @@ public sealed class LoggingIntegrationTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
-                builder.DefineSceneScope<TestSceneScope>();
-                builder.DefineModuleScope<TestModuleScope>();
+                builder.DefineSessionScope();
             },
             loggerFactory: factory);
 

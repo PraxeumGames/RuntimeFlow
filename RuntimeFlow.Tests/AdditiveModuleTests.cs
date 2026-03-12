@@ -15,13 +15,10 @@ public sealed class AdditiveModuleTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<PrimaryModule>();
-            builder.DefineModuleScope<AdditiveModuleA>();
-            builder.For<TestSceneScope>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
-            builder.For<PrimaryModule>().RegisterInstance<IPrimaryModuleService>(primaryService);
-            builder.For<AdditiveModuleA>().RegisterInstance<IAdditiveModuleServiceA>(additiveService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
+            builder.Module(new PrimaryModule(m => m.RegisterInstance<IPrimaryModuleService>(primaryService)));
+            builder.Module(new AdditiveModuleA(m => m.RegisterInstance<IAdditiveModuleServiceA>(additiveService)));
         });
 
         await pipeline.InitializeAsync();
@@ -42,11 +39,9 @@ public sealed class AdditiveModuleTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<AdditiveModuleA>();
-            builder.For<TestSceneScope>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
-            builder.For<AdditiveModuleA>().RegisterInstance<IDisposableAdditiveService>(additiveService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
+            builder.Module(new AdditiveModuleA(m => m.RegisterInstance<IDisposableAdditiveService>(additiveService)));
         });
 
         await pipeline.InitializeAsync();
@@ -69,13 +64,10 @@ public sealed class AdditiveModuleTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineSceneScope<AlternateScene>();
-            builder.DefineModuleScope<AdditiveModuleA>();
-            builder.For<TestSceneScope>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
-            builder.For<AlternateScene>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
-            builder.For<AdditiveModuleA>().RegisterInstance<IDisposableAdditiveService>(additiveService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
+            builder.Scene(new AlternateScene(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
+            builder.Module(new AdditiveModuleA(m => m.RegisterInstance<IDisposableAdditiveService>(additiveService)));
         });
 
         await pipeline.InitializeAsync();
@@ -94,11 +86,9 @@ public sealed class AdditiveModuleTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<AdditiveModuleA>();
-            builder.For<TestSceneScope>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
-            builder.For<AdditiveModuleA>().RegisterInstance<IAdditiveModuleServiceA>(new TrackingModuleService());
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
+            builder.Module(new AdditiveModuleA(m => m.RegisterInstance<IAdditiveModuleServiceA>(new TrackingModuleService())));
         });
 
         await pipeline.InitializeAsync();
@@ -118,11 +108,9 @@ public sealed class AdditiveModuleTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<AdditiveModuleA>();
-            builder.For<TestSceneScope>().RegisterInstance<ISimpleSceneService>(new SimpleSceneService());
-            builder.For<AdditiveModuleA>().RegisterInstance<IDisposableAdditiveService>(additiveService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ISimpleSceneService>(new SimpleSceneService())));
+            builder.Module(new AdditiveModuleA(m => m.RegisterInstance<IDisposableAdditiveService>(additiveService)));
         });
 
         await pipeline.InitializeAsync();
@@ -137,9 +125,27 @@ public sealed class AdditiveModuleTests
     }
 
     // Scope markers
-    private sealed class PrimaryModule;
-    private sealed class AdditiveModuleA;
-    private sealed class AlternateScene;
+    private sealed class PrimaryModule : IModuleScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+        public PrimaryModule() { }
+        public PrimaryModule(Action<IGameScopeRegistrationBuilder> configure) => _configure = configure;
+        public void Configure(IGameScopeRegistrationBuilder builder) => _configure?.Invoke(builder);
+    }
+    private sealed class AdditiveModuleA : IModuleScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+        public AdditiveModuleA() { }
+        public AdditiveModuleA(Action<IGameScopeRegistrationBuilder> configure) => _configure = configure;
+        public void Configure(IGameScopeRegistrationBuilder builder) => _configure?.Invoke(builder);
+    }
+    private sealed class AlternateScene : ISceneScope
+    {
+        private readonly Action<IGameScopeRegistrationBuilder>? _configure;
+        public AlternateScene() { }
+        public AlternateScene(Action<IGameScopeRegistrationBuilder> configure) => _configure = configure;
+        public void Configure(IGameScopeRegistrationBuilder builder) => _configure?.Invoke(builder);
+    }
 
     // Service contracts
     private interface IPrimaryModuleService : IModuleInitializableService;

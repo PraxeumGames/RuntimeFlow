@@ -6,7 +6,7 @@
 
 RuntimeFlow is a Unity framework that brings order to game startup. It provides a hierarchical dependency injection system with four strict scope levels — Global, Session, Scene, and Module — each with its own DI container backed by [VContainer](https://vcontainer.hadashikick.jp/). Services are registered into scopes and initialized asynchronously in topological order, with the entire dependency graph validated at compile time by a Roslyn source generator.
 
-The framework manages the full game lifecycle through a runtime pipeline. You define scope markers, register services, and write a flow scenario that orchestrates scene transitions and scope loading. RuntimeFlow handles initialization ordering, scope activation/deactivation, disposal in reverse order, and progress reporting — all with `async`/`await` and cancellation support.
+The framework manages the full game lifecycle through a runtime pipeline. You define scope installers, register services, and write a flow scenario that orchestrates scene transitions and scope loading. RuntimeFlow handles initialization ordering, scope activation/deactivation, disposal in reverse order, and progress reporting — all with `async`/`await` and cancellation support.
 
 RuntimeFlow also includes a health supervision system that monitors service initialization timeouts and can automatically restart the session scope when failures occur, making your game startup resilient to transient errors.
 
@@ -83,12 +83,17 @@ Or add it directly to your `Packages/manifest.json`:
 ## Quick Start
 
 ```csharp
-// 1. Define scope markers (empty sealed classes)
-sealed class MySessionScope { }
-sealed class MySceneScope { }
+// 1. Define a scene scope installer
+public class GameplayScene : ISceneScope
+{
+    public void Configure(IGameScopeRegistrationBuilder builder)
+    {
+        builder.Register<IMyService, MyService>(Lifetime.Singleton);
+    }
+}
 
 // 2. Define a service with a scope-specific interface
-public interface IMyService : ISessionInitializableService { }
+public interface IMyService : ISceneInitializableService { }
 
 public class MyService : IMyService
 {
@@ -102,11 +107,10 @@ public class MyService : IMyService
 // 3. Build the pipeline, register services, and run
 var pipeline = RuntimePipeline.Create(builder =>
 {
-    builder.DefineSessionScope<MySessionScope>();
-    builder.DefineSceneScope<MySceneScope>();
+    builder.Session()
+        .Register<IAuthService, AuthService>(Lifetime.Singleton);
 
-    builder.For<MySessionScope>()
-        .Register<IMyService, MyService>(Lifetime.Singleton);
+    builder.Scene<GameplayScene>();
 });
 
 pipeline.ConfigureFlow(new MyFlowScenario());

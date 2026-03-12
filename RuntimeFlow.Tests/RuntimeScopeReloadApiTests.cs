@@ -18,18 +18,16 @@ public sealed class RuntimeScopeReloadApiTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(sessionService);
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
         });
 
         await pipeline.InitializeAsync();
         await pipeline.LoadSceneAsync<TestSceneScope>();
         await pipeline.LoadModuleAsync<TestModuleScope>();
-        await pipeline.ReloadScopeAsync<TestSessionScope>();
+        await pipeline.ReloadScopeAsync<SessionScope>();
         await pipeline.ReloadScopeAsync<TestSceneScope>();
         await pipeline.ReloadScopeAsync<TestModuleScope>();
 
@@ -43,15 +41,15 @@ public sealed class RuntimeScopeReloadApiTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineGlobalScope<TestGlobalScope>();
+            builder.DefineGlobalScope();
         });
 
         await pipeline.InitializeAsync();
 
         var exception = await Assert.ThrowsAsync<ScopeNotRestartableException>(() =>
-            pipeline.ReloadScopeAsync<TestGlobalScope>());
+            pipeline.ReloadScopeAsync<GlobalScope>());
 
-        Assert.Equal(typeof(TestGlobalScope), exception.ScopeType);
+        Assert.Equal(typeof(GlobalScope), exception.ScopeType);
     }
 
     [Fact]
@@ -59,7 +57,7 @@ public sealed class RuntimeScopeReloadApiTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
+            builder.DefineSessionScope();
         });
 
         await pipeline.InitializeAsync();
@@ -75,9 +73,8 @@ public sealed class RuntimeScopeReloadApiTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(
-                new AttemptControlledModuleService((_, _) => Task.CompletedTask));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(
+                new AttemptControlledModuleService((_, _) => Task.CompletedTask))));
         });
 
         await pipeline.InitializeAsync();
@@ -100,19 +97,17 @@ public sealed class RuntimeScopeReloadApiTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
-                builder.DefineSceneScope<TestSceneScope>();
-                builder.DefineModuleScope<TestModuleScope>();
-                builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
-                builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-                builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+                builder.DefineSessionScope();
+                builder.Session().RegisterInstance<ITestSessionService>(sessionService);
+                builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+                builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
             },
             options => options.LoadingProgressObserver = observer);
 
         await pipeline.InitializeAsync();
         await pipeline.LoadSceneAsync<TestSceneScope>();
         await pipeline.LoadModuleAsync<TestModuleScope>();
-        await pipeline.ReloadScopeAsync<TestSessionScope>();
+        await pipeline.ReloadScopeAsync<SessionScope>();
         await pipeline.ReloadScopeAsync<TestSceneScope>();
         await pipeline.ReloadScopeAsync<TestModuleScope>();
 
@@ -136,12 +131,10 @@ public sealed class RuntimeScopeReloadApiTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.DefineSessionScope<TestSessionScope>();
-                    builder.DefineSceneScope<TestSceneScope>();
-                    builder.DefineModuleScope<TestModuleScope>();
-                    builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
-                    builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-                    builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+                    builder.DefineSessionScope();
+                    builder.Session().RegisterInstance<ITestSessionService>(sessionService);
+                    builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+                    builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
                 },
                 options => options.LoadingProgressObserver = observer)
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, cancellationToken) =>
@@ -149,7 +142,7 @@ public sealed class RuntimeScopeReloadApiTests
                 await context.InitializeAsync(cancellationToken).ConfigureAwait(false);
                 await context.LoadScopeSceneAsync<TestSceneScope>(cancellationToken).ConfigureAwait(false);
                 await context.LoadScopeModuleAsync<TestModuleScope>(cancellationToken).ConfigureAwait(false);
-                await context.ReloadScopeAsync<TestSessionScope>(cancellationToken).ConfigureAwait(false);
+                await context.ReloadScopeAsync<SessionScope>(cancellationToken).ConfigureAwait(false);
                 await context.ReloadScopeAsync<TestSceneScope>(cancellationToken).ConfigureAwait(false);
                 await context.ReloadScopeAsync<TestModuleScope>(cancellationToken).ConfigureAwait(false);
             }));
@@ -174,18 +167,18 @@ public sealed class RuntimeScopeReloadApiTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineGlobalScope<TestGlobalScope>();
+                builder.DefineGlobalScope();
             })
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, cancellationToken) =>
             {
                 await context.InitializeAsync(cancellationToken).ConfigureAwait(false);
-                await context.ReloadScopeAsync<TestGlobalScope>(cancellationToken).ConfigureAwait(false);
+                await context.ReloadScopeAsync<GlobalScope>(cancellationToken).ConfigureAwait(false);
             }));
 
         var exception = await Assert.ThrowsAsync<ScopeNotRestartableException>(() =>
             pipeline.RunAsync(NoopSceneLoader.Instance));
 
-        Assert.Equal(typeof(TestGlobalScope), exception.ScopeType);
+        Assert.Equal(typeof(GlobalScope), exception.ScopeType);
     }
 
     [Fact]
@@ -193,7 +186,7 @@ public sealed class RuntimeScopeReloadApiTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
+                builder.DefineSessionScope();
             })
             .ConfigureFlow(new DelegateRuntimeFlowScenario(async (context, cancellationToken) =>
             {
@@ -239,15 +232,15 @@ public sealed class RuntimeScopeReloadApiTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(sessionService);
         });
 
         await pipeline.InitializeAsync();
 
-        var firstReload = pipeline.ReloadScopeAsync<TestSessionScope>();
+        var firstReload = pipeline.ReloadScopeAsync<SessionScope>();
         await firstReloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        var secondReload = pipeline.ReloadScopeAsync<TestSessionScope>();
+        var secondReload = pipeline.ReloadScopeAsync<SessionScope>();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => firstReload);
         await secondReload;
@@ -282,10 +275,8 @@ public sealed class RuntimeScopeReloadApiTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
         });
 
         await pipeline.InitializeAsync();
@@ -311,10 +302,8 @@ public sealed class RuntimeScopeReloadApiTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
         });
 
         await pipeline.InitializeAsync();
@@ -342,16 +331,16 @@ public sealed class RuntimeScopeReloadApiTests
         var sessionService = new ConcurrentSessionActivationService();
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(sessionService);
         });
 
         await pipeline.InitializeAsync();
         sessionService.ResetForConcurrentOperation();
 
-        var firstReload = pipeline.ReloadScopeAsync<TestSessionScope>();
+        var firstReload = pipeline.ReloadScopeAsync<SessionScope>();
         await sessionService.FirstExitStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
-        var secondReload = pipeline.ReloadScopeAsync<TestSessionScope>();
+        var secondReload = pipeline.ReloadScopeAsync<SessionScope>();
 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => firstReload);
         await secondReload;
@@ -379,15 +368,15 @@ public sealed class RuntimeScopeReloadApiTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSessionScope<TestSessionScope>();
-                builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(sessionService);
+                builder.DefineSessionScope();
+                builder.Session().RegisterInstance<ITestSessionService>(sessionService);
             },
             options => options.LoadingProgressObserver = observer);
 
         await pipeline.InitializeAsync();
 
         using var cancellationSource = new CancellationTokenSource();
-        var reload = pipeline.ReloadScopeAsync<TestSessionScope>(cancellationToken: cancellationSource.Token);
+        var reload = pipeline.ReloadScopeAsync<SessionScope>(cancellationToken: cancellationSource.Token);
         await reloadStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
         cancellationSource.Cancel();
 
@@ -412,8 +401,7 @@ public sealed class RuntimeScopeReloadApiTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSceneScope<TestSceneScope>();
-                builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
+                builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
             },
             options => options.LoadingProgressObserver = observer);
 
@@ -446,10 +434,8 @@ public sealed class RuntimeScopeReloadApiTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.DefineSceneScope<TestSceneScope>();
-                builder.DefineModuleScope<TestModuleScope>();
-                builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-                builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+                builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+                builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
             },
             options => options.LoadingProgressObserver = observer);
 

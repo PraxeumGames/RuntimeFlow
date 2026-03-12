@@ -23,15 +23,42 @@ namespace RuntimeFlow.Contexts
     /// <summary>Defines and builds the hierarchical scope graph (Global → Session → Scene → Module).</summary>
     public interface IGameContextBuilder
     {
-        IGameScopeRegistrationBuilder For<TScope>();
+        /// <summary>Returns a registration builder for the Global scope.</summary>
         IGameScopeRegistrationBuilder Global();
+
+        /// <summary>Returns a registration builder for the Session scope.</summary>
         IGameScopeRegistrationBuilder Session();
+
+        /// <summary>Declares the built-in Global scope.</summary>
         IGameContextBuilder DefineGlobalScope();
-        IGameContextBuilder DefineGlobalScope<TScope>();
+
+        /// <summary>Declares the built-in Session scope.</summary>
         IGameContextBuilder DefineSessionScope();
-        IGameContextBuilder DefineSessionScope<TScope>();
-        IGameContextBuilder DefineSceneScope<TScope>();
-        IGameContextBuilder DefineModuleScope<TScope>();
+
+        /// <summary>
+        /// Defines a scene scope using an installer class.
+        /// The installer's <see cref="IScopeInstaller.Configure"/> method is called to register services.
+        /// </summary>
+        IGameContextBuilder Scene<TScope>() where TScope : ISceneScope, new();
+
+        /// <summary>
+        /// Defines a scene scope using an existing installer instance.
+        /// The installer's <see cref="IScopeInstaller.Configure"/> method is called to register services.
+        /// </summary>
+        IGameContextBuilder Scene<TScope>(TScope installer) where TScope : ISceneScope;
+
+        /// <summary>
+        /// Defines a module scope using an installer class.
+        /// The installer's <see cref="IScopeInstaller.Configure"/> method is called to register services.
+        /// </summary>
+        IGameContextBuilder Module<TScope>() where TScope : IModuleScope, new();
+
+        /// <summary>
+        /// Defines a module scope using an existing installer instance.
+        /// The installer's <see cref="IScopeInstaller.Configure"/> method is called to register services.
+        /// </summary>
+        IGameContextBuilder Module<TScope>(TScope installer) where TScope : IModuleScope;
+
         bool TryResolveScopeType(Type scopeType, out GameContextType scope);
         ScopeLifecycleState GetScopeLifecycleState(Type scopeType);
         IGameContextBuilder OnGlobalInitialized(Action<IGameContext> callback);

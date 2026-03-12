@@ -56,10 +56,9 @@ public sealed class ScopeTransitionTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                new AttemptControlledSceneService((_, _) => Task.CompletedTask));
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
         });
         pipeline.ConfigureTransitionHandler(handler);
 
@@ -74,10 +73,9 @@ public sealed class ScopeTransitionTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                new AttemptControlledSceneService((_, _) => Task.CompletedTask));
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
         });
 
         await pipeline.InitializeAsync();
@@ -91,10 +89,9 @@ public sealed class ScopeTransitionTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                new AttemptControlledSceneService((_, _) => Task.CompletedTask));
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
         });
         pipeline.ConfigureTransitionHandler(handler);
 
@@ -116,10 +113,9 @@ public sealed class ScopeTransitionTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                new AttemptControlledSceneService((_, _) => Task.CompletedTask));
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
         });
         pipeline.ConfigureTransitionHandler(handler);
 

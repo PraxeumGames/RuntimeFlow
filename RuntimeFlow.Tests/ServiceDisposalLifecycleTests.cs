@@ -18,10 +18,10 @@ public sealed class ServiceDisposalLifecycleTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<IDisposableSessionServiceC>(serviceC);
-            builder.For<TestSessionScope>().RegisterInstance<IDisposableSessionServiceB>(serviceB);
-            builder.For<TestSessionScope>().RegisterInstance<IDisposableSessionServiceA>(serviceA);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<IDisposableSessionServiceC>(serviceC);
+            builder.Session().RegisterInstance<IDisposableSessionServiceB>(serviceB);
+            builder.Session().RegisterInstance<IDisposableSessionServiceA>(serviceA);
         });
 
         await pipeline.InitializeAsync();
@@ -43,9 +43,9 @@ public sealed class ServiceDisposalLifecycleTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<IDisposableSessionServiceOk>(serviceOk);
-            builder.For<TestSessionScope>().RegisterInstance<IDisposableSessionServiceFailing>(serviceFailing);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<IDisposableSessionServiceOk>(serviceOk);
+            builder.Session().RegisterInstance<IDisposableSessionServiceFailing>(serviceFailing);
         });
 
         await pipeline.InitializeAsync();
@@ -66,9 +66,8 @@ public sealed class ServiceDisposalLifecycleTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.For<TestSceneScope>().RegisterInstance<IDisposableSceneService>(sceneService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<IDisposableSceneService>(sceneService)));
         });
 
         await pipeline.InitializeAsync();

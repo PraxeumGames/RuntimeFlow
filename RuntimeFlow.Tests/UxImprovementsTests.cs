@@ -16,14 +16,12 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineGlobalScope<TestGlobalScope>();
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
+            builder.DefineGlobalScope();
+            builder.DefineSessionScope();
         });
 
-        Assert.Equal(ScopeLifecycleState.NotLoaded, pipeline.GetScopeState<TestGlobalScope>());
-        Assert.Equal(ScopeLifecycleState.NotLoaded, pipeline.GetScopeState<TestSessionScope>());
+        Assert.Equal(ScopeLifecycleState.NotLoaded, pipeline.GetScopeState<GlobalScope>());
+        Assert.Equal(ScopeLifecycleState.NotLoaded, pipeline.GetScopeState<SessionScope>());
         Assert.Equal(ScopeLifecycleState.NotLoaded, pipeline.GetScopeState<TestSceneScope>());
         Assert.Equal(ScopeLifecycleState.NotLoaded, pipeline.GetScopeState<TestModuleScope>());
     }
@@ -33,16 +31,16 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineGlobalScope<TestGlobalScope>();
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineGlobalScope();
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new AttemptControlledSessionService((_, _) => Task.CompletedTask));
         });
 
         await pipeline.InitializeAsync();
 
-        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<TestGlobalScope>());
-        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<TestSessionScope>());
+        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<GlobalScope>());
+        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<SessionScope>());
     }
 
     [Fact]
@@ -50,24 +48,22 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineGlobalScope<TestGlobalScope>();
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineGlobalScope();
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new AttemptControlledSessionService((_, _) => Task.CompletedTask));
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                new AttemptControlledSceneService((_, _) => Task.CompletedTask));
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(
-                new AttemptControlledModuleService((_, _) => Task.CompletedTask));
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(
+                new AttemptControlledModuleService((_, _) => Task.CompletedTask))));
         });
 
         await pipeline.InitializeAsync();
         await pipeline.LoadSceneAsync<TestSceneScope>();
         await pipeline.LoadModuleAsync<TestModuleScope>();
 
-        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<TestGlobalScope>());
-        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<TestSessionScope>());
+        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<GlobalScope>());
+        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<SessionScope>());
         Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<TestSceneScope>());
         Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<TestModuleScope>());
     }
@@ -77,15 +73,15 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new AttemptControlledSessionService((_, _) => Task.CompletedTask));
         });
 
         await pipeline.InitializeAsync();
-        await pipeline.ReloadScopeAsync<TestSessionScope>();
+        await pipeline.ReloadScopeAsync<SessionScope>();
 
-        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<TestSessionScope>());
+        Assert.Equal(ScopeLifecycleState.Active, pipeline.GetScopeState<SessionScope>());
     }
 
     [Fact]
@@ -93,14 +89,14 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new FailingSessionService());
         });
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => pipeline.InitializeAsync());
 
-        Assert.Equal(ScopeLifecycleState.Failed, pipeline.GetScopeState<TestSessionScope>());
+        Assert.Equal(ScopeLifecycleState.Failed, pipeline.GetScopeState<SessionScope>());
     }
 
     [Fact]
@@ -120,14 +116,14 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new AttemptControlledSessionService((_, _) => Task.CompletedTask));
         });
 
         await pipeline.InitializeAsync();
 
-        Assert.True(pipeline.IsScopeActive<TestSessionScope>());
+        Assert.True(pipeline.IsScopeActive<SessionScope>());
     }
 
     [Fact]
@@ -135,10 +131,10 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
+            builder.DefineSessionScope();
         });
 
-        Assert.False(pipeline.IsScopeActive<TestSessionScope>());
+        Assert.False(pipeline.IsScopeActive<SessionScope>());
     }
 
     [Fact]
@@ -146,22 +142,20 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new AttemptControlledSessionService((_, _) => Task.CompletedTask));
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(
-                new AttemptControlledSceneService((_, _) => Task.CompletedTask));
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(
-                new AttemptControlledModuleService((_, _) => Task.CompletedTask));
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(
+                new AttemptControlledSceneService((_, _) => Task.CompletedTask))));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(
+                new AttemptControlledModuleService((_, _) => Task.CompletedTask))));
         });
 
         await pipeline.InitializeAsync();
         await pipeline.LoadSceneAsync<TestSceneScope>();
         await pipeline.LoadModuleAsync<TestModuleScope>();
 
-        Assert.True(pipeline.CanReloadScope<TestSessionScope>());
+        Assert.True(pipeline.CanReloadScope<SessionScope>());
         Assert.True(pipeline.CanReloadScope<TestSceneScope>());
         Assert.True(pipeline.CanReloadScope<TestModuleScope>());
     }
@@ -171,12 +165,12 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineGlobalScope<TestGlobalScope>();
+            builder.DefineGlobalScope();
         });
 
         await pipeline.InitializeAsync();
 
-        Assert.False(pipeline.CanReloadScope<TestGlobalScope>());
+        Assert.False(pipeline.CanReloadScope<GlobalScope>());
     }
 
     [Fact]
@@ -184,10 +178,10 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
+            builder.DefineSessionScope();
         });
 
-        Assert.False(pipeline.CanReloadScope<TestSessionScope>());
+        Assert.False(pipeline.CanReloadScope<SessionScope>());
     }
 
     [Fact]
@@ -195,15 +189,15 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new AttemptControlledSessionService((_, _) => Task.CompletedTask));
         });
 
         await pipeline.InitializeAsync();
         await pipeline.DisposeAsync();
 
-        Assert.False(pipeline.CanReloadScope<TestSessionScope>());
+        Assert.False(pipeline.CanReloadScope<SessionScope>());
     }
 
     #endregion
@@ -222,9 +216,9 @@ public sealed class UxImprovementsTests
     [Fact]
     public void ScopeNotRestartableException_HasCorrectMessage()
     {
-        var exception = new ScopeNotRestartableException(typeof(TestGlobalScope));
+        var exception = new ScopeNotRestartableException(typeof(GlobalScope));
 
-        Assert.Equal(typeof(TestGlobalScope), exception.ScopeType);
+        Assert.Equal(typeof(GlobalScope), exception.ScopeType);
         Assert.Contains("non-restartable", exception.Message);
     }
 
@@ -250,8 +244,8 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestSessionService>(
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestSessionService>(
                 new AttemptControlledSessionService((_, _) => Task.CompletedTask));
         });
 
@@ -268,15 +262,15 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineGlobalScope<TestGlobalScope>();
+            builder.DefineGlobalScope();
         });
 
         await pipeline.InitializeAsync();
 
         var exception = await Assert.ThrowsAsync<ScopeNotRestartableException>(() =>
-            pipeline.ReloadScopeAsync<TestGlobalScope>());
+            pipeline.ReloadScopeAsync<GlobalScope>());
 
-        Assert.Equal(typeof(TestGlobalScope), exception.ScopeType);
+        Assert.Equal(typeof(GlobalScope), exception.ScopeType);
     }
 
     [Fact]
@@ -372,7 +366,6 @@ public sealed class UxImprovementsTests
     {
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSceneScope<TestSceneScope>();
         });
         await pipeline.DisposeAsync();
 

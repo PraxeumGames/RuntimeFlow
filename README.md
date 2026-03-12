@@ -6,7 +6,7 @@
 
 RuntimeFlow is a Unity framework that brings order to game startup. It provides a hierarchical dependency injection system with four strict scope levels — Global, Session, Scene, and Module — each with its own DI container backed by [VContainer](https://vcontainer.hadashikick.jp/). Services are registered into scopes and initialized asynchronously in topological order, with the entire dependency graph validated at compile time by a Roslyn source generator.
 
-The framework manages the full game lifecycle through a runtime pipeline. You define scope markers, register services, and write a flow scenario that orchestrates scene transitions and scope loading. RuntimeFlow handles initialization ordering, scope activation/deactivation, disposal in reverse order, and progress reporting — all with `async`/`await` and cancellation support.
+The framework manages the full game lifecycle through a runtime pipeline. You define scope installers, register services, and write a flow scenario that orchestrates scene transitions and scope loading. RuntimeFlow handles initialization ordering, scope activation/deactivation, disposal in reverse order, and progress reporting — all with `async`/`await` and cancellation support.
 
 RuntimeFlow also includes a health supervision system that monitors service initialization timeouts and can automatically restart the session scope when failures occur, making your game startup resilient to transient errors.
 
@@ -83,12 +83,17 @@ Or add it directly to your `Packages/manifest.json`:
 ## Quick Start
 
 ```csharp
-// 1. Define scope markers (empty sealed classes)
-sealed class MySessionScope { }
-sealed class MySceneScope { }
+// 1. Define a scene scope installer
+public class GameplayScene : ISceneScope
+{
+    public void Configure(IGameScopeRegistrationBuilder builder)
+    {
+        builder.Register<IMyService, MyService>(Lifetime.Singleton);
+    }
+}
 
 // 2. Define a service with a scope-specific interface
-public interface IMyService : ISessionInitializableService { }
+public interface IMyService : ISceneInitializableService { }
 
 public class MyService : IMyService
 {
@@ -102,11 +107,10 @@ public class MyService : IMyService
 // 3. Build the pipeline, register services, and run
 var pipeline = RuntimePipeline.Create(builder =>
 {
-    builder.DefineSessionScope<MySessionScope>();
-    builder.DefineSceneScope<MySceneScope>();
+    builder.Session()
+        .Register<IAuthService, AuthService>(Lifetime.Singleton);
 
-    builder.For<MySessionScope>()
-        .Register<IMyService, MyService>(Lifetime.Singleton);
+    builder.Scene<GameplayScene>();
 });
 
 pipeline.ConfigureFlow(new MyFlowScenario());
@@ -122,7 +126,7 @@ public class MyFlowScenario : IRuntimeFlowScenario
         IRuntimeFlowContext context, CancellationToken cancellationToken)
     {
         await context.InitializeAsync(cancellationToken);
-        await context.LoadScopeSceneAsync<MySceneScope>(cancellationToken);
+        await context.LoadScopeSceneAsync<GameplayScene>(cancellationToken);
     }
 }
 ```
@@ -137,7 +141,7 @@ Global (0)  →  Session (1)  →  Scene (2)  →  Module (3)
 
 Each scope gets its own `IGameContext` wrapping a VContainer `IObjectResolver`. Services in a scope may depend only on services from the same or an earlier (wider) scope — this rule is enforced at compile time.
 
-Scopes are identified by empty marker classes (e.g., `sealed class MySceneScope { }`), which serve as type-safe keys for registration and lookup.
+Scene and module scopes are defined as **installer classes** that implement `ISceneScope` or `IModuleScope`. These classes configure their own DI registrations, giving them a concrete purpose beyond being type keys. Global and Session scopes use built-in types and are configured inline.
 
 ### Service Lifecycle
 

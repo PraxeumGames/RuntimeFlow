@@ -96,29 +96,37 @@ namespace RuntimeFlow.Contexts
             return EnsureRootScopeDefined(GameContextType.Global, typeof(GlobalScope));
         }
 
-        public IGameContextBuilder DefineGlobalScope<TScope>()
-        {
-            return DefineScope(typeof(TScope), GameContextType.Global);
-        }
-
         public IGameContextBuilder DefineSessionScope()
         {
             return EnsureRootScopeDefined(GameContextType.Session, typeof(SessionScope));
         }
 
-        public IGameContextBuilder DefineSessionScope<TScope>()
+        public IGameContextBuilder Scene<TScope>() where TScope : ISceneScope, new()
         {
-            return DefineScope(typeof(TScope), GameContextType.Session);
+            return Scene(new TScope());
         }
 
-        public IGameContextBuilder DefineSceneScope<TScope>()
+        public IGameContextBuilder Scene<TScope>(TScope installer) where TScope : ISceneScope
         {
-            return DefineScope(typeof(TScope), GameContextType.Scene);
+            if (installer == null) throw new ArgumentNullException(nameof(installer));
+            DefineScope(typeof(TScope), GameContextType.Scene);
+            var regBuilder = CreateScopeRegistrationBuilder(typeof(TScope));
+            installer.Configure(regBuilder);
+            return this;
         }
 
-        public IGameContextBuilder DefineModuleScope<TScope>()
+        public IGameContextBuilder Module<TScope>() where TScope : IModuleScope, new()
         {
-            return DefineScope(typeof(TScope), GameContextType.Module);
+            return Module(new TScope());
+        }
+
+        public IGameContextBuilder Module<TScope>(TScope installer) where TScope : IModuleScope
+        {
+            if (installer == null) throw new ArgumentNullException(nameof(installer));
+            DefineScope(typeof(TScope), GameContextType.Module);
+            var regBuilder = CreateScopeRegistrationBuilder(typeof(TScope));
+            installer.Configure(regBuilder);
+            return this;
         }
 
         public bool TryResolveScopeType(Type scopeType, out GameContextType scope)
@@ -130,11 +138,6 @@ namespace RuntimeFlow.Contexts
         public ScopeLifecycleState GetScopeLifecycleState(Type scopeType)
         {
             return GetScopeState(scopeType);
-        }
-
-        public IGameScopeRegistrationBuilder For<TScope>()
-        {
-            return CreateScopeRegistrationBuilder(typeof(TScope));
         }
 
         internal void BindScopedRegistration(

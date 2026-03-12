@@ -17,8 +17,7 @@ public sealed class FlowGuardWiringTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
+            builder.DefineSessionScope();
         });
         pipeline.ConfigureGuards(guard);
 
@@ -41,9 +40,8 @@ public sealed class FlowGuardWiringTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
         });
         pipeline.ConfigureGuards(guard);
 
@@ -64,10 +62,8 @@ public sealed class FlowGuardWiringTests
         var sceneService = new AttemptControlledSceneService((_, _) => Task.CompletedTask);
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
         });
         pipeline.ConfigureGuards(allowGuard, denyGuard, neverReachedGuard);
 
@@ -96,8 +92,7 @@ public sealed class FlowGuardWiringTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
+            builder.DefineSessionScope();
         });
         pipeline.ConfigureFlow(flow);
         pipeline.ConfigureGuards(guard);
@@ -117,11 +112,9 @@ public sealed class FlowGuardWiringTests
 
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.DefineSceneScope<TestSceneScope>();
-            builder.DefineModuleScope<TestModuleScope>();
-            builder.For<TestSceneScope>().RegisterInstance<ITestSceneService>(sceneService);
-            builder.For<TestModuleScope>().RegisterInstance<ITestModuleService>(moduleService);
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<ITestSceneService>(sceneService)));
+            builder.Module(new TestModuleScope(m => m.RegisterInstance<ITestModuleService>(moduleService)));
         });
         // No ConfigureGuards call
 

@@ -12,8 +12,8 @@ public sealed class LazyInitializationTests
         var service = new TestLazySessionService();
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestLazySessionService>(service);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestLazySessionService>(service);
         });
 
         await pipeline.InitializeAsync();
@@ -26,8 +26,8 @@ public sealed class LazyInitializationTests
     {
         var service = new TestLazySessionService();
         var builder = new GameContextBuilder();
-        builder.DefineSessionScope<TestSessionScope>();
-        builder.For<TestSessionScope>().RegisterInstance<ITestLazySessionService>(service);
+        builder.DefineSessionScope();
+        builder.Session().RegisterInstance<ITestLazySessionService>(service);
 
         await builder.BuildAsync();
         Assert.Equal(0, service.InitCount);
@@ -41,8 +41,8 @@ public sealed class LazyInitializationTests
     {
         var service = new TestLazySessionService();
         var builder = new GameContextBuilder();
-        builder.DefineSessionScope<TestSessionScope>();
-        builder.For<TestSessionScope>().RegisterInstance<ITestLazySessionService>(service);
+        builder.DefineSessionScope();
+        builder.Session().RegisterInstance<ITestLazySessionService>(service);
 
         await builder.BuildAsync();
 
@@ -57,8 +57,8 @@ public sealed class LazyInitializationTests
         var service = new TestEagerSessionService();
         var pipeline = RuntimePipeline.Create(builder =>
         {
-            builder.DefineSessionScope<TestSessionScope>();
-            builder.For<TestSessionScope>().RegisterInstance<ITestEagerSessionService>(service);
+            builder.DefineSessionScope();
+            builder.Session().RegisterInstance<ITestEagerSessionService>(service);
         });
 
         await pipeline.InitializeAsync();
