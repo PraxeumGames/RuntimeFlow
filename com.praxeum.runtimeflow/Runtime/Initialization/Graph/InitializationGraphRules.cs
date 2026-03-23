@@ -7,8 +7,13 @@ namespace RuntimeFlow.Contexts
 {
     internal static class InitializationGraphRules
     {
-        internal const string Version = "compiled-constructor-v2";
+        internal const string Version = "compiled-constructor-v3";
 
+        /// <summary>
+        /// Checks if a constructor parameter type represents an async initialization dependency.
+        /// Only interfaces that extend <see cref="IAsyncInitializableService"/> qualify —
+        /// this avoids treating <c>ILogger</c>, <c>IMediator</c>, etc. as initialization deps.
+        /// </summary>
         internal static bool IsAsyncDependencyType(Type serviceType)
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
@@ -18,6 +23,22 @@ namespace RuntimeFlow.Contexts
                    && serviceType != typeof(IModuleInitializableService)
                    && serviceType != typeof(IAsyncInitializableService)
                    && serviceType.IsInterface
+                   && typeof(IAsyncInitializableService).IsAssignableFrom(serviceType);
+        }
+
+        /// <summary>
+        /// Checks if a type declared via <see cref="DependsOnAttribute"/> is a valid initialization dependency.
+        /// Accepts both interfaces and concrete classes that implement <see cref="IAsyncInitializableService"/>.
+        /// This allows <c>[DependsOn(typeof(MetaClientRunner))]</c> without requiring a marker interface.
+        /// </summary>
+        internal static bool IsExplicitDependencyType(Type serviceType)
+        {
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+            return serviceType != typeof(IGlobalInitializableService)
+                   && serviceType != typeof(ISessionInitializableService)
+                   && serviceType != typeof(ISceneInitializableService)
+                   && serviceType != typeof(IModuleInitializableService)
+                   && serviceType != typeof(IAsyncInitializableService)
                    && typeof(IAsyncInitializableService).IsAssignableFrom(serviceType);
         }
 
@@ -46,7 +67,7 @@ namespace RuntimeFlow.Contexts
         {
             return implementationType.GetCustomAttributes<DependsOnAttribute>()
                 .Select(attr => attr.ServiceType)
-                .Where(IsAsyncDependencyType);
+                .Where(IsExplicitDependencyType);
         }
 
         internal static ConstructorInfo? SelectConstructor(Type implementationType)

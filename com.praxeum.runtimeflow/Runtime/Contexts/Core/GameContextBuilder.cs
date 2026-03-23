@@ -1773,6 +1773,15 @@ namespace RuntimeFlow.Contexts
                 }
             }
 
+            // Build impl→serviceType mapping so [DependsOn(typeof(ConcreteClass))] can resolve
+            // to the registered service type used as the graph key.
+            var implToServiceType = new Dictionary<Type, Type>();
+            foreach (var svcType in candidateServiceTypes)
+            {
+                if (context.TryGetImplementationType(svcType, out var implType))
+                    implToServiceType[implType] = svcType;
+            }
+
             var initializers = new List<ServiceInitializerBinding>();
             foreach (var serviceType in candidateServiceTypes)
             {
@@ -1783,7 +1792,10 @@ namespace RuntimeFlow.Contexts
                 {
                     implementationType = compiledNode.ImplementationType;
                     dependencies = compiledNode.Dependencies
-                        .Where(InitializationGraphRules.IsAsyncDependencyType)
+                        .Where(InitializationGraphRules.IsExplicitDependencyType)
+                        .Select(dep => ResolveToServiceType(dep, implToServiceType))
+                        .Where(dep => dep != null)
+                        .Select(dep => dep!)
                         .Distinct()
                         .ToArray();
                 }
@@ -1795,13 +1807,31 @@ namespace RuntimeFlow.Contexts
                         implementationType = resolved.GetType();
                     }
 
-                    dependencies = InitializationGraphRules.ResolveConstructorDependencies(implementationType);
+                    dependencies = InitializationGraphRules.ResolveConstructorDependencies(implementationType)
+                        .Select(dep => ResolveToServiceType(dep, implToServiceType))
+                        .Where(dep => dep != null)
+                        .Select(dep => dep!)
+                        .Distinct()
+                        .ToArray();
                 }
 
                 initializers.Add(new ServiceInitializerBinding(serviceType, implementationType, dependencies));
             }
 
             return initializers;
+        }
+
+        /// <summary>
+        /// Resolves a dependency type to its service type in the initialization graph.
+        /// If <paramref name="dep"/> is an interface already in the graph, returns it as-is.
+        /// If it's a concrete class, looks up the registered service type for that implementation.
+        /// </summary>
+        private static Type? ResolveToServiceType(Type dep, Dictionary<Type, Type> implToServiceType)
+        {
+            if (dep.IsInterface)
+                return dep;
+
+            return implToServiceType.TryGetValue(dep, out var svcType) ? svcType : null;
         }
 
         private ScopeActivationExecutionPlan DiscoverScopeActivationExecutionPlan(
