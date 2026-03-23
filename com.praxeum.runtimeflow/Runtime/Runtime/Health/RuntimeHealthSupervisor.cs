@@ -34,6 +34,7 @@ namespace RuntimeFlow.Contexts
             NullRuntimeHealthObserver.Instance);
 
         public bool IsEnabled => _options.Enabled;
+        internal RuntimeHealthOptions Options => _options;
         public int MaxAutoSessionRestartsPerRun => Math.Max(0, _options.MaxAutoSessionRestartsPerRun);
 
         public static RuntimeHealthSupervisor Create(RuntimePipelineOptions options)

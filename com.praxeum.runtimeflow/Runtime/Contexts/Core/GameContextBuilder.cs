@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Events;
+using RuntimeFlow.Initialization.Graph;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using VContainer;
@@ -1556,8 +1557,22 @@ namespace RuntimeFlow.Contexts
 
                 if (ready.Length == 0)
                 {
+                    var dependencyGraph = pending.ToDictionary(
+                        kvp => kvp.Key,
+                        kvp => (IReadOnlyCollection<Type>)kvp.Value.Dependencies
+                            .Where(pending.ContainsKey)
+                            .ToArray());
+
+                    var cyclePath = DependencyCycleDetector.DetectCyclePath(dependencyGraph);
                     var unresolved = string.Join(", ", pending.Keys.Select(type => type.Name));
-                    throw new InvalidOperationException($"Initialization dependency cycle detected in scope {scope}. Remaining services: {unresolved}");
+                    var cycleDescription = cyclePath != null
+                        ? $"Cycle: {string.Join(" \u2192 ", cyclePath.Select(t => t.Name))}. "
+                        : string.Empty;
+
+                    throw new InvalidOperationException(
+                        $"Initialization dependency cycle detected in scope {scope}. " +
+                        $"{cycleDescription}" +
+                        $"Remaining services: {unresolved}");
                 }
 
                 foreach (var initializer in ready)
@@ -1568,10 +1583,38 @@ namespace RuntimeFlow.Contexts
                     .Select(group => group.First())
                     .ToArray();
 
-                var tasks = uniqueImplementations
-                    .Select(initializer => ExecuteInitializerWithHealthAsync(scope, context, initializer, progressNotifier, completedServices, totalServices, cancellationToken))
+                var taskMap = uniqueImplementations
+                    .Select(initializer => (
+                        task: ExecuteInitializerWithHealthAsync(scope, context, initializer, progressNotifier, completedServices, totalServices, cancellationToken),
+                        initializer))
                     .ToArray();
-                await Task.WhenAll(tasks).ConfigureAwait(false);
+
+                var waveTask = Task.WhenAll(taskMap.Select(t => t.task));
+                var waveStallTimeout = _healthSupervisor.Options.WaveStallTimeout;
+                if (_healthSupervisor.IsEnabled && waveStallTimeout > TimeSpan.Zero && waveStallTimeout != Timeout.InfiniteTimeSpan)
+                {
+                    var completedFirst = await Task.WhenAny(waveTask, Task.Delay(waveStallTimeout, cancellationToken)).ConfigureAwait(false);
+                    if (completedFirst != waveTask)
+                    {
+                        var stalledNames = taskMap
+                            .Where(t => !t.task.IsCompleted)
+                            .Select(t => t.initializer.ServiceType.Name)
+                            .ToArray();
+
+                        if (stalledNames.Length > 0)
+                        {
+                            _logger.LogWarning(
+                                "[RuntimeFlow] Wave stall detected in scope {Scope}: {Count} service(s) haven't completed after {Timeout:F0}s: {Services}",
+                                scope, stalledNames.Length, waveStallTimeout.TotalSeconds, string.Join(", ", stalledNames));
+                        }
+
+                        await waveTask.ConfigureAwait(false);
+                    }
+                }
+                else
+                {
+                    await waveTask.ConfigureAwait(false);
+                }
 
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 foreach (var initializer in ready)

@@ -18,6 +18,14 @@ namespace RuntimeFlow.Contexts
         public TimeSpan MaximumServiceTimeout { get; set; } = TimeSpan.FromSeconds(90);
         public double SlowServiceMultiplier { get; set; } = 4.0;
         public int MaxAutoSessionRestartsPerRun { get; set; } = 1;
+        /// <summary>
+        /// Timeout for a single initialization wave. If all services in a wave remain in-flight
+        /// beyond this duration, a diagnostic warning is logged. Does not abort — the outer
+        /// cancellation token controls hard failure.
+        /// Set to <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable (default).
+        /// </summary>
+        public TimeSpan WaveStallTimeout { get; set; } = System.Threading.Timeout.InfiniteTimeSpan;
+
         public Func<string>? DeviceProfileResolver { get; set; } = DefaultDeviceProfileResolver;
 
         private static string DefaultDeviceProfileResolver()
