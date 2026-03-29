@@ -31,6 +31,9 @@ namespace RuntimeFlow.Contexts
         private readonly Dictionary<(GameContextType Scope, Type? ScopeKey), List<Type>> _scopeInitializationOrder = new();
         private readonly Dictionary<Type, GameContext> _preloadedContexts = new();
         private readonly Dictionary<Type, GameContext> _additiveModuleContexts = new();
+        private static readonly Lazy<Type[]> ExplicitDependencyTypeCatalog = new(
+            BuildExplicitDependencyTypeCatalog,
+            LazyThreadSafetyMode.ExecutionAndPublication);
 
         private Action<IGameContext>? _onGlobalInitialized;
         private Action<IGameContext>? _onSessionInitialized;
@@ -57,7 +60,7 @@ namespace RuntimeFlow.Contexts
         private Task _activeLoadTask = Task.CompletedTask;
         private long _runGeneration;
 
-        private readonly Dictionary<Type, (ServiceInitializerBinding Binding, GameContext Context)> _lazyServiceBindings = new();
+        private readonly Dictionary<Type, (GameContext Context, GameContextType Scope, Type? ScopeKey)> _lazyServiceBindings = new();
         private readonly HashSet<Type> _initializedLazyServices = new();
         private readonly SemaphoreSlim _lazyInitLock = new(1, 1);
 
@@ -74,6 +77,17 @@ namespace RuntimeFlow.Contexts
             _executionScheduler = executionScheduler ?? InlineInitializationExecutionScheduler.Instance;
             _healthSupervisor = healthSupervisor ?? RuntimeHealthSupervisor.Disabled;
             _logger = logger ?? NullLogger.Instance;
+        }
+
+        internal Task ExecuteOnMainThreadAsync(
+            Func<CancellationToken, Task> operation,
+            CancellationToken cancellationToken = default)
+        {
+            if (operation == null) throw new ArgumentNullException(nameof(operation));
+            return _executionScheduler.ExecuteAsync(
+                InitializationThreadAffinity.MainThread,
+                operation,
+                cancellationToken);
         }
 
         internal void UseExternalGlobalContext(IGameContext globalContext)
@@ -469,7 +483,14 @@ namespace RuntimeFlow.Contexts
                         throw new InvalidOperationException($"Resolver returned null for '{typeof(TImplementation).FullName ?? typeof(TImplementation).Name}'.");
 
                     var serviceTypes = BuildImportedServiceTypes(typeof(TImplementation), instance, additionalServiceTypes);
-                    context.RegisterInstance(instance, serviceTypes);
+                    if (context is GameContext gameContext)
+                    {
+                        gameContext.RegisterImportedInstance(instance, serviceTypes);
+                    }
+                    else
+                    {
+                        context.RegisterInstance(instance, serviceTypes);
+                    }
                 });
                 return this;
             }
@@ -627,11 +648,22 @@ namespace RuntimeFlow.Contexts
                         skipActivation: true)
                     .ConfigureAwait(false);
 
+                if (_preloadedContexts.TryGetValue(sceneScopeKey, out var existingPreloadedSceneContext))
+                {
+                    await DisposeScopeContextAsync(
+                            GameContextType.Scene,
+                            existingPreloadedSceneContext,
+                            cancellationToken,
+                            sceneScopeKey)
+                        .ConfigureAwait(false);
+                }
+
                 _preloadedContexts[sceneScopeKey] = preloadedContext;
             }
             catch
             {
-                DisposeContext(ref preloadedContext);
+                await DisposeContextAsync(preloadedContext, cancellationToken).ConfigureAwait(false);
+                preloadedContext = null;
                 throw;
             }
         }
@@ -671,11 +703,22 @@ namespace RuntimeFlow.Contexts
                         skipActivation: true)
                     .ConfigureAwait(false);
 
+                if (_preloadedContexts.TryGetValue(moduleScopeKey, out var existingPreloadedModuleContext))
+                {
+                    await DisposeScopeContextAsync(
+                            GameContextType.Module,
+                            existingPreloadedModuleContext,
+                            cancellationToken,
+                            moduleScopeKey)
+                        .ConfigureAwait(false);
+                }
+
                 _preloadedContexts[moduleScopeKey] = preloadedContext;
             }
             catch
             {
-                DisposeContext(ref preloadedContext);
+                await DisposeContextAsync(preloadedContext, cancellationToken).ConfigureAwait(false);
+                preloadedContext = null;
                 throw;
             }
         }
@@ -727,7 +770,8 @@ namespace RuntimeFlow.Contexts
             }
             catch
             {
-                DisposeContext(ref moduleContext);
+                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
+                moduleContext = null;
                 throw;
             }
         }
@@ -742,10 +786,14 @@ namespace RuntimeFlow.Contexts
 
             SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Deactivating, moduleScopeKey);
             await ExecuteScopeActivationExitAsync(GameContextType.Module, context, NullInitializationProgressNotifier.Instance, cancellationToken).ConfigureAwait(false);
-            await DisposeScopeServicesAsync(GameContextType.Module, context, cancellationToken, moduleScopeKey).ConfigureAwait(false);
-            context.Dispose();
+            await DisposeScopeContextAsync(
+                    GameContextType.Module,
+                    context,
+                    cancellationToken,
+                    moduleScopeKey,
+                    () => SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, moduleScopeKey))
+                .ConfigureAwait(false);
             _additiveModuleContexts.Remove(moduleScopeKey);
-            SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, moduleScopeKey);
         }
 
         internal bool TryResolveFromSession<TService>(out TService? service)
@@ -798,6 +846,7 @@ namespace RuntimeFlow.Contexts
                     await asyncService.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
                 _initializedLazyServices.Add(serviceType);
+                RegisterInitializedServiceForScopeDisposal(entry.Scope, entry.ScopeKey, serviceType);
             }
             finally
             {
@@ -892,12 +941,32 @@ namespace RuntimeFlow.Contexts
         private async Task BuildAsyncCore(long generation, IInitializationProgressNotifier progressNotifier, CancellationToken cancellationToken)
         {
             ValidateExternalGlobalConfiguration();
-            DisposeAdditiveModuleContexts();
-            DisposeContext(ref _moduleContext);
-            DisposeContext(ref _sceneContext);
-            DisposeContext(ref _sessionContext);
+            await DisposeAdditiveModuleContextsAsync(cancellationToken).ConfigureAwait(false);
+            await DisposePreloadedContextsAsync(cancellationToken).ConfigureAwait(false);
+
+            if (_moduleContext != null)
+            {
+                await DisposeScopeContextAsync(GameContextType.Module, _moduleContext, cancellationToken, _activeModuleScopeKey).ConfigureAwait(false);
+                _moduleContext = null;
+            }
+
+            if (_sceneContext != null)
+            {
+                await DisposeScopeContextAsync(GameContextType.Scene, _sceneContext, cancellationToken, _activeSceneScopeKey).ConfigureAwait(false);
+                _sceneContext = null;
+            }
+
+            if (_sessionContext != null)
+            {
+                await DisposeScopeContextAsync(GameContextType.Session, _sessionContext, cancellationToken).ConfigureAwait(false);
+                _sessionContext = null;
+            }
+
             if (_ownsGlobalContext)
-                DisposeContext(ref _globalContext);
+            {
+                await DisposeContextAsync(_globalContext, cancellationToken).ConfigureAwait(false);
+                _globalContext = null;
+            }
 
             var initializedServices = new HashSet<Type>();
             var availableServices = new Dictionary<Type, object>();
@@ -970,13 +1039,17 @@ namespace RuntimeFlow.Contexts
             }
             catch
             {
-                DisposeContext(ref moduleContext);
-                DisposeContext(ref sceneContext);
-                DisposeContext(ref sessionContext);
+                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
+                moduleContext = null;
+                await DisposeContextAsync(sceneContext, cancellationToken).ConfigureAwait(false);
+                sceneContext = null;
+                await DisposeContextAsync(sessionContext, cancellationToken).ConfigureAwait(false);
+                sessionContext = null;
                 if (_ownsGlobalContext)
                 {
                     SetScopeStateIfTracked(GameContextType.Global, ScopeLifecycleState.Failed);
-                    DisposeContext(ref globalContext);
+                    await DisposeContextAsync(globalContext, cancellationToken).ConfigureAwait(false);
+                    globalContext = null;
                 }
                 throw;
             }
@@ -999,34 +1072,50 @@ namespace RuntimeFlow.Contexts
             _logger.LogInformation("Session restarting");
             _lazyServiceBindings.Clear();
             _initializedLazyServices.Clear();
+            _scopeStates.Clear();
 
             await DisposeAdditiveModulesAsync(cancellationToken).ConfigureAwait(false);
+            await DisposePreloadedContextsAsync(cancellationToken).ConfigureAwait(false);
 
             if (_moduleContext != null)
             {
                 SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Reloading, _activeModuleScopeKey);
                 await ExecuteScopeActivationExitAsync(GameContextType.Module, _moduleContext, progressNotifier, cancellationToken).ConfigureAwait(false);
-                await DisposeScopeServicesAsync(GameContextType.Module, _moduleContext, cancellationToken, _activeModuleScopeKey).ConfigureAwait(false);
-                DisposeContext(ref _moduleContext);
-                SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _activeModuleScopeKey);
+                await DisposeScopeContextAsync(
+                        GameContextType.Module,
+                        _moduleContext,
+                        cancellationToken,
+                        _activeModuleScopeKey,
+                        () => SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _activeModuleScopeKey))
+                    .ConfigureAwait(false);
+                _moduleContext = null;
             }
 
             if (_sceneContext != null)
             {
                 SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Reloading, _activeSceneScopeKey);
                 await ExecuteScopeActivationExitAsync(GameContextType.Scene, _sceneContext, progressNotifier, cancellationToken).ConfigureAwait(false);
-                await DisposeScopeServicesAsync(GameContextType.Scene, _sceneContext, cancellationToken, _activeSceneScopeKey).ConfigureAwait(false);
-                DisposeContext(ref _sceneContext);
-                SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Disposed, _activeSceneScopeKey);
+                await DisposeScopeContextAsync(
+                        GameContextType.Scene,
+                        _sceneContext,
+                        cancellationToken,
+                        _activeSceneScopeKey,
+                        () => SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Disposed, _activeSceneScopeKey))
+                    .ConfigureAwait(false);
+                _sceneContext = null;
             }
 
             if (_sessionContext != null)
             {
                 SetScopeStateIfTracked(GameContextType.Session, ScopeLifecycleState.Reloading);
                 await ExecuteScopeActivationExitAsync(GameContextType.Session, _sessionContext, progressNotifier, cancellationToken).ConfigureAwait(false);
-                await DisposeScopeServicesAsync(GameContextType.Session, _sessionContext, cancellationToken).ConfigureAwait(false);
-                DisposeContext(ref _sessionContext);
-                SetScopeStateIfTracked(GameContextType.Session, ScopeLifecycleState.Disposed);
+                await DisposeScopeContextAsync(
+                        GameContextType.Session,
+                        _sessionContext,
+                        cancellationToken,
+                        onDisposed: () => SetScopeStateIfTracked(GameContextType.Session, ScopeLifecycleState.Disposed))
+                    .ConfigureAwait(false);
+                _sessionContext = null;
             }
 
             var initializedServices = new HashSet<Type>();
@@ -1039,6 +1128,13 @@ namespace RuntimeFlow.Contexts
 
             try
             {
+                _moduleEventBus?.Dispose();
+                _moduleEventBus = null;
+                _sceneEventBus?.Dispose();
+                _sceneEventBus = null;
+                _sessionEventBus?.Dispose();
+                _sessionEventBus = null;
+
                 _sessionEventBus = new ScopeEventBus(_globalEventBus);
                 sessionContext = await CreateAndInitializeScopeContextAsync(
                         GameContextType.Session,
@@ -1099,9 +1195,12 @@ namespace RuntimeFlow.Contexts
             }
             catch
             {
-                DisposeContext(ref moduleContext);
-                DisposeContext(ref sceneContext);
-                DisposeContext(ref sessionContext);
+                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
+                moduleContext = null;
+                await DisposeContextAsync(sceneContext, cancellationToken).ConfigureAwait(false);
+                sceneContext = null;
+                await DisposeContextAsync(sessionContext, cancellationToken).ConfigureAwait(false);
+                sessionContext = null;
                 throw;
             }
         }
@@ -1120,18 +1219,28 @@ namespace RuntimeFlow.Contexts
             {
                 SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Deactivating, _activeModuleScopeKey);
                 await ExecuteScopeActivationExitAsync(GameContextType.Module, _moduleContext, progressNotifier, cancellationToken).ConfigureAwait(false);
-                await DisposeScopeServicesAsync(GameContextType.Module, _moduleContext, cancellationToken, _activeModuleScopeKey).ConfigureAwait(false);
-                DisposeContext(ref _moduleContext);
-                SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _activeModuleScopeKey);
+                await DisposeScopeContextAsync(
+                        GameContextType.Module,
+                        _moduleContext,
+                        cancellationToken,
+                        _activeModuleScopeKey,
+                        () => SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _activeModuleScopeKey))
+                    .ConfigureAwait(false);
+                _moduleContext = null;
             }
 
             if (_sceneContext != null)
             {
                 SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Deactivating, _activeSceneScopeKey);
                 await ExecuteScopeActivationExitAsync(GameContextType.Scene, _sceneContext, progressNotifier, cancellationToken).ConfigureAwait(false);
-                await DisposeScopeServicesAsync(GameContextType.Scene, _sceneContext, cancellationToken, _activeSceneScopeKey).ConfigureAwait(false);
-                DisposeContext(ref _sceneContext);
-                SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Disposed, _activeSceneScopeKey);
+                await DisposeScopeContextAsync(
+                        GameContextType.Scene,
+                        _sceneContext,
+                        cancellationToken,
+                        _activeSceneScopeKey,
+                        () => SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Disposed, _activeSceneScopeKey))
+                    .ConfigureAwait(false);
+                _sceneContext = null;
             }
 
             if (_preloadedContexts.TryGetValue(sceneScopeKey, out var preloaded))
@@ -1177,7 +1286,8 @@ namespace RuntimeFlow.Contexts
             }
             catch
             {
-                DisposeContext(ref sceneContext);
+                await DisposeContextAsync(sceneContext, cancellationToken).ConfigureAwait(false);
+                sceneContext = null;
                 throw;
             }
         }
@@ -1194,9 +1304,14 @@ namespace RuntimeFlow.Contexts
             {
                 SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Deactivating, _activeModuleScopeKey);
                 await ExecuteScopeActivationExitAsync(GameContextType.Module, _moduleContext, progressNotifier, cancellationToken).ConfigureAwait(false);
-                await DisposeScopeServicesAsync(GameContextType.Module, _moduleContext, cancellationToken, _activeModuleScopeKey).ConfigureAwait(false);
-                DisposeContext(ref _moduleContext);
-                SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _activeModuleScopeKey);
+                await DisposeScopeContextAsync(
+                        GameContextType.Module,
+                        _moduleContext,
+                        cancellationToken,
+                        _activeModuleScopeKey,
+                        () => SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _activeModuleScopeKey))
+                    .ConfigureAwait(false);
+                _moduleContext = null;
             }
 
             if (_preloadedContexts.TryGetValue(moduleScopeKey, out var preloaded))
@@ -1239,7 +1354,8 @@ namespace RuntimeFlow.Contexts
             }
             catch
             {
-                DisposeContext(ref moduleContext);
+                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
+                moduleContext = null;
                 throw;
             }
         }
@@ -1396,7 +1512,7 @@ namespace RuntimeFlow.Contexts
                     }
 
                     var serviceTypes = group.Select(binding => binding.ServiceType).Distinct().ToArray();
-                    context.RegisterInstanceEx(exemplar.ImplementationType, instance, serviceTypes);
+                    context.RegisterInstanceEx(exemplar.ImplementationType, instance, serviceTypes, ownsLifetime: true);
 
                     foreach (var binding in group)
                     {
@@ -1470,16 +1586,89 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        private static void DisposeContext(ref GameContext? context)
+        private async Task DisposeContextAsync(GameContext? context, CancellationToken cancellationToken)
         {
-            context?.Dispose();
-            context = null;
+            if (context == null)
+                return;
+
+            await _executionScheduler.ExecuteAsync(
+                    InitializationThreadAffinity.MainThread,
+                    _ =>
+                    {
+                        context.Dispose();
+                        return Task.CompletedTask;
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
-        private static void DisposeContext(ref IGameContext? context)
+        private async Task DisposeContextAsync(IGameContext? context, CancellationToken cancellationToken)
         {
-            context?.Dispose();
-            context = null;
+            if (context == null)
+                return;
+
+            await _executionScheduler.ExecuteAsync(
+                    InitializationThreadAffinity.MainThread,
+                    _ =>
+                    {
+                        context.Dispose();
+                        return Task.CompletedTask;
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        private async Task DisposeScopeContextAsync(
+            GameContextType scope,
+            GameContext? context,
+            CancellationToken cancellationToken,
+            Type? scopeKey = null,
+            Action? onDisposed = null)
+        {
+            if (context == null)
+                return;
+
+            List<Exception>? exceptions = null;
+
+            try
+            {
+                await DisposeScopeServicesAsync(scope, context, cancellationToken, scopeKey).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                exceptions ??= new List<Exception>();
+                exceptions.Add(ex);
+            }
+
+            try
+            {
+                await DisposeContextAsync(context, cancellationToken).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                exceptions ??= new List<Exception>();
+                exceptions.Add(ex);
+            }
+
+            onDisposed?.Invoke();
+
+            if (exceptions != null)
+                throw new AggregateException(exceptions);
+        }
+
+        private void RegisterInitializedServiceForScopeDisposal(GameContextType scope, Type? scopeKey, Type serviceType)
+        {
+            var key = (scope, scopeKey);
+            if (!_scopeInitializationOrder.TryGetValue(key, out var initOrder))
+            {
+                initOrder = new List<Type>();
+                _scopeInitializationOrder[key] = initOrder;
+            }
+
+            if (!initOrder.Contains(serviceType))
+            {
+                initOrder.Add(serviceType);
+            }
         }
 
         private async Task DisposeScopeServicesAsync(
@@ -1489,19 +1678,58 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey = null)
         {
             var key = (scope, scopeKey);
-            if (!_scopeInitializationOrder.TryGetValue(key, out var initOrder) || initOrder.Count == 0)
-                return;
+            _scopeInitializationOrder.TryGetValue(key, out var initOrder);
 
             var exceptions = (List<Exception>?)null;
-            for (var i = initOrder.Count - 1; i >= 0; i--)
+
+            for (var i = (initOrder?.Count ?? 0) - 1; i >= 0; i--)
             {
                 try
                 {
-                    var resolved = context.Resolve(initOrder[i]);
+                    var serviceType = initOrder![i];
+                    if (context.TryGetRegisteredInstance(serviceType, out _))
+                    {
+                        continue;
+                    }
+
+                    var resolved = context.Resolve(serviceType);
+                    var affinity = resolved is IInitializationThreadAffinityProvider affinityProvider
+                        ? affinityProvider.ThreadAffinity
+                        : InitializationThreadAffinity.MainThread;
                     if (resolved is IAsyncDisposableService disposableService)
                     {
-                        await disposableService.DisposeAsync(cancellationToken).ConfigureAwait(false);
+                        await _executionScheduler.ExecuteAsync(
+                                affinity,
+                                token => disposableService.DisposeAsync(token),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        continue;
                     }
+
+                    if (resolved is IAsyncDisposable asyncDisposable)
+                    {
+                        await _executionScheduler.ExecuteAsync(
+                                affinity,
+                                _ => asyncDisposable.DisposeAsync().AsTask(),
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        continue;
+                    }
+
+                    if (resolved is IDisposable disposable)
+                    {
+                        await _executionScheduler.ExecuteAsync(
+                                affinity,
+                                _ =>
+                                {
+                                    disposable.Dispose();
+                                    return Task.CompletedTask;
+                                },
+                                cancellationToken)
+                            .ConfigureAwait(false);
+                        continue;
+                    }
+
                 }
                 catch (Exception ex)
                 {
@@ -1514,6 +1742,21 @@ namespace RuntimeFlow.Contexts
 
             if (exceptions != null)
                 throw new AggregateException(exceptions);
+        }
+
+        private sealed class ReferenceEqualityComparer : IEqualityComparer<object>
+        {
+            public static readonly ReferenceEqualityComparer Instance = new();
+
+            public new bool Equals(object? x, object? y)
+            {
+                return ReferenceEquals(x, y);
+            }
+
+            public int GetHashCode(object obj)
+            {
+                return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+            }
         }
 
         private async Task<int> ExecuteInitializersAsync(
@@ -1533,7 +1776,7 @@ namespace RuntimeFlow.Contexts
             foreach (var lazy in lazyBindings)
             {
                 initializers.Remove(lazy);
-                _lazyServiceBindings[lazy.ServiceType] = (lazy, context);
+                _lazyServiceBindings[lazy.ServiceType] = (context, scope, scopeKey);
             }
 
             var totalServices = initializers.Count;
@@ -1764,6 +2007,14 @@ namespace RuntimeFlow.Contexts
             var candidateServiceTypes = new HashSet<Type>(
                 context.RegisteredServiceTypes.Where(InitializationGraphRules.IsExplicitDependencyType));
 
+            if (candidateServiceTypes.Count == 0)
+            {
+                foreach (var discoveredType in DiscoverRegisteredAsyncServiceTypes(context))
+                {
+                    candidateServiceTypes.Add(discoveredType);
+                }
+            }
+
             foreach (var node in compiledGraph.Values)
             {
                 if (InitializationGraphRules.IsAsyncDependencyType(node.ServiceType)
@@ -1774,8 +2025,10 @@ namespace RuntimeFlow.Contexts
             }
 
             // Phase 1: Build raw bindings with implementation types resolved.
-            var rawBindings = new List<(Type serviceType, Type implementationType, IReadOnlyCollection<Type> rawDependencies)>();
-            foreach (var serviceType in candidateServiceTypes)
+            // Deduplicate by implementation type to avoid initializing the same singleton twice
+            // when it's registered as both self and interface(s).
+            var rawBindingsByImplementation = new Dictionary<Type, (Type serviceType, Type implementationType, IReadOnlyCollection<Type> rawDependencies)>();
+            foreach (var serviceType in candidateServiceTypes.OrderBy(GetDeterministicTypeName, StringComparer.Ordinal))
             {
                 Type implementationType;
                 IReadOnlyCollection<Type> rawDependencies;
@@ -1792,22 +2045,61 @@ namespace RuntimeFlow.Contexts
                 {
                     if (!context.TryGetImplementationType(serviceType, out implementationType))
                     {
-                        var resolved = context.Resolve(serviceType);
-                        implementationType = resolved.GetType();
+                        // Avoid eager resolve while only building dependency graph.
+                        // For concrete registrations, the service type itself is the implementation type.
+                        if (serviceType.IsInterface)
+                            continue;
+
+                        implementationType = serviceType;
                     }
 
                     rawDependencies = InitializationGraphRules.ResolveConstructorDependencies(implementationType);
                 }
 
-                rawBindings.Add((serviceType, implementationType, rawDependencies));
+                if (rawBindingsByImplementation.TryGetValue(implementationType, out var existingBinding))
+                {
+                    var mergedDependencies = existingBinding.rawDependencies
+                        .Concat(rawDependencies)
+                        .Distinct()
+                        .ToArray();
+
+                    var preferredServiceType = IsPreferredServiceType(
+                        serviceType,
+                        existingBinding.serviceType,
+                        implementationType)
+                        ? serviceType
+                        : existingBinding.serviceType;
+
+                    rawBindingsByImplementation[implementationType] =
+                        (preferredServiceType, implementationType, mergedDependencies);
+                    continue;
+                }
+
+                rawBindingsByImplementation[implementationType] =
+                    (serviceType, implementationType, rawDependencies);
             }
 
-            // Phase 2: Build impl→serviceType mapping from discovered bindings.
-            // This correctly handles concrete classes referenced via [DependsOn].
-            var implToServiceType = new Dictionary<Type, Type>();
+            var rawBindings = rawBindingsByImplementation.Values.ToArray();
+
+            // Phase 2: Build type alias mapping to canonical service type for the initializer graph.
+            // This correctly handles concrete classes referenced via [DependsOn] and
+            // interface aliases that point to the same implementation.
+            var typeToServiceType = new Dictionary<Type, Type>();
             foreach (var (serviceType, implementationType, _) in rawBindings)
             {
-                implToServiceType[implementationType] = serviceType;
+                typeToServiceType[implementationType] = serviceType;
+                typeToServiceType[serviceType] = serviceType;
+            }
+
+            foreach (var candidateServiceType in candidateServiceTypes)
+            {
+                if (!context.TryGetImplementationType(candidateServiceType, out var implementationType))
+                    continue;
+
+                if (typeToServiceType.TryGetValue(implementationType, out var canonicalServiceType))
+                {
+                    typeToServiceType[candidateServiceType] = canonicalServiceType;
+                }
             }
 
             // Phase 3: Resolve raw dependencies to service types (graph keys).
@@ -1815,7 +2107,7 @@ namespace RuntimeFlow.Contexts
             foreach (var (serviceType, implementationType, rawDependencies) in rawBindings)
             {
                 var resolvedDependencies = rawDependencies
-                    .Select(dep => ResolveToServiceType(dep, implToServiceType, candidateServiceTypes))
+                    .Select(dep => ResolveToServiceType(dep, typeToServiceType, candidateServiceTypes))
                     .Where(dep => dep != null)
                     .Select(dep => dep!)
                     .Distinct()
@@ -1827,6 +2119,44 @@ namespace RuntimeFlow.Contexts
             return initializers;
         }
 
+        private static IEnumerable<Type> DiscoverRegisteredAsyncServiceTypes(GameContext context)
+        {
+            foreach (var type in ExplicitDependencyTypeCatalog.Value)
+            {
+                if (context.IsRegistered(type))
+                    yield return type;
+            }
+        }
+
+        private static Type[] BuildExplicitDependencyTypeCatalog()
+        {
+            var result = new HashSet<Type>();
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type[] types;
+                try
+                {
+                    types = assembly.GetTypes();
+                }
+                catch (ReflectionTypeLoadException exception)
+                {
+                    types = exception.Types.Where(type => type != null).Cast<Type>().ToArray();
+                }
+                catch
+                {
+                    continue;
+                }
+
+                foreach (var type in types)
+                {
+                    if (InitializationGraphRules.IsExplicitDependencyType(type))
+                        result.Add(type);
+                }
+            }
+
+            return result.ToArray();
+        }
+
         /// <summary>
         /// Resolves a dependency type to its service type in the initialization graph.
         /// If <paramref name="dep"/> is an interface present in the candidate set, returns it as-is.
@@ -1834,22 +2164,37 @@ namespace RuntimeFlow.Contexts
         /// </summary>
         private static Type? ResolveToServiceType(
             Type dep,
-            Dictionary<Type, Type> implToServiceType,
+            Dictionary<Type, Type> typeToServiceType,
             HashSet<Type> candidateServiceTypes)
         {
+            if (typeToServiceType.TryGetValue(dep, out var mappedServiceType))
+                return mappedServiceType;
+
             // Interface that is a known graph key — use directly.
             if (dep.IsInterface && candidateServiceTypes.Contains(dep))
                 return dep;
-
-            // Concrete class — resolve to its registered service type.
-            if (implToServiceType.TryGetValue(dep, out var svcType))
-                return svcType;
 
             // Interface not in the graph (e.g., removed marker) — try as impl type.
             if (dep.IsInterface)
                 return null;
 
             return null;
+        }
+
+        private static bool IsPreferredServiceType(Type candidate, Type current, Type implementationType)
+        {
+            var candidateIsImplementation = candidate == implementationType;
+            var currentIsImplementation = current == implementationType;
+            if (candidateIsImplementation != currentIsImplementation)
+                return candidateIsImplementation;
+
+            if (candidate.IsInterface != current.IsInterface)
+                return !candidate.IsInterface;
+
+            return string.Compare(
+                       GetDeterministicTypeName(candidate),
+                       GetDeterministicTypeName(current),
+                       StringComparison.Ordinal) < 0;
         }
 
         private ScopeActivationExecutionPlan DiscoverScopeActivationExecutionPlan(
@@ -1864,8 +2209,10 @@ namespace RuntimeFlow.Contexts
                 Type implementationType;
                 if (!context.TryGetImplementationType(serviceType, out implementationType))
                 {
-                    var resolved = context.Resolve(serviceType);
-                    implementationType = resolved.GetType();
+                    if (serviceType.IsInterface)
+                        continue;
+
+                    implementationType = serviceType;
                 }
 
                 if (!markerType.IsAssignableFrom(serviceType) && !markerType.IsAssignableFrom(implementationType))
@@ -2050,7 +2397,7 @@ namespace RuntimeFlow.Contexts
             return type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
         }
 
-        private async Task CancelActiveLoadAsync()
+        private async Task CancelActiveLoadAsync(CancellationToken cancellationToken = default)
         {
             if (_activeLoadCts == null)
                 return;
@@ -2058,7 +2405,7 @@ namespace RuntimeFlow.Contexts
             _activeLoadCts.Cancel();
             try
             {
-                await _activeLoadTask.ConfigureAwait(false);
+                await AwaitWithCancellation(_activeLoadTask, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException)
             {
@@ -2074,36 +2421,100 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        internal async Task DisposeAllScopesAsync()
+        internal async Task DisposeAllScopesAsync(CancellationToken cancellationToken = default)
         {
-            await CancelActiveLoadAsync().ConfigureAwait(false);
+            await CancelActiveLoadAsync(cancellationToken).ConfigureAwait(false);
 
-            DisposePreloadedContexts();
-            DisposeAdditiveModuleContexts();
-            DisposeContext(ref _moduleContext);
-            _logger.LogDebug("Scope {Scope} disposed", GameContextType.Module);
-            DisposeContext(ref _sceneContext);
-            _logger.LogDebug("Scope {Scope} disposed", GameContextType.Scene);
-            DisposeContext(ref _sessionContext);
-            _logger.LogDebug("Scope {Scope} disposed", GameContextType.Session);
+            await DisposePreloadedContextsAsync(cancellationToken).ConfigureAwait(false);
+            await DisposeAdditiveModulesAsync(cancellationToken).ConfigureAwait(false);
+
+            if (_moduleContext != null)
+            {
+                SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Deactivating, _activeModuleScopeKey);
+                await ExecuteScopeActivationExitAsync(GameContextType.Module, _moduleContext, cancellationToken).ConfigureAwait(false);
+                await DisposeScopeContextAsync(
+                        GameContextType.Module,
+                        _moduleContext,
+                        cancellationToken,
+                        _activeModuleScopeKey,
+                        () => SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _activeModuleScopeKey))
+                    .ConfigureAwait(false);
+                _moduleContext = null;
+                _logger.LogDebug("Scope {Scope} disposed", GameContextType.Module);
+            }
+
+            if (_sceneContext != null)
+            {
+                SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Deactivating, _activeSceneScopeKey);
+                await ExecuteScopeActivationExitAsync(GameContextType.Scene, _sceneContext, cancellationToken).ConfigureAwait(false);
+                await DisposeScopeContextAsync(
+                        GameContextType.Scene,
+                        _sceneContext,
+                        cancellationToken,
+                        _activeSceneScopeKey,
+                        () => SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Disposed, _activeSceneScopeKey))
+                    .ConfigureAwait(false);
+                _sceneContext = null;
+                _logger.LogDebug("Scope {Scope} disposed", GameContextType.Scene);
+            }
+
+            if (_sessionContext != null)
+            {
+                SetScopeStateIfTracked(GameContextType.Session, ScopeLifecycleState.Deactivating);
+                await ExecuteScopeActivationExitAsync(GameContextType.Session, _sessionContext, cancellationToken).ConfigureAwait(false);
+                await DisposeScopeContextAsync(
+                        GameContextType.Session,
+                        _sessionContext,
+                        cancellationToken,
+                        onDisposed: () => SetScopeStateIfTracked(GameContextType.Session, ScopeLifecycleState.Disposed))
+                    .ConfigureAwait(false);
+                _sessionContext = null;
+                _logger.LogDebug("Scope {Scope} disposed", GameContextType.Session);
+            }
+
             if (_ownsGlobalContext)
             {
-                DisposeContext(ref _globalContext);
+                await DisposeContextAsync(_globalContext, cancellationToken).ConfigureAwait(false);
+                _globalContext = null;
                 _logger.LogDebug("Scope {Scope} disposed", GameContextType.Global);
             }
         }
 
-        private void DisposePreloadedContexts()
+        private async Task DisposePreloadedContextsAsync(CancellationToken cancellationToken)
         {
-            foreach (var ctx in _preloadedContexts.Values)
-                ctx.Dispose();
+            foreach (var kvp in _preloadedContexts.ToArray())
+            {
+                var scopeType = _declaredScopeTypes.TryGetValue(kvp.Key, out var declaredScopeType)
+                    ? declaredScopeType
+                    : GameContextType.Scene;
+
+                if (scopeType is GameContextType.Scene or GameContextType.Module)
+                {
+                    SetScopeStateIfTracked(scopeType, ScopeLifecycleState.Deactivating, kvp.Key);
+                    await DisposeScopeContextAsync(
+                            scopeType,
+                            kvp.Value,
+                            cancellationToken,
+                            kvp.Key,
+                            () => SetScopeStateIfTracked(scopeType, ScopeLifecycleState.Disposed, kvp.Key))
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    await DisposeContextAsync(kvp.Value, cancellationToken).ConfigureAwait(false);
+                }
+            }
+
             _preloadedContexts.Clear();
         }
 
-        private void DisposeAdditiveModuleContexts()
+        private async Task DisposeAdditiveModuleContextsAsync(CancellationToken cancellationToken)
         {
-            foreach (var ctx in _additiveModuleContexts.Values)
-                ctx.Dispose();
+            foreach (var kvp in _additiveModuleContexts)
+            {
+                await DisposeScopeContextAsync(GameContextType.Module, kvp.Value, cancellationToken, kvp.Key).ConfigureAwait(false);
+            }
+
             _additiveModuleContexts.Clear();
         }
 
@@ -2113,11 +2524,33 @@ namespace RuntimeFlow.Contexts
             {
                 SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Deactivating, kvp.Key);
                 await ExecuteScopeActivationExitAsync(GameContextType.Module, kvp.Value, NullInitializationProgressNotifier.Instance, cancellationToken).ConfigureAwait(false);
-                await DisposeScopeServicesAsync(GameContextType.Module, kvp.Value, cancellationToken, kvp.Key).ConfigureAwait(false);
-                kvp.Value.Dispose();
-                SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, kvp.Key);
+                await DisposeScopeContextAsync(
+                        GameContextType.Module,
+                        kvp.Value,
+                        cancellationToken,
+                        kvp.Key,
+                        () => SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, kvp.Key))
+                    .ConfigureAwait(false);
             }
             _additiveModuleContexts.Clear();
+        }
+
+        private static async Task AwaitWithCancellation(Task task, CancellationToken cancellationToken)
+        {
+            if (task == null) throw new ArgumentNullException(nameof(task));
+
+            if (task.IsCompleted)
+            {
+                await task.ConfigureAwait(false);
+                return;
+            }
+
+            var cancellationTask = Task.Delay(Timeout.Infinite, cancellationToken);
+            var completed = await Task.WhenAny(task, cancellationTask).ConfigureAwait(false);
+            if (completed != task)
+                cancellationToken.ThrowIfCancellationRequested();
+
+            await task.ConfigureAwait(false);
         }
 
         private void ThrowIfStaleGeneration(long generation, CancellationToken cancellationToken)

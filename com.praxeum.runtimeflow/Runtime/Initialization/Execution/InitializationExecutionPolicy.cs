@@ -40,16 +40,19 @@ namespace RuntimeFlow.Contexts
             if (affinity == InitializationThreadAffinity.MainThread)
             {
                 var ctx = GameContext.MainThreadContext;
-                if (ctx != null && SynchronizationContext.Current != ctx)
+                if (ctx == null)
                 {
-                    var tcs = new TaskCompletionSource<bool>();
-                    ctx.Post(_ =>
-                    {
-                        RunOnPostedContext(operation, cancellationToken, tcs);
-                    }, null);
-                    await tcs.Task.ConfigureAwait(false);
-                    return;
+                    throw new InvalidOperationException(
+                        "Main-thread execution was requested, but RuntimeFlow main-thread SynchronizationContext is unavailable.");
                 }
+
+                var tcs = new TaskCompletionSource<bool>();
+                ctx.Post(_ =>
+                {
+                    RunOnPostedContext(operation, cancellationToken, tcs);
+                }, null);
+                await tcs.Task.ConfigureAwait(false);
+                return;
             }
 
             await operation(cancellationToken).ConfigureAwait(false);

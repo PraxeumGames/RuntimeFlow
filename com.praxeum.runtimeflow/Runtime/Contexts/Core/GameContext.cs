@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Runtime.ExceptionServices;
 using System.Threading;
@@ -11,6 +12,7 @@ namespace RuntimeFlow.Contexts
     {
         private static SynchronizationContext? _mainThreadContext;
         private static int _mainThreadId;
+        private static readonly TimeSpan MainThreadDispatchTimeout = TimeSpan.FromMinutes(2);
 
         /// <summary>
         /// The main-thread SynchronizationContext captured at startup.
@@ -34,18 +36,20 @@ namespace RuntimeFlow.Contexts
 #endif
         private static void CaptureMainThreadContext()
         {
-            _mainThreadContext ??= SynchronizationContext.Current;
+            _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+            _mainThreadContext = SynchronizationContext.Current;
         }
 
         private readonly IGameContext? _parent;
         private readonly List<Action<VContainer.IContainerBuilder>> _registrations = new();
         private readonly HashSet<Type> _registeredServiceTypes = new();
-        private readonly Dictionary<Type, Type> _implementationTypes = new();
+        private readonly ConcurrentDictionary<Type, Type> _implementationTypes = new();
         private readonly Dictionary<Type, object> _registeredInstances = new();
         private readonly Dictionary<Type, (Lifetime lifetime, List<Type> interfaces)> _typedRegistrations = new();
-        private readonly Dictionary<Type, (object instance, List<Type> interfaces)> _instanceRegistrations = new();
+        private readonly Dictionary<Type, (object instance, List<Type> interfaces, bool ownsLifetime)> _instanceRegistrations = new();
         private readonly List<(Type serviceType, Type decoratorType)> _decorations = new();
         private readonly Dictionary<Type, object> _decoratedInstances = new();
+        private readonly List<RuntimeFlowInstanceProvider> _instanceProviders = new();
         private VContainer.IObjectResolver? _container;
         private bool _initialized;
 
@@ -119,6 +123,13 @@ namespace RuntimeFlow.Contexts
             {
                 if (_implementationTypes.ContainsKey(serviceType)) return true;
             }
+
+            if (_initialized && _container != null && _container.TryGetRegistration(serviceType, out var registration))
+            {
+                if (includeInterfaceTypes || registration.ImplementationType == serviceType)
+                    return true;
+            }
+
             return false;
         }
 
@@ -126,20 +137,27 @@ namespace RuntimeFlow.Contexts
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
             if (instance == null) throw new ArgumentNullException(nameof(instance));
-            RegisterInstanceEx(instance.GetType(), instance, new[] { serviceType });
+            RegisterInstanceEx(instance.GetType(), instance, new[] { serviceType }, ownsLifetime: true);
         }
 
         public void RegisterInstance<TService>(TService instance)
         {
             if (instance == null) throw new ArgumentNullException(nameof(instance));
-            RegisterInstanceEx(instance.GetType(), instance, new[] { typeof(TService) });
+            RegisterInstanceEx(instance.GetType(), instance, new[] { typeof(TService) }, ownsLifetime: true);
         }
 
         public void RegisterInstance(object instance, IReadOnlyCollection<Type> serviceTypes)
         {
             if (instance == null) throw new ArgumentNullException(nameof(instance));
             if (serviceTypes == null) throw new ArgumentNullException(nameof(serviceTypes));
-            RegisterInstanceEx(instance.GetType(), instance, serviceTypes);
+            RegisterInstanceEx(instance.GetType(), instance, serviceTypes, ownsLifetime: true);
+        }
+
+        internal void RegisterImportedInstance(object instance, IReadOnlyCollection<Type> serviceTypes)
+        {
+            if (instance == null) throw new ArgumentNullException(nameof(instance));
+            if (serviceTypes == null) throw new ArgumentNullException(nameof(serviceTypes));
+            RegisterInstanceEx(instance.GetType(), instance, serviceTypes, ownsLifetime: false);
         }
 
         public TService Resolve<TService>()
@@ -152,6 +170,13 @@ namespace RuntimeFlow.Contexts
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
             if (!_initialized || _container == null) throw new InvalidOperationException("Context not initialized");
 
+            // VContainer can instantiate Unity-bound objects during resolve. Ensure resolve happens
+            // on Unity main thread when runtime flow continues from a worker thread.
+            return DispatchToMainThread(() => ResolveCore(serviceType), $"resolve '{serviceType.FullName}'");
+        }
+
+        private object ResolveCore(Type serviceType)
+        {
             if (_decoratedInstances.TryGetValue(serviceType, out var decorated))
                 return decorated;
 
@@ -172,19 +197,13 @@ namespace RuntimeFlow.Contexts
             // (Addressables, LayerMask, etc.) which require the main thread.
             // RuntimeFlow uses ConfigureAwait(false) so this method can be called
             // from a thread pool thread. Dispatch to main thread if needed.
-            if (_mainThreadContext != null && Thread.CurrentThread.ManagedThreadId != _mainThreadId)
-            {
-                ExceptionDispatchInfo? caught = null;
-                _mainThreadContext.Send(_ =>
+            DispatchToMainThread(
+                () =>
                 {
-                    try { InitializeCore(); }
-                    catch (Exception ex) { caught = ExceptionDispatchInfo.Capture(ex); }
-                }, null);
-                caught?.Throw();
-                return;
-            }
-
-            InitializeCore();
+                    InitializeCore();
+                    return true;
+                },
+                "initialize context");
         }
 
         private void InitializeCore()
@@ -234,16 +253,51 @@ namespace RuntimeFlow.Contexts
             if (!_initialized) return;
             OnBeforeDispose?.Invoke();
             _decoratedInstances.Clear();
+
+            DisposeOwnedRegisteredInstances();
             if (_container is IDisposable disposable)
                 disposable.Dispose();
+
+            foreach (var instanceProvider in _instanceProviders)
+                instanceProvider.Release();
+
+            _instanceProviders.Clear();
             _container = null;
             _initialized = false;
-            OnDisposed?.Invoke();
+
+            _registrations.Clear();
+            _registeredServiceTypes.Clear();
+            _implementationTypes.Clear();
+            _registeredInstances.Clear();
+            _typedRegistrations.Clear();
+            _instanceRegistrations.Clear();
+            _decorations.Clear();
+
+            var onDisposed = OnDisposed;
+            OnBeforeInitialize = null;
+            OnInitialized = null;
+            OnBeforeDispose = null;
+            OnDisposed = null;
+            onDisposed?.Invoke();
         }
 
         internal bool TryGetImplementationType(Type serviceType, out Type implementationType)
         {
-            return _implementationTypes.TryGetValue(serviceType, out implementationType!);
+            if (_implementationTypes.TryGetValue(serviceType, out implementationType!))
+                return true;
+
+            if (_initialized
+                && _container != null
+                && _container.TryGetRegistration(serviceType, out var registration)
+                && registration != null)
+            {
+                implementationType = registration.ImplementationType;
+                _implementationTypes[serviceType] = implementationType;
+                return true;
+            }
+
+            implementationType = null!;
+            return false;
         }
 
         internal bool TryGetRegisteredInstance(Type serviceType, out object instance)
@@ -251,7 +305,16 @@ namespace RuntimeFlow.Contexts
             return _registeredInstances.TryGetValue(serviceType, out instance!);
         }
 
-        internal void RegisterInstanceEx(Type implementationType, object instance, IReadOnlyCollection<Type> serviceTypes)
+        internal KeyValuePair<Type, object>[] GetRegisteredInstanceEntriesSnapshot()
+        {
+            return _registeredInstances.ToArray();
+        }
+
+        internal void RegisterInstanceEx(
+            Type implementationType,
+            object instance,
+            IReadOnlyCollection<Type> serviceTypes,
+            bool ownsLifetime)
         {
             if (implementationType == null) throw new ArgumentNullException(nameof(implementationType));
             if (instance == null) throw new ArgumentNullException(nameof(instance));
@@ -280,11 +343,13 @@ namespace RuntimeFlow.Contexts
                     if (!existing.interfaces.Contains(t))
                         existing.interfaces.Add(t);
                 }
+
+                existing.ownsLifetime &= ownsLifetime;
             }
             else
             {
                 _instanceRegistrations[implementationType] =
-                    (instance, new List<Type>(exposedTypes));
+                    (instance, new List<Type>(exposedTypes), ownsLifetime);
             }
         }
 
@@ -312,9 +377,11 @@ namespace RuntimeFlow.Contexts
             }
 
             // Apply consolidated instance registrations
-            foreach (var (_, (instance, interfaces)) in _instanceRegistrations)
+            foreach (var (_, (instance, interfaces, _)) in _instanceRegistrations)
             {
-                var rb = new RuntimeFlowInstanceRegistrationBuilder(instance);
+                var provider = new RuntimeFlowInstanceProvider(instance);
+                _instanceProviders.Add(provider);
+                var rb = new RuntimeFlowInstanceRegistrationBuilder(instance.GetType(), provider);
                 foreach (var t in interfaces)
                     rb.As(t);
                 builder.Register(rb);
@@ -351,6 +418,67 @@ namespace RuntimeFlow.Contexts
             }
         }
 
+        private void DisposeOwnedRegisteredInstances()
+        {
+            var disposedInstances = new List<object>();
+
+            foreach (var (instance, _, ownsLifetime) in _instanceRegistrations.Values.Reverse())
+            {
+                if (!ownsLifetime || instance is not IDisposable disposable)
+                    continue;
+
+                if (disposedInstances.Any(existing => ReferenceEquals(existing, instance)))
+                    continue;
+
+                disposable.Dispose();
+                disposedInstances.Add(instance);
+            }
+        }
+
+        internal static bool IsOnMainThread()
+        {
+            if (_mainThreadContext != null && SynchronizationContext.Current == _mainThreadContext)
+                return true;
+
+            return Thread.CurrentThread.ManagedThreadId == _mainThreadId;
+        }
+
+        private static T DispatchToMainThread<T>(Func<T> action, string operationDescription)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+
+            if (_mainThreadContext == null || IsOnMainThread())
+                return action();
+
+            T? result = default;
+            ExceptionDispatchInfo? capturedException = null;
+            using var completed = new ManualResetEventSlim(false);
+            _mainThreadContext.Post(_ =>
+            {
+                try
+                {
+                    result = action();
+                }
+                catch (Exception ex)
+                {
+                    capturedException = ExceptionDispatchInfo.Capture(ex);
+                }
+                finally
+                {
+                    completed.Set();
+                }
+            }, null);
+
+            if (!completed.Wait(MainThreadDispatchTimeout))
+            {
+                throw new TimeoutException(
+                    $"Timed out while waiting for main-thread dispatch to {operationDescription}.");
+            }
+
+            capturedException?.Throw();
+            return result!;
+        }
+
         /// <summary>
         /// Custom RegistrationBuilder subclass for pre-existing instances.
         /// hadashiA VContainer's internal InstanceRegistrationBuilder is not accessible,
@@ -358,12 +486,12 @@ namespace RuntimeFlow.Contexts
         /// </summary>
         private sealed class RuntimeFlowInstanceRegistrationBuilder : RegistrationBuilder
         {
-            private readonly object _instance;
+            private readonly RuntimeFlowInstanceProvider _provider;
 
-            public RuntimeFlowInstanceRegistrationBuilder(object instance)
-                : base(instance.GetType(), Lifetime.Singleton)
+            public RuntimeFlowInstanceRegistrationBuilder(Type implementationType, RuntimeFlowInstanceProvider provider)
+                : base(implementationType, Lifetime.Singleton)
             {
-                _instance = instance;
+                _provider = provider ?? throw new ArgumentNullException(nameof(provider));
             }
 
             public override Registration Build()
@@ -375,15 +503,34 @@ namespace RuntimeFlow.Contexts
                     ImplementationType,
                     Lifetime,
                     types,
-                    new RuntimeFlowInstanceProvider(_instance));
+                    _provider);
             }
         }
 
         private sealed class RuntimeFlowInstanceProvider : IInstanceProvider
         {
-            private readonly object _instance;
-            public RuntimeFlowInstanceProvider(object instance) => _instance = instance;
-            public object SpawnInstance(IObjectResolver resolver) => _instance;
+            private object? _instance;
+            private readonly string _implementationTypeName;
+
+            public RuntimeFlowInstanceProvider(object instance)
+            {
+                _instance = instance ?? throw new ArgumentNullException(nameof(instance));
+                var implementationType = instance.GetType();
+                _implementationTypeName = implementationType.FullName ?? implementationType.Name;
+            }
+
+            public object SpawnInstance(IObjectResolver resolver)
+            {
+                return _instance
+                    ?? throw new ObjectDisposedException(
+                        _implementationTypeName,
+                        $"Instance registration for '{_implementationTypeName}' was released when its RuntimeFlow scope was disposed.");
+            }
+
+            public void Release()
+            {
+                _instance = null;
+            }
         }
     }
 }

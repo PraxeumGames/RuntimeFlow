@@ -60,7 +60,7 @@ namespace RuntimeFlow.Contexts
             {
                 try
                 {
-                    await Pipeline.DisposeAsync();
+                    await Pipeline.DisposeAsync(CancellationTokenSource?.Token ?? CancellationToken.None);
                 }
                 catch (Exception ex)
                 {

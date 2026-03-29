@@ -55,7 +55,9 @@ namespace RuntimeFlow.Contexts
         public Task InitializeAsync(CancellationToken cancellationToken = default)
         {
             return ExecuteWithRecoveryAsync(
-                operation: (notifier, token) => _builder.BuildAsync(notifier, token),
+                operation: (notifier, token) => _builder.CanRestartSession()
+                    ? _builder.RestartSessionAsync(notifier, token)
+                    : _builder.BuildAsync(notifier, token),
                 retryAfterRecovery: false,
                 operationCode: RuntimeOperationCodes.Initialize,
                 loadingOperationKind: RuntimeLoadingOperationKind.Initialize,
@@ -152,6 +154,16 @@ namespace RuntimeFlow.Contexts
                 throw CreateScopeTypeNotDeclaredException(scopeType);
 
             await EvaluateGuardsAsync(RuntimeFlowGuardStage.BeforeScopeReload, scopeType, scope, cancellationToken).ConfigureAwait(false);
+            if (scope == GameContextType.Session)
+            {
+                await EvaluateGuardsAsync(
+                        RuntimeFlowGuardStage.BeforeSessionRestart,
+                        scopeKey: null,
+                        targetScopeType: GameContextType.Session,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
             await (scope switch
             {
                 GameContextType.Session => ExecuteWithRecoveryAsync(

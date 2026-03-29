@@ -18,12 +18,14 @@ namespace RuntimeFlow.Contexts
         private readonly RuntimeRetryPolicyOptions _retryPolicy;
         private readonly IRuntimeRetryObserver _retryObserver;
         private readonly IRuntimeLoadingProgressObserver _loadingProgressObserver;
+        private readonly bool _replayFlowOnSessionRestart;
         private readonly ILogger _logger;
         private readonly object _statusSync = new();
         private long _loadingOperationSequence;
         private IScopeTransitionHandler _transitionHandler = NullScopeTransitionHandler.Instance;
         private IReadOnlyList<IRuntimeFlowGuard>? _guards;
         private IRuntimeFlowScenario? _flow;
+        private IGameSceneLoader? _sceneLoader;
         private RuntimeStatus _status;
         private bool _disposed;
 
@@ -34,6 +36,7 @@ namespace RuntimeFlow.Contexts
             RuntimeRetryPolicyOptions retryPolicy,
             IRuntimeRetryObserver retryObserver,
             IRuntimeLoadingProgressObserver loadingProgressObserver,
+            bool replayFlowOnSessionRestart,
             ILogger logger)
         {
             _builder = builder;
@@ -42,6 +45,7 @@ namespace RuntimeFlow.Contexts
             _retryPolicy = retryPolicy ?? throw new ArgumentNullException(nameof(retryPolicy));
             _retryObserver = retryObserver ?? throw new ArgumentNullException(nameof(retryObserver));
             _loadingProgressObserver = loadingProgressObserver ?? throw new ArgumentNullException(nameof(loadingProgressObserver));
+            _replayFlowOnSessionRestart = replayFlowOnSessionRestart;
             _logger = logger;
             _status = new RuntimeStatus(
                 RuntimeExecutionState.ColdStart,
@@ -123,6 +127,7 @@ namespace RuntimeFlow.Contexts
                 options.RetryPolicy,
                 retryObserver,
                 loadingProgressObserver,
+                options.ReplayFlowOnSessionRestart,
                 logger);
         }
 
@@ -131,6 +136,8 @@ namespace RuntimeFlow.Contexts
             _flow = flow ?? throw new ArgumentNullException(nameof(flow));
             return this;
         }
+
+        public IGameContext SessionContext => _builder.GetSessionContext();
 
         public RuntimePipeline ConfigureTransitionHandler(IScopeTransitionHandler handler)
         {
@@ -443,6 +450,13 @@ namespace RuntimeFlow.Contexts
         {
             ThrowIfDisposed();
             _logger.LogInformation("Restarting session");
+            if (_replayFlowOnSessionRestart && _flow != null && _sceneLoader != null)
+            {
+                await EvaluateGuardsAsync(RuntimeFlowGuardStage.BeforeSessionRestart, null, GameContextType.Session, cancellationToken);
+                await RestartSessionByReplayingFlowAsync(progressNotifier, cancellationToken);
+                return;
+            }
+
             await EvaluateGuardsAsync(RuntimeFlowGuardStage.BeforeSessionRestart, null, GameContextType.Session, cancellationToken).ConfigureAwait(false);
             await ExecuteScopeOperationAsync(
                 RuntimeLoadingOperationKind.RestartSession,
@@ -468,6 +482,7 @@ namespace RuntimeFlow.Contexts
             if (sceneLoader == null) throw new ArgumentNullException(nameof(sceneLoader));
             if (_flow == null)
                 throw new FlowNotConfiguredException();
+            _sceneLoader = sceneLoader;
             _logger.LogInformation("Running flow scenario {ScenarioType}", _flow.GetType().Name);
             var operationId = CreateLoadingOperationId(RuntimeLoadingOperationKind.RunFlow);
 
@@ -548,6 +563,99 @@ namespace RuntimeFlow.Contexts
                     message: "Runtime flow failed.",
                     error: ex);
                 SetStatus(RuntimeExecutionState.Failed, operationCode: RuntimeOperationCodes.RunFlow, message: "Runtime flow failed.", error: ex);
+                throw;
+            }
+        }
+
+        private async Task RestartSessionByReplayingFlowAsync(
+            IInitializationProgressNotifier? progressNotifier,
+            CancellationToken cancellationToken)
+        {
+            var sceneLoader = _sceneLoader ?? throw new InvalidOperationException(
+                "Cannot replay flow for session restart before the pipeline has been run at least once.");
+            var flow = _flow ?? throw new FlowNotConfiguredException();
+            var operationId = CreateLoadingOperationId(RuntimeLoadingOperationKind.RestartSession);
+
+            SetStatus(RuntimeExecutionState.Recovering, operationCode: RuntimeOperationCodes.RestartSession, message: "Replaying runtime flow for session restart.");
+            PublishLoadingSnapshot(
+                operationId,
+                RuntimeLoadingOperationKind.RestartSession,
+                RuntimeLoadingOperationStage.Preparing,
+                RuntimeLoadingOperationState.Running,
+                percent: 0d,
+                currentStep: 0,
+                totalSteps: 1,
+                message: "Replaying runtime flow for session restart.");
+
+            _healthSupervisor.BeginRun();
+            var runner = new RuntimeFlowRunner(
+                _builder,
+                sceneLoader,
+                progressNotifier,
+                _loadingProgressObserver,
+                CreateLoadingOperationId,
+                _healthSupervisor,
+                _errorClassifier,
+                _retryPolicy,
+                _retryObserver,
+                _transitionHandler,
+                _guards,
+                OnRunnerStatusChanged);
+
+            try
+            {
+                await _builder.ExecuteOnMainThreadAsync(
+                        token => flow.ExecuteAsync(runner, token),
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                PublishLoadingSnapshot(
+                    operationId,
+                    RuntimeLoadingOperationKind.RestartSession,
+                    RuntimeLoadingOperationStage.Finalizing,
+                    RuntimeLoadingOperationState.Running,
+                    percent: 100d,
+                    currentStep: 1,
+                    totalSteps: 1,
+                    message: "Finalizing session restart.");
+                PublishLoadingSnapshot(
+                    operationId,
+                    RuntimeLoadingOperationKind.RestartSession,
+                    RuntimeLoadingOperationStage.Completed,
+                    RuntimeLoadingOperationState.Completed,
+                    percent: 100d,
+                    currentStep: 1,
+                    totalSteps: 1,
+                    message: "Session restarted.");
+                SetStatus(RuntimeExecutionState.Ready, operationCode: RuntimeOperationCodes.RestartSession, message: "Session restarted.");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                PublishLoadingSnapshot(
+                    operationId,
+                    RuntimeLoadingOperationKind.RestartSession,
+                    RuntimeLoadingOperationStage.Canceled,
+                    RuntimeLoadingOperationState.Canceled,
+                    percent: 0d,
+                    currentStep: 0,
+                    totalSteps: 1,
+                    message: "Session restart canceled by caller.");
+                SetStatus(RuntimeExecutionState.Degraded, operationCode: RuntimeOperationCodes.RestartSession, message: "Session restart canceled by caller.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Pipeline operation failed");
+                PublishLoadingSnapshot(
+                    operationId,
+                    RuntimeLoadingOperationKind.RestartSession,
+                    RuntimeLoadingOperationStage.Failed,
+                    RuntimeLoadingOperationState.Failed,
+                    percent: 0d,
+                    currentStep: 0,
+                    totalSteps: 1,
+                    message: "Session restart failed.",
+                    error: ex);
+                SetStatus(RuntimeExecutionState.Failed, operationCode: RuntimeOperationCodes.RestartSession, message: "Session restart failed.", error: ex);
                 throw;
             }
         }
@@ -725,14 +833,24 @@ namespace RuntimeFlow.Contexts
                     errorMessage: error?.Message));
         }
 
-        public async ValueTask DisposeAsync()
+        public ValueTask DisposeAsync()
+        {
+            return DisposeAsyncCore(CancellationToken.None);
+        }
+
+        internal async ValueTask DisposeAsync(CancellationToken cancellationToken)
+        {
+            await DisposeAsyncCore(cancellationToken).ConfigureAwait(false);
+        }
+
+        private async ValueTask DisposeAsyncCore(CancellationToken cancellationToken)
         {
             if (_disposed) return;
             _disposed = true;
 
             try
             {
-                await _builder.DisposeAllScopesAsync().ConfigureAwait(false);
+                await _builder.DisposeAllScopesAsync(cancellationToken).ConfigureAwait(false);
             }
             catch
             {

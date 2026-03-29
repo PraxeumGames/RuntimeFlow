@@ -1,3 +1,5 @@
+using System.Collections;
+using System.Reflection;
 using RuntimeFlow.Contexts;
 using VContainer;
 
@@ -46,5 +48,30 @@ public class LifetimePassthroughTests
         var second = context.Resolve<ILifetimeTestService>();
 
         Assert.Same(first, second);
+    }
+
+    [Fact]
+    public void RegisterInstance_ReleasesProviderWhenContextDisposed()
+    {
+        var context = new GameContext();
+        var instance = new TransientTestService();
+        context.RegisterInstance<ILifetimeTestService>(instance);
+        context.Initialize();
+
+        var resolver = context.Resolver;
+        var providers = (IList)typeof(GameContext)
+            .GetField("_instanceProviders", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .GetValue(context)!;
+        Assert.Single(providers);
+
+        var provider = providers[0]!;
+        var spawnMethod = provider.GetType().GetMethod(nameof(VContainer.IInstanceProvider.SpawnInstance))!;
+
+        Assert.Same(instance, spawnMethod.Invoke(provider, new object[] { resolver }));
+
+        context.Dispose();
+
+        var exception = Assert.Throws<TargetInvocationException>(() => spawnMethod.Invoke(provider, new object[] { resolver }));
+        Assert.IsType<ObjectDisposedException>(exception.InnerException);
     }
 }

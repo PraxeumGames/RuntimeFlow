@@ -13,5 +13,6 @@ namespace RuntimeFlow.Contexts
         public IRuntimeErrorClassifier? ErrorClassifier { get; set; }
         public IRuntimeRetryObserver? RetryObserver { get; set; }
         public IRuntimeLoadingProgressObserver? LoadingProgressObserver { get; set; }
+        public bool ReplayFlowOnSessionRestart { get; set; }
     }
 }
