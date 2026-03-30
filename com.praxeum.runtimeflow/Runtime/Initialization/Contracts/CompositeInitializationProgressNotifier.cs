@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace RuntimeFlow.Contexts
 {
@@ -43,6 +45,18 @@ namespace RuntimeFlow.Contexts
         {
             _first.OnServiceProgress(scope, serviceType, progress, message, completedServices, totalServices);
             _second.OnServiceProgress(scope, serviceType, progress, message, completedServices, totalServices);
+        }
+
+        public async Task OnGlobalContextReadyForSessionInitializationAsync(CancellationToken cancellationToken)
+        {
+            await _first.OnGlobalContextReadyForSessionInitializationAsync(cancellationToken).ConfigureAwait(false);
+            await _second.OnGlobalContextReadyForSessionInitializationAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public async Task OnSessionRestartTeardownCompletedAsync(CancellationToken cancellationToken)
+        {
+            await _first.OnSessionRestartTeardownCompletedAsync(cancellationToken).ConfigureAwait(false);
+            await _second.OnSessionRestartTeardownCompletedAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public void OnScopeActivationStarted(GameContextType scope, int currentStep, int totalSteps)

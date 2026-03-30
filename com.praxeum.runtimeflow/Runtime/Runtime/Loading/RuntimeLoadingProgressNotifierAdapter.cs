@@ -1,4 +1,6 @@
 using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace RuntimeFlow.Contexts
 {
@@ -117,6 +119,16 @@ namespace RuntimeFlow.Contexts
                 currentStep: (int)fractionalStep,
                 totalSteps: totalSteps,
                 message: message ?? $"Service '{serviceType.Name}' progress {(int)(progress * 100)}%.");
+        }
+
+        public Task OnGlobalContextReadyForSessionInitializationAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task OnSessionRestartTeardownCompletedAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
         }
 
         public void OnScopeActivationStarted(GameContextType scope, int currentStep, int totalSteps)

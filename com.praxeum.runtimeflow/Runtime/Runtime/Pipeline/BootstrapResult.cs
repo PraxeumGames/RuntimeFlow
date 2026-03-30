@@ -24,11 +24,36 @@ namespace RuntimeFlow.Contexts
         /// <summary>True after bootstrap has finished (regardless of outcome).</summary>
         public bool IsCompleted { get; private set; }
 
+        private WeakReference<IGameContext> _sessionContextReference;
+
         /// <summary>
         /// The session-scope game context. Available after successful bootstrap.
+        /// Stored weakly so BootstrapResult does not keep an old session graph alive across restarts.
         /// Use Resolve&lt;T&gt;() to access session-scoped services in tests.
         /// </summary>
-        public IGameContext SessionContext { get; set; }
+        public IGameContext SessionContext
+        {
+            get
+            {
+                if (_sessionContextReference != null
+                    && _sessionContextReference.TryGetTarget(out var sessionContext))
+                {
+                    return sessionContext;
+                }
+
+                try
+                {
+                    return Pipeline?.SessionContext;
+                }
+                catch (InvalidOperationException)
+                {
+                    return null;
+                }
+            }
+            set => _sessionContextReference = value == null
+                ? null
+                : new WeakReference<IGameContext>(value);
+        }
 
         private bool _disposed;
 
@@ -71,6 +96,7 @@ namespace RuntimeFlow.Contexts
             if (RootContainer is IDisposable disposable)
                 disposable.Dispose();
 
+            _sessionContextReference = null;
             CancellationTokenSource?.Dispose();
         }
 
@@ -100,6 +126,7 @@ namespace RuntimeFlow.Contexts
             if (RootContainer is IDisposable disposable)
                 disposable.Dispose();
 
+            _sessionContextReference = null;
             CancellationTokenSource?.Dispose();
         }
     }

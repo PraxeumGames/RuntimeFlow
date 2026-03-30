@@ -18,6 +18,7 @@ namespace RuntimeFlow.Contexts
         private readonly RuntimeRetryPolicyOptions _retryPolicy;
         private readonly IRuntimeRetryObserver _retryObserver;
         private readonly IRuntimeLoadingProgressObserver _loadingProgressObserver;
+        private readonly IInitializationProgressNotifier? _defaultProgressNotifier;
         private readonly bool _replayFlowOnSessionRestart;
         private readonly ILogger _logger;
         private readonly object _statusSync = new();
@@ -36,6 +37,7 @@ namespace RuntimeFlow.Contexts
             RuntimeRetryPolicyOptions retryPolicy,
             IRuntimeRetryObserver retryObserver,
             IRuntimeLoadingProgressObserver loadingProgressObserver,
+            IInitializationProgressNotifier? defaultProgressNotifier,
             bool replayFlowOnSessionRestart,
             ILogger logger)
         {
@@ -45,6 +47,7 @@ namespace RuntimeFlow.Contexts
             _retryPolicy = retryPolicy ?? throw new ArgumentNullException(nameof(retryPolicy));
             _retryObserver = retryObserver ?? throw new ArgumentNullException(nameof(retryObserver));
             _loadingProgressObserver = loadingProgressObserver ?? throw new ArgumentNullException(nameof(loadingProgressObserver));
+            _defaultProgressNotifier = defaultProgressNotifier;
             _replayFlowOnSessionRestart = replayFlowOnSessionRestart;
             _logger = logger;
             _status = new RuntimeStatus(
@@ -127,6 +130,7 @@ namespace RuntimeFlow.Contexts
                 options.RetryPolicy,
                 retryObserver,
                 loadingProgressObserver,
+                options.DefaultProgressNotifier,
                 options.ReplayFlowOnSessionRestart,
                 logger);
         }
@@ -453,7 +457,7 @@ namespace RuntimeFlow.Contexts
             if (_replayFlowOnSessionRestart && _flow != null && _sceneLoader != null)
             {
                 await EvaluateGuardsAsync(RuntimeFlowGuardStage.BeforeSessionRestart, null, GameContextType.Session, cancellationToken);
-                await RestartSessionByReplayingFlowAsync(progressNotifier, cancellationToken);
+                await RestartSessionByReplayingFlowAsync(progressNotifier ?? _defaultProgressNotifier, cancellationToken);
                 return;
             }
 
@@ -501,7 +505,7 @@ namespace RuntimeFlow.Contexts
             var runner = new RuntimeFlowRunner(
                 _builder,
                 sceneLoader,
-                progressNotifier,
+                progressNotifier ?? _defaultProgressNotifier,
                 _loadingProgressObserver,
                 CreateLoadingOperationId,
                 _healthSupervisor,
@@ -591,7 +595,7 @@ namespace RuntimeFlow.Contexts
             var runner = new RuntimeFlowRunner(
                 _builder,
                 sceneLoader,
-                progressNotifier,
+                progressNotifier ?? _defaultProgressNotifier,
                 _loadingProgressObserver,
                 CreateLoadingOperationId,
                 _healthSupervisor,
@@ -754,7 +758,7 @@ namespace RuntimeFlow.Contexts
             string operationId,
             bool splitOperationPerScope = false)
         {
-            var baseNotifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
+            var baseNotifier = progressNotifier ?? _defaultProgressNotifier ?? NullInitializationProgressNotifier.Instance;
             var loadingNotifier = new RuntimeLoadingProgressNotifierAdapter(
                 _loadingProgressObserver,
                 operationKind,

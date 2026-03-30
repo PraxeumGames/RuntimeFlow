@@ -90,6 +90,31 @@ namespace RuntimeFlow.Contexts
                 cancellationToken);
         }
 
+        private Task ExecuteStageCallbackOnMainThreadAsync(
+            Func<CancellationToken, Task> callback,
+            CancellationToken cancellationToken)
+        {
+            if (callback == null) throw new ArgumentNullException(nameof(callback));
+            return _executionScheduler.ExecuteAsync(
+                InitializationThreadAffinity.MainThread,
+                callback,
+                cancellationToken);
+        }
+
+        private Task DrainMainThreadFrameAsync(CancellationToken cancellationToken)
+        {
+            return _executionScheduler.ExecuteAsync(
+                InitializationThreadAffinity.MainThread,
+                async token =>
+                {
+                    token.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                    token.ThrowIfCancellationRequested();
+                    await Task.Yield();
+                },
+                cancellationToken);
+        }
+
         internal void UseExternalGlobalContext(IGameContext globalContext)
         {
             _globalContext = globalContext ?? throw new ArgumentNullException(nameof(globalContext));
@@ -1015,6 +1040,11 @@ namespace RuntimeFlow.Contexts
                 }
 
                 ThrowIfStaleGeneration(generation, cancellationToken);
+                await ExecuteStageCallbackOnMainThreadAsync(
+                        progressNotifier.OnGlobalContextReadyForSessionInitializationAsync,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                ThrowIfStaleGeneration(generation, cancellationToken);
                 _sessionEventBus = new ScopeEventBus(_globalEventBus);
                 sessionContext = await CreateAndInitializeScopeContextAsync(
                         GameContextType.Session,
@@ -1135,6 +1165,13 @@ namespace RuntimeFlow.Contexts
                 _sessionEventBus?.Dispose();
                 _sessionEventBus = null;
 
+                await DrainMainThreadFrameAsync(cancellationToken).ConfigureAwait(false);
+                ThrowIfStaleGeneration(generation, cancellationToken);
+                await ExecuteStageCallbackOnMainThreadAsync(
+                        progressNotifier.OnSessionRestartTeardownCompletedAsync,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+                ThrowIfStaleGeneration(generation, cancellationToken);
                 _sessionEventBus = new ScopeEventBus(_globalEventBus);
                 sessionContext = await CreateAndInitializeScopeContextAsync(
                         GameContextType.Session,
