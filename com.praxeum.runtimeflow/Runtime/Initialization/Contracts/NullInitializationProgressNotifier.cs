@@ -4,7 +4,7 @@ using System.Threading.Tasks;
 
 namespace RuntimeFlow.Contexts
 {
-    internal sealed class NullInitializationProgressNotifier : IInitializationProgressNotifier, IRuntimeScopeLifecycleProgressNotifier
+    public sealed class NullInitializationProgressNotifier : IInitializationProgressNotifier, IRuntimeScopeLifecycleProgressNotifier
     {
         public static readonly IInitializationProgressNotifier Instance = new NullInitializationProgressNotifier();
 

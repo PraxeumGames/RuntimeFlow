@@ -10,7 +10,11 @@ namespace RuntimeFlow.Contexts
     /// <summary>
     /// Orchestrates the full runtime lifecycle: bootstrap, flow execution, health monitoring, and teardown.
     /// </summary>
-    public sealed class RuntimePipeline : IAsyncDisposable
+    public sealed class RuntimePipeline :
+        IAsyncDisposable,
+        IRuntimePipelineStateProvider,
+        IRuntimeExecutionContextProvider,
+        IRuntimeRestartLifecycleManager
     {
         private readonly GameContextBuilder _builder;
         private readonly RuntimeHealthSupervisor _healthSupervisor;
@@ -28,6 +32,9 @@ namespace RuntimeFlow.Contexts
         private IRuntimeFlowScenario? _flow;
         private IGameSceneLoader? _sceneLoader;
         private RuntimeStatus _status;
+        private readonly RuntimeExecutionContextManager _executionContextManager;
+        private readonly RuntimeReadinessGate _restartReadinessGate;
+        private readonly RuntimeRestartLifecycleManager _restartLifecycleManager;
         private bool _disposed;
 
         private RuntimePipeline(
@@ -56,6 +63,25 @@ namespace RuntimeFlow.Contexts
                 currentOperationCode: RuntimeOperationCodes.ColdStart,
                 message: "Pipeline is created and not initialized yet.",
                 blockingReasonCode: RuntimeOperationCodes.ColdStart);
+            _executionContextManager = new RuntimeExecutionContextManager(
+                initialPhase: RuntimeExecutionPhase.Bootstrap,
+                initialState: _status.State,
+                currentOperationCode: _status.CurrentOperationCode,
+                initialIsReplay: RuntimeFlowReplayScope.IsActive,
+                timestampProvider: () => DateTimeOffset.UtcNow);
+            _restartReadinessGate = new RuntimeReadinessGate(
+                runtimeReadinessProvider: GetReadinessStatus,
+                executionContextProvider: () => _executionContextManager.GetExecutionContext(),
+                restartLifecycleSnapshotProvider: null,
+                timestampProvider: () => DateTimeOffset.UtcNow);
+            _restartLifecycleManager = new RuntimeRestartLifecycleManager(
+                restartOperation: (request, ct) => RestartSessionAsync(cancellationToken: ct),
+                replayOperation: null,
+                readinessGate: _restartReadinessGate,
+                guard: null,
+                executionContextProvider: _executionContextManager,
+                pipelineStateQuery: this,
+                timestampProvider: () => DateTimeOffset.UtcNow);
         }
 
         public static RuntimePipeline Create(
@@ -179,6 +205,34 @@ namespace RuntimeFlow.Contexts
                 currentOperationCode: status.CurrentOperationCode,
                 blockingReasonCode: status.BlockingReasonCode,
                 blockingReason: status.Message);
+        }
+
+        public RuntimeRestartReadiness GetRestartReadiness()
+        {
+            return _restartLifecycleManager.GetRestartReadiness();
+        }
+
+        public IRuntimeExecutionContext GetExecutionContext()
+        {
+            return _executionContextManager.GetExecutionContext();
+        }
+
+        RuntimeRestartLifecycleSnapshot IRuntimeRestartLifecycleManager.Snapshot => _restartLifecycleManager.Snapshot;
+
+        Task IRuntimeRestartLifecycleManager.RestartAsync(
+            RuntimeRestartRequest request,
+            CancellationToken cancellationToken)
+        {
+            return _restartLifecycleManager.RestartAsync(request, cancellationToken);
+        }
+
+        public Task RestartSessionAsync(
+            RuntimeRestartRequest request,
+            CancellationToken cancellationToken = default)
+        {
+            return _restartLifecycleManager.RestartAsync(
+                request ?? new RuntimeRestartRequest(),
+                cancellationToken);
         }
 
         public async Task<IGameContext> InitializeAsync(
@@ -608,10 +662,13 @@ namespace RuntimeFlow.Contexts
 
             try
             {
-                await _builder.ExecuteOnMainThreadAsync(
-                        token => flow.ExecuteAsync(runner, token),
-                        cancellationToken)
-                    .ConfigureAwait(false);
+                using (RuntimeFlowReplayScope.Enter())
+                {
+                    await _builder.ExecuteOnMainThreadAsync(
+                            token => flow.ExecuteAsync(runner, token),
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
                 PublishLoadingSnapshot(
                     operationId,
                     RuntimeLoadingOperationKind.RestartSession,
@@ -909,7 +966,44 @@ namespace RuntimeFlow.Contexts
                 lastErrorMessage: error?.Message);
 
             _status = status;
-            _status = status;
+            _executionContextManager.UpdateFromStatus(
+                DetermineExecutionPhase(state, operationCode),
+                status,
+                RuntimeFlowReplayScope.IsActive);
+        }
+
+        private static RuntimeExecutionPhase DetermineExecutionPhase(
+            RuntimeExecutionState state,
+            string? operationCode)
+        {
+            if (state == RuntimeExecutionState.Recovering)
+                return RuntimeExecutionPhase.Restart;
+
+            if (string.Equals(operationCode, RuntimeOperationCodes.RestartSession, StringComparison.Ordinal)
+                || string.Equals(operationCode, RuntimeOperationCodes.Recovery, StringComparison.Ordinal))
+            {
+                return RuntimeExecutionPhase.Restart;
+            }
+
+            if (string.Equals(operationCode, RuntimeOperationCodes.RunFlow, StringComparison.Ordinal)
+                || string.Equals(operationCode, RuntimeOperationCodes.LoadScene, StringComparison.Ordinal)
+                || string.Equals(operationCode, RuntimeOperationCodes.LoadModule, StringComparison.Ordinal)
+                || string.Equals(operationCode, RuntimeOperationCodes.ReloadScene, StringComparison.Ordinal)
+                || string.Equals(operationCode, RuntimeOperationCodes.ReloadModule, StringComparison.Ordinal))
+            {
+                return RuntimeExecutionPhase.Flow;
+            }
+
+            if (state == RuntimeExecutionState.ColdStart
+                || string.Equals(operationCode, RuntimeOperationCodes.ColdStart, StringComparison.Ordinal)
+                || string.Equals(operationCode, RuntimeOperationCodes.Initialize, StringComparison.Ordinal))
+            {
+                return RuntimeExecutionPhase.Bootstrap;
+            }
+
+            return RuntimeFlowReplayScope.IsActive
+                ? RuntimeExecutionPhase.Restart
+                : RuntimeExecutionPhase.Flow;
         }
 
         /// <summary>

@@ -13,6 +13,7 @@ namespace RuntimeFlow.Contexts
     public sealed class BootstrapResult : IDisposable, IAsyncDisposable
     {
         private readonly ILogger _logger;
+        private IRuntimeFlowPipelineProvider _pipelineProvider;
 
         public RuntimePipeline Pipeline { get; }
         public IObjectResolver RootContainer { get; }
@@ -57,18 +58,38 @@ namespace RuntimeFlow.Contexts
 
         private bool _disposed;
 
-        public BootstrapResult(RuntimePipeline pipeline, IObjectResolver rootContainer, CancellationTokenSource cts, ILogger logger = null)
+        public BootstrapResult(
+            RuntimePipeline pipeline,
+            IObjectResolver rootContainer,
+            CancellationTokenSource cts,
+            ILogger logger = null)
+            : this(pipeline, rootContainer, cts, logger, pipelineProvider: null)
+        {
+        }
+
+        public BootstrapResult(
+            RuntimePipeline pipeline,
+            IObjectResolver rootContainer,
+            CancellationTokenSource cts,
+            ILogger logger,
+            IRuntimeFlowPipelineProvider pipelineProvider)
         {
             Pipeline = pipeline;
             RootContainer = rootContainer;
             CancellationTokenSource = cts;
             _logger = logger;
+            _pipelineProvider = pipelineProvider;
         }
 
         public void MarkCompleted(bool success)
         {
             IsCompleted = true;
             IsSuccess = success;
+        }
+
+        public void BindPipelineProvider(IRuntimeFlowPipelineProvider pipelineProvider)
+        {
+            _pipelineProvider = pipelineProvider;
         }
 
         /// <summary>
@@ -80,6 +101,7 @@ namespace RuntimeFlow.Contexts
             _disposed = true;
 
             try { CancellationTokenSource?.Cancel(); } catch (ObjectDisposedException) { }
+            ClearCurrentPipelineProvider();
 
             if (Pipeline != null)
             {
@@ -110,6 +132,7 @@ namespace RuntimeFlow.Contexts
             _disposed = true;
 
             try { CancellationTokenSource?.Cancel(); } catch (ObjectDisposedException) { }
+            ClearCurrentPipelineProvider();
 
             if (Pipeline != null)
             {
@@ -128,6 +151,25 @@ namespace RuntimeFlow.Contexts
 
             _sessionContextReference = null;
             CancellationTokenSource?.Dispose();
+        }
+
+        private void ClearCurrentPipelineProvider()
+        {
+            var pipelineProvider = _pipelineProvider;
+            _pipelineProvider = null;
+            if (pipelineProvider == null || Pipeline == null)
+            {
+                return;
+            }
+
+            try
+            {
+                pipelineProvider.ClearCurrent(Pipeline);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error clearing current pipeline from provider.");
+            }
         }
     }
 }
