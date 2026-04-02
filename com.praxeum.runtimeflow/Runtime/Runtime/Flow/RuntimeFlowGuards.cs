@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -75,6 +76,61 @@ namespace RuntimeFlow.Contexts
         Task<RuntimeFlowGuardResult> EvaluateAsync(
             RuntimeFlowGuardContext context,
             CancellationToken cancellationToken = default);
+    }
+
+    public sealed class RuntimeSessionRestartPreparationContext
+    {
+        public RuntimeSessionRestartPreparationContext(RuntimeFlowGuardContext guardContext)
+        {
+            GuardContext = guardContext ?? throw new ArgumentNullException(nameof(guardContext));
+        }
+
+        public RuntimeFlowGuardContext GuardContext { get; }
+        public IRuntimeFlowContext? FlowContext => GuardContext.FlowContext;
+        public Type? ScopeKey => GuardContext.ScopeKey;
+        public GameContextType? TargetScopeType => GuardContext.TargetScopeType;
+    }
+
+    public interface IRuntimeSessionRestartPreparationHook
+    {
+        Task PrepareForSessionRestartAsync(
+            RuntimeSessionRestartPreparationContext context,
+            CancellationToken cancellationToken = default);
+    }
+
+    internal sealed class RuntimeSessionRestartPreparationGuardBridge : IRuntimeFlowGuard
+    {
+        private readonly IReadOnlyList<IRuntimeSessionRestartPreparationHook> _hooks;
+
+        public RuntimeSessionRestartPreparationGuardBridge(
+            IReadOnlyList<IRuntimeSessionRestartPreparationHook> hooks)
+        {
+            _hooks = hooks ?? throw new ArgumentNullException(nameof(hooks));
+        }
+
+        public async Task<RuntimeFlowGuardResult> EvaluateAsync(
+            RuntimeFlowGuardContext context,
+            CancellationToken cancellationToken = default)
+        {
+            if (context == null) throw new ArgumentNullException(nameof(context));
+            if (context.Stage != RuntimeFlowGuardStage.BeforeSessionRestart || _hooks.Count == 0)
+                return RuntimeFlowGuardResult.Allow();
+
+            var preparationContext = new RuntimeSessionRestartPreparationContext(context);
+            foreach (var hook in _hooks)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (hook == null)
+                {
+                    continue;
+                }
+
+                await hook.PrepareForSessionRestartAsync(preparationContext, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return RuntimeFlowGuardResult.Allow();
+        }
     }
 
     public sealed class RuntimeFlowGuardFailedException : InvalidOperationException

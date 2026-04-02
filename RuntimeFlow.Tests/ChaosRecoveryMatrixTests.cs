@@ -107,7 +107,7 @@ public sealed class ChaosRecoveryMatrixTests
         Assert.Equal(2, sceneService.Attempts);
         Assert.Contains(
             retryObserver.Decisions,
-            decision => decision.OperationCode == "load_scene_scope" && decision.WillRetry);
+            decision => decision.OperationCode == RuntimeOperationCodes.LoadSceneScope && decision.WillRetry);
     }
 
     [Fact]
@@ -256,7 +256,7 @@ public sealed class ChaosRecoveryMatrixTests
         Assert.Equal(2, sessionService.Attempts);
         Assert.Contains(
             retryObserver.Decisions,
-            decision => decision.OperationCode == "initialize" && decision.WillRetry);
+            decision => decision.OperationCode == RuntimeOperationCodes.Initialize && decision.WillRetry);
     }
 
     [Fact]

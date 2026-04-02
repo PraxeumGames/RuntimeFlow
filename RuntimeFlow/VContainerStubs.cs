@@ -34,6 +34,50 @@ namespace VContainer
     public static class ObjectResolverExtensions
     {
         public static T Resolve<T>(this IObjectResolver resolver) => (T)resolver.Resolve(typeof(T));
+
+        public static bool TryResolve<T>(this IObjectResolver resolver, out T instance)
+            where T : class
+        {
+            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+
+            if (resolver.TryResolve(typeof(T), out var raw) && raw is T typed)
+            {
+                instance = typed;
+                return true;
+            }
+
+            instance = null!;
+            return false;
+        }
+
+        public static bool TryGetRegistration(
+            this IObjectResolver resolver,
+            Type serviceType,
+            out Registration? registration)
+        {
+            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+
+            if (resolver is Container container)
+                return container.TryGetRegistration(serviceType, out registration);
+
+            registration = null;
+            return false;
+        }
+
+        public static object Resolve(this IObjectResolver resolver, Registration registration)
+        {
+            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            if (registration == null) throw new ArgumentNullException(nameof(registration));
+
+            foreach (var serviceType in registration.InterfaceTypes)
+            {
+                if (resolver.TryResolve(serviceType, out var resolved))
+                    return resolved;
+            }
+
+            return resolver.Resolve(registration.ImplementationType);
+        }
     }
 
     public interface IContainerBuilder
@@ -161,6 +205,7 @@ namespace VContainer
     {
         private readonly List<RegistrationBuilder> _builders = new();
         private readonly List<(Type serviceType, Type decoratorType)> _decorations = new();
+        private readonly List<Action<IObjectResolver>> _buildCallbacks = new();
 
         public RegistrationBuilder Register(Type type, Lifetime lifetime)
         {
@@ -185,7 +230,11 @@ namespace VContainer
             var registrations = new List<Registration>();
             foreach (var rb in _builders)
                 registrations.Add(rb.Build());
-            return new Container(registrations, _decorations);
+            var container = new Container(registrations, _decorations);
+            foreach (var callback in _buildCallbacks)
+                callback(container);
+
+            return container;
         }
 
         internal List<Registration> BuildRegistrations()
@@ -198,9 +247,15 @@ namespace VContainer
 
         internal List<(Type serviceType, Type decoratorType)> BuildDecorations() =>
             new List<(Type, Type)>(_decorations);
+
+        internal void AddBuildCallback(Action<IObjectResolver> callback)
+        {
+            if (callback == null) throw new ArgumentNullException(nameof(callback));
+            _buildCallbacks.Add(callback);
+        }
     }
 
-    internal sealed class Container : IObjectResolver
+    internal sealed class Container : IObjectResolver, VContainer.Unity.IScopedObjectResolver
     {
         private readonly Container? _parent;
         private readonly Dictionary<Type, Registration> _ownRegistrations = new();
@@ -242,6 +297,25 @@ namespace VContainer
                     _ownRegistrations[reg.ImplementationType] = reg;
                 }
             }
+        }
+
+        public IObjectResolver? Parent => _parent;
+
+        public bool TryGetRegistration(Type type, out Registration? registration)
+        {
+            if (type == null) throw new ArgumentNullException(nameof(type));
+
+            if (_ownRegistrations.TryGetValue(type, out var own))
+            {
+                registration = own;
+                return true;
+            }
+
+            if (_parent != null)
+                return _parent.TryGetRegistration(type, out registration);
+
+            registration = null;
+            return false;
         }
 
         public object Resolve(Type type)
@@ -357,6 +431,132 @@ namespace VContainer
                 }
                 _singletonCache.Clear();
             }
+        }
+    }
+
+    public static class ContainerBuilderExtensions
+    {
+        public static RegistrationBuilder Register<T>(this IContainerBuilder builder, Lifetime lifetime)
+        {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            return builder.Register(typeof(T), lifetime);
+        }
+
+        public static void RegisterBuildCallback(this IContainerBuilder builder, Action<IObjectResolver> callback)
+        {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            if (callback == null) throw new ArgumentNullException(nameof(callback));
+
+            if (builder is ContainerBuilder concreteBuilder)
+            {
+                concreteBuilder.AddBuildCallback(callback);
+                return;
+            }
+
+            throw new NotSupportedException(
+                $"Build callbacks are not supported for builder type '{builder.GetType().FullName}'.");
+        }
+
+        public static void RegisterInstance<T>(this IContainerBuilder builder, T instance)
+            where T : class
+        {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            if (instance == null) throw new ArgumentNullException(nameof(instance));
+
+            var registrationBuilder = new InstanceRegistrationBuilder(typeof(T), instance).As(typeof(T));
+            builder.Register(registrationBuilder);
+        }
+
+        public static void RegisterInstance(this IContainerBuilder builder, object instance)
+        {
+            if (builder == null) throw new ArgumentNullException(nameof(builder));
+            if (instance == null) throw new ArgumentNullException(nameof(instance));
+
+            var implementationType = instance.GetType();
+            var registrationBuilder = new InstanceRegistrationBuilder(implementationType, instance)
+                .As(implementationType);
+            builder.Register(registrationBuilder);
+        }
+
+        private sealed class InstanceRegistrationBuilder : RegistrationBuilder
+        {
+            private readonly object _instance;
+
+            public InstanceRegistrationBuilder(Type implementationType, object instance)
+                : base(implementationType, Lifetime.Singleton)
+            {
+                _instance = instance ?? throw new ArgumentNullException(nameof(instance));
+            }
+
+            public override Registration Build()
+            {
+                var types = InterfaceTypes.Count > 0
+                    ? (IReadOnlyList<Type>)InterfaceTypes.ToList()
+                    : new List<Type> { ImplementationType };
+
+                return new Registration(
+                    ImplementationType,
+                    Lifetime.Singleton,
+                    types,
+                    new FixedInstanceProvider(_instance));
+            }
+        }
+
+        private sealed class FixedInstanceProvider : IInstanceProvider
+        {
+            private readonly object _instance;
+
+            public FixedInstanceProvider(object instance)
+            {
+                _instance = instance ?? throw new ArgumentNullException(nameof(instance));
+            }
+
+            public object SpawnInstance(IObjectResolver resolver)
+            {
+                return _instance;
+            }
+        }
+    }
+}
+
+namespace VContainer.Unity
+{
+    using System;
+    using VContainer;
+
+    public interface IInitializable
+    {
+        void Initialize();
+    }
+
+    public interface IStartable
+    {
+        void Start();
+    }
+
+    public interface IScopedObjectResolver : IObjectResolver
+    {
+        IObjectResolver? Parent { get; }
+    }
+
+    public sealed class LifetimeScope
+    {
+        public IObjectResolver? Container { get; set; }
+    }
+}
+
+namespace UnityEngine
+{
+    public class Object
+    {
+    }
+
+    public class Component : Object
+    {
+        public T? GetComponentInChildren<T>(bool includeInactive = false)
+            where T : class
+        {
+            return default;
         }
     }
 }

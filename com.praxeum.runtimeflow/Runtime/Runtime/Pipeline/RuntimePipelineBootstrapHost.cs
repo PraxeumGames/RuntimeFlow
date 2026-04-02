@@ -6,11 +6,103 @@ using VContainer;
 
 namespace RuntimeFlow.Contexts
 {
+    public sealed class RuntimeFlowStartupBootstrapOptions
+    {
+        public IGameSceneLoader? SceneLoader { get; set; }
+        public RestartAwareSceneBootstrapScenarioOptions? ScenarioOptions { get; set; }
+        public Func<RestartAwareSceneBootstrapScenarioOptions, IRuntimeFlowScenario>? RestartAwareScenarioFactory { get; set; }
+        public Action<GameContextBuilder, IPreBootstrapStageService?>? ConfigureBuilder { get; set; }
+        public IEnumerable<IRuntimeFlowGuard>? Guards { get; set; }
+        public Action<RuntimePipelineOptions>? ConfigurePipelineOptions { get; set; }
+        public Microsoft.Extensions.Logging.ILoggerFactory? LoggerFactory { get; set; }
+        public IPreBootstrapStageService? PreBootstrapStageService { get; set; }
+        public Func<IPreBootstrapStageService>? PreBootstrapStageServiceFactory { get; set; }
+        public Action? OnPreBootstrapCompleted { get; set; }
+    }
+
     /// <summary>
     /// High-level bootstrap API for configuring and running RuntimePipeline with provider lifecycle handling.
     /// </summary>
     public static class RuntimePipelineBootstrapHost
     {
+        public static async Task<BootstrapResult> RunRestartAwareSceneBootstrapAsync(
+            RuntimeFlowStartupBootstrapOptions options,
+            CancellationToken cancellationToken = default)
+        {
+            if (options == null) throw new ArgumentNullException(nameof(options));
+            if (options.SceneLoader == null) throw new ArgumentException("Scene loader is required.", nameof(options));
+            if (options.ScenarioOptions == null) throw new ArgumentException("Scenario options are required.", nameof(options));
+            if (options.RestartAwareScenarioFactory == null)
+                throw new ArgumentException("Restart-aware scenario factory is required.", nameof(options));
+
+            var callbackContext = SynchronizationContext.Current;
+            var scenarioOptions = CloneRestartAwareSceneBootstrapOptions(options.ScenarioOptions);
+            var scenarioFactory = options.RestartAwareScenarioFactory;
+            var preBootstrapStageService = options.PreBootstrapStageService
+                ?? scenarioOptions.PreBootstrapStageService
+                ?? options.PreBootstrapStageServiceFactory?.Invoke();
+
+            if (preBootstrapStageService != null)
+            {
+                await preBootstrapStageService.EnsureCompletedAsync(cancellationToken).ConfigureAwait(false);
+                scenarioOptions.PreBootstrapStageService = preBootstrapStageService;
+                await InvokeOnCapturedContextAsync(
+                        options.OnPreBootstrapCompleted,
+                        callbackContext,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            return await RunAsync(
+                    configure: builder => options.ConfigureBuilder?.Invoke(builder, preBootstrapStageService),
+                    sceneLoader: options.SceneLoader,
+                    scenario: scenarioFactory(scenarioOptions),
+                    guards: options.Guards,
+                    configureOptions: options.ConfigurePipelineOptions,
+                    loggerFactory: options.LoggerFactory,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        private static Task InvokeOnCapturedContextAsync(
+            Action? callback,
+            SynchronizationContext? context,
+            CancellationToken cancellationToken)
+        {
+            if (callback == null)
+                return Task.CompletedTask;
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (context == null || SynchronizationContext.Current == context)
+            {
+                callback();
+                return Task.CompletedTask;
+            }
+
+            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            using var registration = cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
+            context.Post(_ =>
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    tcs.TrySetCanceled(cancellationToken);
+                    return;
+                }
+
+                try
+                {
+                    callback();
+                    tcs.TrySetResult(true);
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            }, null);
+
+            return tcs.Task;
+        }
+
         public static Task<BootstrapResult> RunAsync(
             Action<GameContextBuilder> configure,
             IGameSceneLoader sceneLoader,
@@ -91,6 +183,27 @@ namespace RuntimeFlow.Contexts
             return resolver.TryResolve<IRuntimeFlowPipelineProvider>(out var provider)
                 ? provider
                 : null;
+        }
+
+        private static RestartAwareSceneBootstrapScenarioOptions CloneRestartAwareSceneBootstrapOptions(
+            RestartAwareSceneBootstrapScenarioOptions source)
+        {
+            return new RestartAwareSceneBootstrapScenarioOptions
+            {
+                SceneName = source.SceneName,
+                PreBootstrapStageService = source.PreBootstrapStageService,
+                LoadingState = source.LoadingState,
+                ReplayReloadScopeType = source.ReplayReloadScopeType,
+                RunStageName = source.RunStageName,
+                PreBootstrapStageName = source.PreBootstrapStageName,
+                RunStartReasonCode = source.RunStartReasonCode,
+                ReplayRunStartReasonCode = source.ReplayRunStartReasonCode,
+                RunCompleteReasonCode = source.RunCompleteReasonCode,
+                RunFailReasonCode = source.RunFailReasonCode,
+                PreBootstrapReasonCodeResolver = source.PreBootstrapReasonCodeResolver,
+                PreBootstrapFailedReasonCodeFallback = source.PreBootstrapFailedReasonCodeFallback,
+                PreBootstrapFailedDiagnosticFallback = source.PreBootstrapFailedDiagnosticFallback
+            };
         }
     }
 }

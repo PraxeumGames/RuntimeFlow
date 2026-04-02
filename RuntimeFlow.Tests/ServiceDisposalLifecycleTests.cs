@@ -79,6 +79,30 @@ public sealed class ServiceDisposalLifecycleTests
         Assert.Equal(new[] { "dispose:scene" }, disposalCalls);
     }
 
+    [Fact]
+    public async Task LoadScene_WhenInitializationAndCleanupBothFail_AggregatesBothErrors()
+    {
+        var failingService = new FailingInitAndDisposeSceneService();
+        var pipeline = RuntimePipeline.Create(builder =>
+        {
+            builder.DefineSessionScope();
+            builder.Scene(new TestSceneScope(s => s.RegisterInstance<IFailingInitAndDisposeSceneService>(failingService)));
+        });
+
+        await pipeline.InitializeAsync();
+
+        var exception = await Assert.ThrowsAsync<AggregateException>(() => pipeline.LoadSceneAsync<TestSceneScope>());
+        Assert.Contains(
+            exception.InnerExceptions,
+            inner => inner is InvalidOperationException invalid
+                     && invalid.Message == "scene init failed");
+        Assert.Contains(
+            exception.InnerExceptions,
+            inner => inner is InvalidOperationException invalid
+                     && invalid.Message == "scene dispose failed");
+        Assert.Equal(RuntimeExecutionState.Failed, pipeline.GetRuntimeStatus().State);
+    }
+
     // --- Service contracts ---
     private interface IDisposableSessionServiceA : ISessionInitializableService, ISessionDisposableService { }
     private interface IDisposableSessionServiceB : ISessionInitializableService, ISessionDisposableService { }
@@ -86,6 +110,7 @@ public sealed class ServiceDisposalLifecycleTests
     private interface IDisposableSessionServiceOk : ISessionInitializableService, ISessionDisposableService { }
     private interface IDisposableSessionServiceFailing : ISessionInitializableService, ISessionDisposableService { }
     private interface IDisposableSceneService : ISceneInitializableService, ISceneDisposableService { }
+    private interface IFailingInitAndDisposeSceneService : ISceneInitializableService { }
 
     // --- Service implementations ---
     // C has no dependencies (initialized first)
@@ -141,5 +166,18 @@ public sealed class ServiceDisposalLifecycleTests
         public DisposableSceneService(List<string> calls) => _calls = calls;
         public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         public Task DisposeAsync(CancellationToken cancellationToken) { _calls.Add("dispose:scene"); return Task.CompletedTask; }
+    }
+
+    private sealed class FailingInitAndDisposeSceneService : IFailingInitAndDisposeSceneService, IDisposable
+    {
+        public Task InitializeAsync(CancellationToken cancellationToken)
+        {
+            throw new InvalidOperationException("scene init failed");
+        }
+
+        public void Dispose()
+        {
+            throw new InvalidOperationException("scene dispose failed");
+        }
     }
 }

@@ -32,7 +32,13 @@ namespace RuntimeFlow.Contexts
             out TService service)
             where TService : class
         {
-            return TryResolveFromContext(context?.SessionContext, out service);
+            if (context == null)
+            {
+                service = null;
+                return false;
+            }
+
+            return context.TryResolveSessionService(out service);
         }
 
         public static bool TryResolveFromContext<TService>(

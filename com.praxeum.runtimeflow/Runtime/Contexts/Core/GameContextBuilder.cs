@@ -685,10 +685,25 @@ namespace RuntimeFlow.Contexts
 
                 _preloadedContexts[sceneScopeKey] = preloadedContext;
             }
-            catch
+            catch (Exception ex)
             {
-                await DisposeContextAsync(preloadedContext, cancellationToken).ConfigureAwait(false);
-                preloadedContext = null;
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Scene,
+                                    preloadedContext,
+                                    cancellationToken,
+                                    sceneScopeKey)
+                                .ConfigureAwait(false);
+                            preloadedContext = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException("PreloadScene", ex, cleanupFailures);
+
                 throw;
             }
         }
@@ -740,10 +755,25 @@ namespace RuntimeFlow.Contexts
 
                 _preloadedContexts[moduleScopeKey] = preloadedContext;
             }
-            catch
+            catch (Exception ex)
             {
-                await DisposeContextAsync(preloadedContext, cancellationToken).ConfigureAwait(false);
-                preloadedContext = null;
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Module,
+                                    preloadedContext,
+                                    cancellationToken,
+                                    moduleScopeKey)
+                                .ConfigureAwait(false);
+                            preloadedContext = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException("PreloadModule", ex, cleanupFailures);
+
                 throw;
             }
         }
@@ -793,10 +823,25 @@ namespace RuntimeFlow.Contexts
 
                 _additiveModuleContexts[moduleScopeKey] = moduleContext;
             }
-            catch
+            catch (Exception ex)
             {
-                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
-                moduleContext = null;
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Module,
+                                    moduleContext,
+                                    cancellationToken,
+                                    moduleScopeKey)
+                                .ConfigureAwait(false);
+                            moduleContext = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException("LoadAdditiveModule", ex, cleanupFailures);
+
                 throw;
             }
         }
@@ -825,7 +870,10 @@ namespace RuntimeFlow.Contexts
             where TService : class
         {
             if (_sessionContext == null)
-                throw new InvalidOperationException("Session context is not initialized. Call BuildAsync first.");
+            {
+                service = null;
+                return false;
+            }
 
             if (!_sessionContext.IsRegistered(typeof(TService)))
             {
@@ -1067,20 +1115,65 @@ namespace RuntimeFlow.Contexts
                 _activeSceneScopeKey = activeSceneScopeKey;
                 _activeModuleScopeKey = activeModuleScopeKey;
             }
-            catch
+            catch (Exception ex)
             {
-                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
-                moduleContext = null;
-                await DisposeContextAsync(sceneContext, cancellationToken).ConfigureAwait(false);
-                sceneContext = null;
-                await DisposeContextAsync(sessionContext, cancellationToken).ConfigureAwait(false);
-                sessionContext = null;
-                if (_ownsGlobalContext)
-                {
-                    SetScopeStateIfTracked(GameContextType.Global, ScopeLifecycleState.Failed);
-                    await DisposeContextAsync(globalContext, cancellationToken).ConfigureAwait(false);
-                    globalContext = null;
-                }
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Module,
+                                    moduleContext,
+                                    cancellationToken,
+                                    activeModuleScopeKey)
+                                .ConfigureAwait(false);
+                            moduleContext = null;
+                        },
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Scene,
+                                    sceneContext,
+                                    cancellationToken,
+                                    activeSceneScopeKey)
+                                .ConfigureAwait(false);
+                            sceneContext = null;
+                        },
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Session,
+                                    sessionContext,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                            sessionContext = null;
+                        },
+                        async () =>
+                        {
+                            if (!_ownsGlobalContext)
+                                return;
+
+                            SetScopeStateIfTracked(GameContextType.Global, ScopeLifecycleState.Failed);
+                            if (globalContext is GameContext ownedGlobalContext)
+                            {
+                                await DisposeScopeContextAsync(
+                                        GameContextType.Global,
+                                        ownedGlobalContext,
+                                        cancellationToken)
+                                    .ConfigureAwait(false);
+                            }
+                            else
+                            {
+                                await DisposeContextAsync(globalContext, cancellationToken).ConfigureAwait(false);
+                            }
+
+                            globalContext = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException("BuildAsync", ex, cleanupFailures);
+
                 throw;
             }
         }
@@ -1230,14 +1323,44 @@ namespace RuntimeFlow.Contexts
                 _sceneContext = sceneContext;
                 _moduleContext = moduleContext;
             }
-            catch
+            catch (Exception ex)
             {
-                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
-                moduleContext = null;
-                await DisposeContextAsync(sceneContext, cancellationToken).ConfigureAwait(false);
-                sceneContext = null;
-                await DisposeContextAsync(sessionContext, cancellationToken).ConfigureAwait(false);
-                sessionContext = null;
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Module,
+                                    moduleContext,
+                                    cancellationToken,
+                                    _activeModuleScopeKey)
+                                .ConfigureAwait(false);
+                            moduleContext = null;
+                        },
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Scene,
+                                    sceneContext,
+                                    cancellationToken,
+                                    _activeSceneScopeKey)
+                                .ConfigureAwait(false);
+                            sceneContext = null;
+                        },
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Session,
+                                    sessionContext,
+                                    cancellationToken)
+                                .ConfigureAwait(false);
+                            sessionContext = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException("RestartSession", ex, cleanupFailures);
+
                 throw;
             }
         }
@@ -1321,10 +1444,25 @@ namespace RuntimeFlow.Contexts
                 _activeSceneScopeKey = sceneScopeKey;
                 _activeModuleScopeKey = null;
             }
-            catch
+            catch (Exception ex)
             {
-                await DisposeContextAsync(sceneContext, cancellationToken).ConfigureAwait(false);
-                sceneContext = null;
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Scene,
+                                    sceneContext,
+                                    cancellationToken,
+                                    sceneScopeKey)
+                                .ConfigureAwait(false);
+                            sceneContext = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException("LoadScene", ex, cleanupFailures);
+
                 throw;
             }
         }
@@ -1389,10 +1527,25 @@ namespace RuntimeFlow.Contexts
                 _moduleContext = moduleContext;
                 _activeModuleScopeKey = moduleScopeKey;
             }
-            catch
+            catch (Exception ex)
             {
-                await DisposeContextAsync(moduleContext, cancellationToken).ConfigureAwait(false);
-                moduleContext = null;
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(
+                                    GameContextType.Module,
+                                    moduleContext,
+                                    cancellationToken,
+                                    moduleScopeKey)
+                                .ConfigureAwait(false);
+                            moduleContext = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException("LoadModule", ex, cleanupFailures);
+
                 throw;
             }
         }
@@ -1424,7 +1577,7 @@ namespace RuntimeFlow.Contexts
             _logger.LogDebug("Building scope {Scope}", scope);
             SetScopeStateIfTracked(scope, ScopeLifecycleState.Loading, scopeKey);
             ThrowIfStaleGeneration(generation, cancellationToken);
-            GameContext context;
+            GameContext? context = null;
             var scopeStopwatch = Stopwatch.StartNew();
             try
             {
@@ -1441,9 +1594,22 @@ namespace RuntimeFlow.Contexts
                 scopeStopwatch.Stop();
                 _logger.LogInformation("Scope {Scope} initialized ({ServiceCount} services, {Duration}s)", scope, totalServices, scopeStopwatch.Elapsed.TotalSeconds.ToString("F2"));
             }
-            catch
+            catch (Exception ex)
             {
                 SetScopeStateIfTracked(scope, ScopeLifecycleState.Failed, scopeKey);
+
+                var cleanupFailures = await CaptureCleanupFailuresAsync(
+                        cancellationToken,
+                        async () =>
+                        {
+                            await DisposeScopeContextAsync(scope, context, cancellationToken, scopeKey).ConfigureAwait(false);
+                            context = null;
+                        })
+                    .ConfigureAwait(false);
+
+                if (cleanupFailures.Count > 0)
+                    throw CreateCleanupAggregateException($"Initialize {scope} scope", ex, cleanupFailures);
+
                 throw;
             }
 
@@ -1718,18 +1884,19 @@ namespace RuntimeFlow.Contexts
             _scopeInitializationOrder.TryGetValue(key, out var initOrder);
 
             var exceptions = (List<Exception>?)null;
+            var disposedTargets = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
             for (var i = (initOrder?.Count ?? 0) - 1; i >= 0; i--)
             {
                 try
                 {
                     var serviceType = initOrder![i];
-                    if (context.TryGetRegisteredInstance(serviceType, out _))
+                    var resolved = context.Resolve(serviceType);
+                    if (!disposedTargets.Add(resolved))
                     {
                         continue;
                     }
 
-                    var resolved = context.Resolve(serviceType);
                     var affinity = resolved is IInitializationThreadAffinityProvider affinityProvider
                         ? affinityProvider.ThreadAffinity
                         : InitializationThreadAffinity.MainThread;
@@ -1779,6 +1946,106 @@ namespace RuntimeFlow.Contexts
 
             if (exceptions != null)
                 throw new AggregateException(exceptions);
+        }
+
+        private async Task<List<Exception>> CaptureCleanupFailuresAsync(
+            CancellationToken cancellationToken,
+            params Func<Task>[] cleanupOperations)
+        {
+            var failures = new List<Exception>();
+            foreach (var cleanupOperation in cleanupOperations)
+            {
+                if (cleanupOperation == null)
+                    continue;
+
+                try
+                {
+                    await cleanupOperation().ConfigureAwait(false);
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                }
+                catch (AggregateException aggregateException)
+                {
+                    var filteredAggregate = FilterCancellationFailures(aggregateException, cancellationToken.IsCancellationRequested);
+                    if (filteredAggregate != null)
+                    {
+                        failures.Add(filteredAggregate);
+                    }
+                }
+                catch (Exception cleanupException)
+                {
+                    if (cancellationToken.IsCancellationRequested && IsCancellationFailure(cleanupException))
+                        continue;
+
+                    failures.Add(cleanupException);
+                }
+            }
+
+            return failures;
+        }
+
+        private static Exception? FilterCancellationFailures(Exception exception, bool cancellationRequested)
+        {
+            if (!cancellationRequested)
+                return exception;
+
+            if (exception is not AggregateException aggregateException)
+                return IsCancellationFailure(exception) ? null : exception;
+
+            var nonCancellationFailures = aggregateException
+                .Flatten()
+                .InnerExceptions
+                .Where(inner => !IsCancellationFailure(inner))
+                .ToArray();
+
+            return nonCancellationFailures.Length == 0
+                ? null
+                : new AggregateException(nonCancellationFailures);
+        }
+
+        private static bool IsCancellationFailure(Exception exception)
+        {
+            if (exception is OperationCanceledException)
+                return true;
+
+            if (exception is AggregateException aggregateException)
+            {
+                var flattened = aggregateException.Flatten().InnerExceptions;
+                return flattened.Count > 0 && flattened.All(IsCancellationFailure);
+            }
+
+            return false;
+        }
+
+        private static AggregateException CreateCleanupAggregateException(
+            string operationName,
+            Exception operationException,
+            IReadOnlyCollection<Exception> cleanupFailures)
+        {
+            if (operationException == null) throw new ArgumentNullException(nameof(operationException));
+            if (cleanupFailures == null || cleanupFailures.Count == 0)
+                throw new ArgumentException("Cleanup failures are required.", nameof(cleanupFailures));
+
+            var exceptions = new List<Exception>(cleanupFailures.Count + 1)
+            {
+                operationException
+            };
+
+            foreach (var cleanupFailure in cleanupFailures)
+            {
+                if (cleanupFailure is AggregateException aggregateCleanupFailure)
+                {
+                    exceptions.AddRange(aggregateCleanupFailure.Flatten().InnerExceptions);
+                    continue;
+                }
+
+                exceptions.Add(cleanupFailure);
+            }
+
+            return new AggregateException(
+                $"{operationName} failed and cleanup encountered additional errors.",
+                exceptions);
         }
 
         private sealed class ReferenceEqualityComparer : IEqualityComparer<object>

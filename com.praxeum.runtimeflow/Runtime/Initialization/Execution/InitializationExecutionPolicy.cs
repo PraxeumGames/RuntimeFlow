@@ -42,8 +42,14 @@ namespace RuntimeFlow.Contexts
                 var ctx = GameContext.MainThreadContext;
                 if (ctx == null)
                 {
-                    throw new InvalidOperationException(
-                        "Main-thread execution was requested, but RuntimeFlow main-thread SynchronizationContext is unavailable.");
+                    await operation(cancellationToken).ConfigureAwait(false);
+                    return;
+                }
+
+                if (GameContext.IsOnMainThread())
+                {
+                    await operation(cancellationToken).ConfigureAwait(false);
+                    return;
                 }
 
                 var tcs = new TaskCompletionSource<bool>();

@@ -21,6 +21,12 @@ namespace RuntimeFlow.Contexts
                    && serviceType != typeof(ISessionInitializableService)
                    && serviceType != typeof(ISceneInitializableService)
                    && serviceType != typeof(IModuleInitializableService)
+                   && serviceType != typeof(IStartupStageInitializableService)
+                   && serviceType != typeof(IPreBootstrapStartupInitializableService)
+                   && serviceType != typeof(IPlatformStartupInitializableService)
+                   && serviceType != typeof(IContentStartupInitializableService)
+                   && serviceType != typeof(ISessionStartupInitializableService)
+                   && serviceType != typeof(IUiStartupInitializableService)
                    && serviceType != typeof(IAsyncInitializableService)
                    && serviceType.IsInterface
                    && typeof(IAsyncInitializableService).IsAssignableFrom(serviceType);
@@ -38,6 +44,12 @@ namespace RuntimeFlow.Contexts
                    && serviceType != typeof(ISessionInitializableService)
                    && serviceType != typeof(ISceneInitializableService)
                    && serviceType != typeof(IModuleInitializableService)
+                   && serviceType != typeof(IStartupStageInitializableService)
+                   && serviceType != typeof(IPreBootstrapStartupInitializableService)
+                   && serviceType != typeof(IPlatformStartupInitializableService)
+                   && serviceType != typeof(IContentStartupInitializableService)
+                   && serviceType != typeof(ISessionStartupInitializableService)
+                   && serviceType != typeof(IUiStartupInitializableService)
                    && serviceType != typeof(IAsyncInitializableService)
                    && typeof(IAsyncInitializableService).IsAssignableFrom(serviceType);
         }

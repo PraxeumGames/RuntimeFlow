@@ -126,7 +126,7 @@ public class MyFlowScenario : IRuntimeFlowScenario
         IRuntimeFlowContext context, CancellationToken cancellationToken)
     {
         await context.InitializeAsync(cancellationToken);
-        await context.LoadScopeSceneAsync<MySceneScope>(cancellationToken);
+        await context.LoadScopeSceneAsync<GameplayScene>(cancellationToken);
     }
 }
 ```
@@ -141,7 +141,7 @@ Global (0)  →  Session (1)  →  Scene (2)  →  Module (3)
 
 Each scope gets its own `IGameContext` wrapping a VContainer `IObjectResolver`. Services in a scope may depend only on services from the same or an earlier (wider) scope — this rule is enforced at compile time.
 
-Scopes are identified by empty marker classes (e.g., `sealed class MySceneScope { }`), which serve as type-safe keys for registration and lookup.
+Scene and module scopes are defined as **installer classes** that implement `ISceneScope` or `IModuleScope`. These classes configure their own DI registrations, giving them a concrete purpose beyond being type keys. Global and Session scopes use built-in types and are configured inline.
 
 ### Service Lifecycle
 

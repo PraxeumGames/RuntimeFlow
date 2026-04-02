@@ -144,6 +144,16 @@ public sealed class SubServiceProgressTests
         {
             ServiceProgressCalls.Add(new ServiceProgressCall(scope, serviceType, progress, message, completedServices, totalServices));
         }
+
+        public Task OnGlobalContextReadyForSessionInitializationAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
+
+        public Task OnSessionRestartTeardownCompletedAsync(CancellationToken cancellationToken)
+        {
+            return Task.CompletedTask;
+        }
     }
 
     private record ServiceProgressCall(

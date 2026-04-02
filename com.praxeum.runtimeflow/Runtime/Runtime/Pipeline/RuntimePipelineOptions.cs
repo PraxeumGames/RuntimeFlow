@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace RuntimeFlow.Contexts
 {
@@ -15,5 +16,6 @@ namespace RuntimeFlow.Contexts
         public IRuntimeLoadingProgressObserver? LoadingProgressObserver { get; set; }
         public IInitializationProgressNotifier? DefaultProgressNotifier { get; set; }
         public bool ReplayFlowOnSessionRestart { get; set; }
+        public IReadOnlyList<IRuntimeSessionRestartPreparationHook>? SessionRestartPreparationHooks { get; set; }
     }
 }
