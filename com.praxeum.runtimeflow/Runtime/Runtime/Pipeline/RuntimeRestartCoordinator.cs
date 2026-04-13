@@ -73,7 +73,8 @@ namespace RuntimeFlow.Contexts
             RuntimeRestartRequest restartRequest,
             TimeSpan readinessTimeout,
             TimeSpan? readinessPollInterval = null,
-            Func<CancellationToken, Task> onBeforeRestartAsync = null)
+            Func<CancellationToken, Task> onBeforeRestartAsync = null,
+            CancellationToken cancellationToken = default)
         {
             if (restartRequest == null)
                 throw new ArgumentNullException(nameof(restartRequest));
@@ -86,12 +87,14 @@ namespace RuntimeFlow.Contexts
             ReadinessTimeout = readinessTimeout;
             ReadinessPollInterval = readinessPollInterval;
             OnBeforeRestartAsync = onBeforeRestartAsync;
+            CancellationToken = cancellationToken;
         }
 
         public RuntimeRestartRequest RestartRequest { get; }
         public TimeSpan ReadinessTimeout { get; }
         public TimeSpan? ReadinessPollInterval { get; }
         public Func<CancellationToken, Task> OnBeforeRestartAsync { get; }
+        public CancellationToken CancellationToken { get; }
     }
 
     public sealed class RuntimeRestartExecutionResult
@@ -318,6 +321,7 @@ namespace RuntimeFlow.Contexts
         {
             IRuntimeReadinessGate readinessGate = null;
             var readinessWaitCompleted = false;
+            var cancellationToken = request.CancellationToken;
 
             try
             {
@@ -328,7 +332,7 @@ namespace RuntimeFlow.Contexts
                         .WaitUntilReadyAsync(
                             request.ReadinessTimeout,
                             request.ReadinessPollInterval,
-                            CancellationToken.None)
+                            cancellationToken)
                         .ConfigureAwait(false);
                 }
 
@@ -342,15 +346,15 @@ namespace RuntimeFlow.Contexts
 
                 if (request.OnBeforeRestartAsync != null)
                 {
-                    await request.OnBeforeRestartAsync(CancellationToken.None).ConfigureAwait(false);
+                    await request.OnBeforeRestartAsync(cancellationToken).ConfigureAwait(false);
                 }
 
                 await restartLifecycleManager
-                    .RestartAsync(request.RestartRequest, CancellationToken.None)
+                    .RestartAsync(request.RestartRequest, cancellationToken)
                     .ConfigureAwait(false);
                 return RuntimeRestartExecutionResult.Completed(request.RestartRequest);
             }
-            catch (OperationCanceledException) when (!readinessWaitCompleted)
+            catch (OperationCanceledException) when (!readinessWaitCompleted && !cancellationToken.IsCancellationRequested)
             {
                 return RuntimeRestartExecutionResult.TimedOut(
                     request.RestartRequest,

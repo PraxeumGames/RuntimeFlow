@@ -111,10 +111,57 @@ public sealed class SessionSyncEntryPointsStageOrchestrationTests
         }
     }
 
+    [Fact]
+    public async Task SessionSyncEntryPoints_SkipsManagedDualInitializable_FromInitializablePass()
+    {
+        var (rootResolver, scopeResolver) = CreateResolver(
+            registerServices: builder =>
+            {
+                builder.Register<ExecutionRecorder>(Lifetime.Singleton).As<IExecutionRecorder>();
+                builder.Register<ManagedDualInitializable>(Lifetime.Singleton)
+                    .As<IManagedDualTag>()
+                    .As<IInitializable>()
+                    .As<ISessionInitializableService>();
+                builder.Register<PlainInitializable>(Lifetime.Singleton)
+                    .As<IPlainTag>()
+                    .As<IInitializable>();
+            },
+            getInitializableRegistrations: root => new[]
+            {
+                GetRegistration<IManagedDualTag>(root),
+                GetRegistration<IPlainTag>(root)
+            });
+
+        try
+        {
+            var service = new RuntimeFlowSessionSyncEntryPointsInitializationService(
+                scopeResolver,
+                CreateManagedSessionMarkerEntryPointSettings());
+            await service.InitializeAsync(CancellationToken.None);
+
+            var recorder = scopeResolver.Resolve<IExecutionRecorder>();
+            Assert.Equal(new[] { "plain" }, recorder.Events);
+        }
+        finally
+        {
+            scopeResolver.Dispose();
+            rootResolver.Dispose();
+        }
+    }
+
     private static RuntimeFlowVContainerEntryPointsSettings CreateUnmanagedEntryPointSettings()
     {
         return new RuntimeFlowVContainerEntryPointsSettings(
             Array.Empty<Type>(),
+            Array.Empty<Type>(),
+            Array.Empty<Type>(),
+            null);
+    }
+
+    private static RuntimeFlowVContainerEntryPointsSettings CreateManagedSessionMarkerEntryPointSettings()
+    {
+        return new RuntimeFlowVContainerEntryPointsSettings(
+            new[] { typeof(ISessionInitializableService) },
             Array.Empty<Type>(),
             Array.Empty<Type>(),
             null);
@@ -223,6 +270,8 @@ public sealed class SessionSyncEntryPointsStageOrchestrationTests
     private interface INonStagedTag { }
     private interface IDuplicateTagA { }
     private interface IDuplicateTagB { }
+    private interface IManagedDualTag { }
+    private interface IPlainTag { }
 
     private sealed class PreBootstrapStageInitializable :
         IInitializable,
@@ -316,5 +365,28 @@ public sealed class SessionSyncEntryPointsStageOrchestrationTests
         public void Initialize() => _recorder.Record("duplicate");
 
         public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class ManagedDualInitializable :
+        IInitializable,
+        ISessionInitializableService,
+        IManagedDualTag
+    {
+        private readonly IExecutionRecorder _recorder;
+
+        public ManagedDualInitializable(IExecutionRecorder recorder) => _recorder = recorder;
+
+        public void Initialize() => _recorder.Record("managed-dual");
+
+        public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+    }
+
+    private sealed class PlainInitializable : IInitializable, IPlainTag
+    {
+        private readonly IExecutionRecorder _recorder;
+
+        public PlainInitializable(IExecutionRecorder recorder) => _recorder = recorder;
+
+        public void Initialize() => _recorder.Record("plain");
     }
 }

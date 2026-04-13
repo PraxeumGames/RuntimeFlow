@@ -489,43 +489,9 @@ public sealed class RuntimeScopeReloadApiTests
         {
             var operationKind = operationSnapshots[0].OperationKind;
             Assert.All(operationSnapshots, snapshot => Assert.Equal(operationKind, snapshot.OperationKind));
-            AssertOperationIdPrefix(operationKind, operationSnapshots[0].OperationId);
+            RuntimeLoadingProgressAssertions.AssertOperationIdPrefix(operationKind, operationSnapshots[0].OperationId);
 
-            Assert.Equal(RuntimeLoadingOperationStage.Preparing, operationSnapshots[0].Stage);
-
-            var completedSnapshot = operationSnapshots[operationSnapshots.Length - 1];
-            Assert.Equal(RuntimeLoadingOperationStage.Completed, completedSnapshot.Stage);
-            Assert.Equal(RuntimeLoadingOperationState.Completed, completedSnapshot.State);
-            Assert.Equal(100d, completedSnapshot.Percent);
-
-            for (var index = 1; index < operationSnapshots.Length; index++)
-            {
-                Assert.True((int)operationSnapshots[index].Stage >= (int)operationSnapshots[index - 1].Stage);
-                Assert.True(operationSnapshots[index].Percent >= operationSnapshots[index - 1].Percent);
-            }
-        }
-    }
-
-    private static void AssertOperationIdPrefix(RuntimeLoadingOperationKind operationKind, string operationId)
-    {
-        var expectedPrefix = operationKind switch
-        {
-            RuntimeLoadingOperationKind.RestartSession => "restart_session-",
-            RuntimeLoadingOperationKind.ReloadScene => "reload_scene-",
-            RuntimeLoadingOperationKind.ReloadModule => "reload_module-",
-            _ => throw new ArgumentOutOfRangeException(nameof(operationKind), operationKind, "Unsupported operation kind.")
-        };
-
-        Assert.StartsWith(expectedPrefix, operationId, StringComparison.Ordinal);
-    }
-
-    private sealed class CollectingRuntimeLoadingProgressObserver : IRuntimeLoadingProgressObserver
-    {
-        public List<RuntimeLoadingOperationSnapshot> Snapshots { get; } = new();
-
-        public void OnLoadingProgress(RuntimeLoadingOperationSnapshot snapshot)
-        {
-            Snapshots.Add(snapshot);
+            RuntimeLoadingProgressAssertions.AssertProgression(operationSnapshots);
         }
     }
 

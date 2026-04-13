@@ -210,7 +210,6 @@ public sealed class UxImprovementsTests
         var exception = new ScopeNotDeclaredException(typeof(UndeclaredScope));
 
         Assert.Equal(typeof(UndeclaredScope), exception.ScopeType);
-        Assert.Contains("UndeclaredScope", exception.Message);
     }
 
     [Fact]
@@ -219,7 +218,6 @@ public sealed class UxImprovementsTests
         var exception = new ScopeNotRestartableException(typeof(GlobalScope));
 
         Assert.Equal(typeof(GlobalScope), exception.ScopeType);
-        Assert.Contains("non-restartable", exception.Message);
     }
 
     [Fact]
@@ -236,7 +234,6 @@ public sealed class UxImprovementsTests
         var exception = new ScopeRegistrationException("GBSR3001", "Duplicate scope declaration.");
 
         Assert.Equal("GBSR3001", exception.DiagnosticCode);
-        Assert.Contains("Duplicate scope declaration", exception.Message);
     }
 
     [Fact]

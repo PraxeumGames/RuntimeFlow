@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using RuntimeFlow.Contexts;
 using Xunit;
@@ -80,13 +79,7 @@ public sealed class RuntimeLoadingProgressNotifierAdapterTests
         adapter.OnScopeCompleted(GameContextType.Module, totalServices: 3);
 
         var percents = observer.Snapshots.Select(snapshot => snapshot.Percent).ToArray();
-        for (var index = 1; index < percents.Length; index++)
-        {
-            Assert.True(
-                percents[index] >= percents[index - 1],
-                $"Percent at {index} ({percents[index]}) is less than previous percent ({percents[index - 1]}).");
-        }
-
+        RuntimeLoadingProgressAssertions.AssertMonotonicPercent(observer.Snapshots);
         Assert.Equal(100d, percents[percents.Length - 1]);
     }
 
@@ -158,16 +151,6 @@ public sealed class RuntimeLoadingProgressNotifierAdapterTests
                 Assert.Equal(RuntimeLoadingOperationState.Completed, scopeCompleted.State);
                 Assert.Equal(100d, scopeCompleted.Percent);
             });
-    }
-
-    private sealed class CollectingRuntimeLoadingProgressObserver : IRuntimeLoadingProgressObserver
-    {
-        public List<RuntimeLoadingOperationSnapshot> Snapshots { get; } = new();
-
-        public void OnLoadingProgress(RuntimeLoadingOperationSnapshot snapshot)
-        {
-            Snapshots.Add(snapshot);
-        }
     }
 
     private sealed class ServiceA;

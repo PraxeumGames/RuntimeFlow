@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -57,11 +56,15 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
             .Single(group => group.All(snapshot => snapshot.OperationKind == RuntimeLoadingOperationKind.ReloadModule))
             .ToArray();
 
-        Assert.StartsWith("load_module-", loadModuleSnapshots[0].OperationId, StringComparison.Ordinal);
-        Assert.StartsWith("reload_module-", reloadModuleSnapshots[0].OperationId, StringComparison.Ordinal);
+        RuntimeLoadingProgressAssertions.AssertOperationIdPrefix(
+            RuntimeLoadingOperationKind.LoadModule,
+            loadModuleSnapshots[0].OperationId);
+        RuntimeLoadingProgressAssertions.AssertOperationIdPrefix(
+            RuntimeLoadingOperationKind.ReloadModule,
+            reloadModuleSnapshots[0].OperationId);
 
-        AssertProgressProgression(loadModuleSnapshots);
-        AssertProgressProgression(reloadModuleSnapshots);
+        RuntimeLoadingProgressAssertions.AssertProgression(loadModuleSnapshots);
+        RuntimeLoadingProgressAssertions.AssertProgression(reloadModuleSnapshots);
     }
 
     [Fact]
@@ -99,7 +102,7 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         foreach (var snapshots in groupedByOperation.Select(group => group.ToArray()))
         {
             Assert.True(snapshots.Length >= 6);
-            AssertProgressProgression(snapshots);
+            RuntimeLoadingProgressAssertions.AssertProgression(snapshots);
         }
     }
 
@@ -137,31 +140,7 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         Assert.Contains(
             reloadSnapshots,
             snapshot => snapshot.Message?.Contains("activation", StringComparison.OrdinalIgnoreCase) == true);
-        AssertProgressProgression(reloadSnapshots);
-    }
-
-    private static void AssertProgressProgression(IReadOnlyList<RuntimeLoadingOperationSnapshot> snapshots)
-    {
-        Assert.NotEmpty(snapshots);
-        Assert.Equal(RuntimeLoadingOperationStage.Preparing, snapshots[0].Stage);
-        Assert.Equal(RuntimeLoadingOperationStage.Completed, snapshots[snapshots.Count - 1].Stage);
-        Assert.Equal(100d, snapshots[snapshots.Count - 1].Percent);
-
-        for (var index = 1; index < snapshots.Count; index++)
-        {
-            Assert.True((int)snapshots[index].Stage >= (int)snapshots[index - 1].Stage);
-            Assert.True(snapshots[index].Percent >= snapshots[index - 1].Percent);
-        }
-    }
-
-    private sealed class CollectingRuntimeLoadingProgressObserver : IRuntimeLoadingProgressObserver
-    {
-        public List<RuntimeLoadingOperationSnapshot> Snapshots { get; } = new();
-
-        public void OnLoadingProgress(RuntimeLoadingOperationSnapshot snapshot)
-        {
-            Snapshots.Add(snapshot);
-        }
+        RuntimeLoadingProgressAssertions.AssertProgression(reloadSnapshots);
     }
 
     private interface IFlowSceneService : ISceneInitializableService;

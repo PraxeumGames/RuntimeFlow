@@ -124,8 +124,8 @@ public sealed class SceneLoaderProgressBridgeTests
                 Assert.Equal(75d, sceneLoading.Percent);
             });
 
-        AssertMonotonicProgress(fallbackSnapshots);
-        AssertMonotonicProgress(passThroughSnapshots);
+        RuntimeLoadingProgressAssertions.AssertMonotonicStageAndPercent(fallbackSnapshots);
+        RuntimeLoadingProgressAssertions.AssertMonotonicStageAndPercent(passThroughSnapshots);
     }
 
     private static Task LoadAsync(
@@ -137,26 +137,6 @@ public sealed class SceneLoaderProgressBridgeTests
         return isAdditive
             ? loader.LoadSceneAdditiveAsync(sceneName, progressCallback, CancellationToken.None)
             : loader.LoadSceneSingleAsync(sceneName, progressCallback, CancellationToken.None);
-    }
-
-    private static void AssertMonotonicProgress(IReadOnlyList<RuntimeLoadingOperationSnapshot> snapshots)
-    {
-        Assert.NotEmpty(snapshots);
-        for (var index = 1; index < snapshots.Count; index++)
-        {
-            Assert.True((int)snapshots[index].Stage >= (int)snapshots[index - 1].Stage);
-            Assert.True(snapshots[index].Percent >= snapshots[index - 1].Percent);
-        }
-    }
-
-    private sealed class CollectingRuntimeLoadingProgressObserver : IRuntimeLoadingProgressObserver
-    {
-        public List<RuntimeLoadingOperationSnapshot> Snapshots { get; } = new();
-
-        public void OnLoadingProgress(RuntimeLoadingOperationSnapshot snapshot)
-        {
-            Snapshots.Add(snapshot);
-        }
     }
 
     private sealed class RuntimeProgressForwardingSceneLoader : IGameSceneLoader

@@ -1,224 +1,231 @@
-# RuntimeFlow
+# RuntimeFlow (Unity UPM package)
 
-**Game startup orchestration framework for Unity**
+RuntimeFlow is a Unity startup orchestration framework that combines:
 
-## Overview
+- hierarchical DI scopes (`Global -> Session -> Scene -> Module`),
+- async initialization/disposal pipelines,
+- runtime health supervision and recovery,
+- scene/module flow orchestration APIs.
 
-RuntimeFlow is a Unity framework that brings order to game startup. It provides a hierarchical dependency injection system with four strict scope levels — Global, Session, Scene, and Module — each with its own DI container backed by [VContainer](https://vcontainer.hadashikick.jp/). Services are registered into scopes and initialized asynchronously in topological order, with the entire dependency graph validated at compile time by a Roslyn source generator.
-
-The framework manages the full game lifecycle through a runtime pipeline. You define scope installers, register services, and write a flow scenario that orchestrates scene transitions and scope loading. RuntimeFlow handles initialization ordering, scope activation/deactivation, disposal in reverse order, and progress reporting — all with `async`/`await` and cancellation support.
-
-RuntimeFlow also includes a health supervision system that monitors service initialization timeouts and can automatically restart the session scope when failures occur, making your game startup resilient to transient errors.
-
-## Features
-
-- **Four-level scope hierarchy** — Global → Session → Scene → Module with strict dependency rules (services can only depend on same or earlier scopes)
-- **Compile-time dependency graph validation** — Roslyn source generator detects duplicate implementations, missing dependencies, scope violations, and cycles before runtime
-- **Async initialization with topological ordering** — Services initialize in dependency order and dispose in reverse
-- **Health monitoring** — Configurable per-service timeouts with automatic session scope restart on failure
-- **Event bus** — `IScopeEventBus` with Local, Bubble (up to parents), and Broadcast (down to children) propagation modes
-- **Lazy initialization** — Mark services with `ILazyInitializableService` to defer initialization until first use
-- **Scene loading abstraction** — Pluggable `IGameSceneLoader` with scene route resolution
-- **Progress tracking** — `IInitializationProgressNotifier` reports per-service and per-scope initialization progress
-- **Scope preloading** — Pre-initialize scene and module scopes before they are needed
-- **Additive modules** — Load and unload module scopes additively within a scene
+This README is focused on **using the package in a Unity project**.  
+For repository-level architecture and development layout, see the root [`README.md`](../README.md).
 
 ## Installation
 
 ### Prerequisites
 
-- Unity 2021.3 or later
-- [VContainer](https://vcontainer.hadashikick.jp/) (DI framework by hadashiA) — must be installed separately (see Step 1)
+- Unity `2021.3+`
+- [VContainer](https://vcontainer.hadashikick.jp/) (required dependency)
 
-> **Note:** `Microsoft.Extensions.Logging.Abstractions` is bundled with the package as a precompiled DLL — no separate installation is required.
-
-### Step 1: Install VContainer
-
-VContainer is **not** on Unity's built-in package registry. Install it using one of the options below.
-
-**Option A — Via OpenUPM** (recommended):
+Install VContainer first:
 
 ```bash
 openupm add jp.hadashikick.vcontainer
 ```
 
-**Option B — Via git URL** in Unity Package Manager:
+Or via git URL in Package Manager:
 
-Open **Window → Package Manager → + → Add package from git URL** and enter:
-
-```
+```text
 https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer
 ```
 
-Or add it directly to your `Packages/manifest.json`:
+Install RuntimeFlow package:
 
-```json
-{
-  "dependencies": {
-    "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer"
-  }
-}
-```
-
-### Step 2: Install RuntimeFlow
-
-**Via git URL** in Unity Package Manager:
-
-Open **Window → Package Manager → + → Add package from git URL** and enter:
-
-```
+```text
 https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow
 ```
 
-Or add it directly to your `Packages/manifest.json`:
+In `Packages/manifest.json`:
 
 ```json
 {
   "dependencies": {
+    "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer",
     "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow"
   }
 }
 ```
 
-## Quick Start
+> `RuntimeFlow.Runtime.asmdef` references `Microsoft.Extensions.Logging.Abstractions.dll` as a precompiled dependency.
+
+## Quick start
+
+### 1. Define scope installers
 
 ```csharp
-// 1. Define a scene scope installer
-public class GameplayScene : ISceneScope
+public sealed class GameplaySceneScope : ISceneScope
 {
     public void Configure(IGameScopeRegistrationBuilder builder)
     {
-        builder.Register<IMyService, MyService>(Lifetime.Singleton);
+        builder.Register<IPlayerSpawnService, PlayerSpawnService>(Lifetime.Singleton);
     }
 }
 
-// 2. Define a service with a scope-specific interface
-public interface IMyService : ISceneInitializableService { }
+public sealed class HudModuleScope : IModuleScope
+{
+    public void Configure(IGameScopeRegistrationBuilder builder)
+    {
+        builder.Register<IHudService, HudService>(Lifetime.Singleton);
+    }
+}
+```
 
-public class MyService : IMyService
+### 2. Define services with scope-aware lifecycle contracts
+
+```csharp
+public interface IPlayerSpawnService : ISceneInitializableService { }
+
+public sealed class PlayerSpawnService : IPlayerSpawnService
 {
     public Task InitializeAsync(CancellationToken cancellationToken)
     {
-        // Initialization logic
         return Task.CompletedTask;
     }
 }
-
-// 3. Build the pipeline, register services, and run
-var pipeline = RuntimePipeline.Create(builder =>
-{
-    builder.Session()
-        .Register<IAuthService, AuthService>(Lifetime.Singleton);
-
-    builder.Scene<GameplayScene>();
-});
-
-pipeline.ConfigureFlow(new MyFlowScenario());
-await pipeline.RunAsync(sceneLoader);
 ```
 
-Flow scenarios implement `IRuntimeFlowScenario` to orchestrate the game lifecycle:
+### 3. Build and run a pipeline
 
 ```csharp
-public class MyFlowScenario : IRuntimeFlowScenario
+var pipeline = RuntimePipeline.Create(
+    builder =>
+    {
+        builder.DefineSessionScope();
+        builder.Session()
+            .Register<IGameSessionService, GameSessionService>(Lifetime.Singleton);
+
+        builder.Scene<GameplaySceneScope>();
+        builder.Module<HudModuleScope>();
+    },
+    RuntimePipelinePresets.Production);
+
+pipeline.ConfigureFlow(new GameStartupFlow());
+await pipeline.RunAsync(new UnityGameSceneLoader(), cancellationToken: token);
+```
+
+```csharp
+public sealed class GameStartupFlow : IRuntimeFlowScenario
 {
-    public async Task ExecuteAsync(
-        IRuntimeFlowContext context, CancellationToken cancellationToken)
+    public async Task ExecuteAsync(IRuntimeFlowContext context, CancellationToken cancellationToken)
     {
         await context.InitializeAsync(cancellationToken);
-        await context.LoadScopeSceneAsync<GameplayScene>(cancellationToken);
+        await context.LoadScopeSceneAsync<GameplaySceneScope>(cancellationToken);
+        await context.LoadScopeModuleAsync<HudModuleScope>(cancellationToken);
     }
 }
 ```
 
-## Architecture
+## Runtime API highlights
 
-### Scope Hierarchy
+### `RuntimePipeline` operations
 
-```
-Global (0)  →  Session (1)  →  Scene (2)  →  Module (3)
-```
+`RuntimePipeline` supports:
 
-Each scope gets its own `IGameContext` wrapping a VContainer `IObjectResolver`. Services in a scope may depend only on services from the same or an earlier (wider) scope — this rule is enforced at compile time.
+- pipeline creation: `Create`, `CreateFromGlobalContext`, `CreateFromResolver`,
+- execution: `ConfigureFlow(...).RunAsync(...)`,
+- scope operations: `LoadSceneAsync`, `LoadModuleAsync`, `PreloadSceneAsync`, `PreloadModuleAsync`,
+- additive modules: `LoadAdditiveModuleAsync`, `UnloadAdditiveModuleAsync`,
+- reload/restart: `ReloadScopeAsync`, `ReloadModuleAsync`, `RestartSessionAsync`,
+- state/readiness inspection: `GetRuntimeStatus`, `GetReadinessStatus`, `GetRestartReadiness`, `GetExecutionContext`.
 
-Scene and module scopes are defined as **installer classes** that implement `ISceneScope` or `IModuleScope`. These classes configure their own DI registrations, giving them a concrete purpose beyond being type keys. Global and Session scopes use built-in types and are configured inline.
+### `IRuntimeFlowContext` operations
 
-### Service Lifecycle
+Inside `IRuntimeFlowScenario.ExecuteAsync(...)`, you can:
 
-Services implement scope-specific marker interfaces that extend `IAsyncInitializableService`:
+- initialize and navigate: `InitializeAsync`, `GoToAsync`, `ResolveRouteAsync`,
+- load/reload scopes: `LoadScopeSceneAsync`, `LoadScopeModuleAsync`, `ReloadScopeAsync`,
+- preload scopes: `PreloadSceneAsync`, `PreloadModuleAsync`, `HasPreloadedScope`,
+- manage additive modules: `LoadAdditiveModuleAsync`, `UnloadAdditiveModuleAsync`,
+- access session services: `ResolveSessionService`, `TryResolveSessionService`.
 
-```
-IAsyncInitializableService
-├── IGlobalInitializableService
-├── ISessionInitializableService
-├── ISceneInitializableService
-└── IModuleInitializableService
-```
+### Flow presets
 
-The same pattern applies to `IAsyncDisposableService` and `IAsyncScopeActivationService`.
+`RuntimeFlowPresets` includes reusable scenario builders:
 
-### Key Types
+- `InitializeOnly()`
+- `EnsureSceneLoadedThenInitialize(sceneName)`
+- `RestartAwareSceneBootstrap(options)`
+- `StandardSession(fallbackRoute, configure)`
 
-| Concern | Type | Description |
-|---|---|---|
-| Pipeline orchestration | `RuntimePipeline` | Main entry point — create, configure, and run |
-| Flow execution | `IRuntimeFlowContext` | Scene/module loading, service resolution |
-| Flow definition | `IRuntimeFlowScenario` | Define top-level game flow |
-| DI context | `IGameContext` | Scoped service registration and resolution |
-| Health monitoring | `RuntimeHealthSupervisor` | Timeout tracking and auto-restart |
-| Event bus | `IScopeEventBus` | Scoped event publish/subscribe |
-| Builder API | `GameContextBuilder` | Configure scopes and service registrations |
+## Health, retry, and recovery
 
-## Source Generator
+Configure `RuntimePipelineOptions` to control runtime resilience:
 
-RuntimeFlow includes a Roslyn incremental source generator (`IIncrementalGenerator`) that analyzes service registrations at compile time and generates `CompiledInitializationGraph.g.cs`. The generator builds a dependency graph from constructor parameters and `[DependsOn]` attributes, then validates it.
+- `Health` (`RuntimeHealthOptions`): timeout model, stall timeout, auto-restart limits,
+- `RetryPolicy` (`RuntimeRetryPolicyOptions`): retry attempts, backoff, jitter,
+- `ErrorClassifier`: custom `IRuntimeErrorClassifier`,
+- `HealthObserver`, `RetryObserver`, `LoadingProgressObserver`,
+- `ReplayFlowOnSessionRestart` to replay configured flow during session restart,
+- `SessionRestartPreparationHooks` for pre-restart preparation logic.
 
-### Diagnostics
+Built-in presets:
 
-| Code | Severity | Description |
-|---|---|---|
-| `RF0001` | Error | **Duplicate implementation** — multiple classes implement the same service interface |
-| `RF0002` | Error | **Missing dependency** — constructor parameter has no registered implementation |
-| `RF0003` | Error | **Scope violation** — a service depends on a service from a later (narrower) scope |
-| `RF0004` | Error | **Cycle detected** — circular dependency in the initialization graph |
+- `RuntimePipelinePresets.Minimal`
+- `RuntimePipelinePresets.Development`
+- `RuntimePipelinePresets.Production`
 
-## Project Structure
+## Guards, transitions, and events
 
-```
-RuntimeFlow/
-├── com.praxeum.runtimeflow/       # Unity UPM package (runtime code)
-│   ├── Runtime/
-│   │   ├── Contexts/              # IGameContext, GameContextBuilder
-│   │   ├── Events/                # IScopeEventBus, event propagation
-│   │   ├── Initialization/        # Service interfaces, DAG execution
-│   │   └── Runtime/               # Pipeline, flow, health supervision
-│   └── package.json
-├── RuntimeFlow/                   # .NET class library wrapper for testing
-├── RuntimeFlow.Generators/        # Roslyn source generator
-├── RuntimeFlow.Tests/             # xUnit test suite (.NET 9.0)
-├── RuntimeFlow.sln                # Solution file
-└── LICENSE
-```
+### Guards and restart preparation
 
-## Development
+- Implement `IRuntimeFlowGuard` to block unsafe transitions.
+- Guard stages include `BeforeInitialize`, `BeforeNavigation`, `BeforeScopeReload`, `BeforeSessionRestart`, etc.
+- Implement `IRuntimeSessionRestartPreparationHook` for restart-preparation tasks.
+- `RuntimePipeline.Guards` executes registered restart preparation hooks before session restart.
+- Legacy reflection (`ISessionRestartAware`, `RuntimeSessionRestartStateResetter`) is a transitional fallback and runs only when no `IRuntimeSessionRestartPreparationHook` is registered.
 
-```bash
-# Build the entire solution
-dotnet build RuntimeFlow.sln
+### Restart lifecycle ownership (breaking migration)
 
-# Build the source generator
-dotnet build RuntimeFlow.Generators
+- RuntimeFlow now owns restart contracts and orchestration via:
+  - `Runtime/Runtime/Pipeline/GameRestartContracts.cs`
+  - `Runtime/Runtime/Pipeline/RuntimeFlowGameRestartHandler.cs`
+  - `Runtime/Runtime/Pipeline/RuntimePipeline.Guards.cs`
+- Consumers should use framework restart contracts from `SFS.Core.GameLoading`
+  (`IGameRestartHandler`, `ISessionRestartAware`, `IGameDataCleaner`).
+- Project-local restart contracts/orchestrator and `SfsGameBootstrapper` glue wiring were removed.
+- This migration is a **breaking change** for integrations that referenced removed project-side restart types.
+- `RuntimeSessionRestartStateResetter` remains project-owned and is invoked through framework restart preparation hooks.
 
-# Run all tests
-dotnet test RuntimeFlow.Tests
+### Transition hooks
 
-# Run a specific test class
-dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~ScopeEventBusTests"
+Use `IScopeTransitionHandler` to react to:
 
-# Run a single test
-dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~ScopeEventBusTests.Publish_Local_DoesNotReachParent"
+- `OnTransitionOutAsync(...)`
+- `OnTransitionProgressAsync(...)`
+- `OnTransitionInAsync(...)`
+
+### Event propagation
+
+`IScopeEventBus.Publish(...)` supports:
+
+- `Local` (current scope only)
+- `Bubble` (up through parents)
+- `Broadcast` (down through children)
+
+## Initialization graph and diagnostics
+
+RuntimeFlow validates initialization dependency graphs using constructor dependencies and `[DependsOn(typeof(...))]`.
+
+Diagnostics:
+
+| Code | Meaning |
+|---|---|
+| `RF0001` | Duplicate implementation |
+| `RF0002` | Missing dependency |
+| `RF0003` | Scope violation |
+| `RF0004` | Dependency cycle |
+
+## Package contents
+
+```text
+com.praxeum.runtimeflow/
+├── Runtime/                         # Package runtime source
+├── Analyzers/RuntimeFlow.Generators.dll
+├── package.json
+├── CHANGELOG.md
+└── LICENSE.md
 ```
 
 ## License
 
-This project is licensed under the MIT License — see the [LICENSE](LICENSE) file for details.
+MIT. See [LICENSE.md](LICENSE.md).

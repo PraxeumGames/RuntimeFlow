@@ -2,7 +2,8 @@
     "name": "RuntimeFlow.Runtime",
     "rootNamespace": "RuntimeFlow",
     "references": [
-        "VContainer"
+        "VContainer",
+        "UniRx"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],

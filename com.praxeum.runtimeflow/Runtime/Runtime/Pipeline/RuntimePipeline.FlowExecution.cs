@@ -14,91 +14,24 @@ namespace RuntimeFlow.Contexts
         {
             ThrowIfDisposed();
             if (sceneLoader == null) throw new ArgumentNullException(nameof(sceneLoader));
-            if (_flow == null)
-                throw new FlowNotConfiguredException();
+            var flow = _flow ?? throw new FlowNotConfiguredException();
             _sceneLoader = sceneLoader;
-            _logger.LogInformation("Running flow scenario {ScenarioType}", _flow.GetType().Name);
-            var operationId = CreateLoadingOperationId(RuntimeLoadingOperationKind.RunFlow);
+            _logger.LogInformation("Running flow scenario {ScenarioType}", flow.GetType().Name);
 
-            SetStatus(RuntimeExecutionState.Initializing, operationCode: RuntimeOperationCodes.RunFlow, message: "Executing runtime flow.");
-            PublishLoadingSnapshot(
-                operationId,
-                RuntimeLoadingOperationKind.RunFlow,
-                RuntimeLoadingOperationStage.Preparing,
-                RuntimeLoadingOperationState.Running,
-                percent: 0d,
-                currentStep: 0,
-                totalSteps: 1,
-                message: "Executing runtime flow.");
-
-            _healthSupervisor.BeginRun();
-            var runner = new RuntimeFlowRunner(
-                _builder,
-                sceneLoader,
-                progressNotifier ?? _defaultProgressNotifier,
-                _loadingProgressObserver,
-                CreateLoadingOperationId,
-                _healthSupervisor,
-                _errorClassifier,
-                _retryPolicy,
-                _retryObserver,
-                _transitionHandler,
-                _guards,
-                OnRunnerStatusChanged);
-
-            try
-            {
-                await _flow.ExecuteAsync(runner, cancellationToken).ConfigureAwait(false);
-                PublishLoadingSnapshot(
-                    operationId,
+            await ExecuteFlowOperationAsync(
                     RuntimeLoadingOperationKind.RunFlow,
-                    RuntimeLoadingOperationStage.Finalizing,
-                    RuntimeLoadingOperationState.Running,
-                    percent: 100d,
-                    currentStep: 1,
-                    totalSteps: 1,
-                    message: "Finalizing runtime flow.");
-                PublishLoadingSnapshot(
-                    operationId,
-                    RuntimeLoadingOperationKind.RunFlow,
-                    RuntimeLoadingOperationStage.Completed,
-                    RuntimeLoadingOperationState.Completed,
-                    percent: 100d,
-                    currentStep: 1,
-                    totalSteps: 1,
-                    message: "Runtime flow completed.");
-                SetStatus(RuntimeExecutionState.Ready, operationCode: RuntimeOperationCodes.RunFlow, message: "Runtime flow completed.");
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                PublishLoadingSnapshot(
-                    operationId,
-                    RuntimeLoadingOperationKind.RunFlow,
-                    RuntimeLoadingOperationStage.Canceled,
-                    RuntimeLoadingOperationState.Canceled,
-                    percent: 0d,
-                    currentStep: 0,
-                    totalSteps: 1,
-                    message: "Runtime flow canceled by caller.");
-                SetStatus(RuntimeExecutionState.Degraded, operationCode: RuntimeOperationCodes.RunFlow, message: "Runtime flow canceled by caller.");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Pipeline operation failed");
-                PublishLoadingSnapshot(
-                    operationId,
-                    RuntimeLoadingOperationKind.RunFlow,
-                    RuntimeLoadingOperationStage.Failed,
-                    RuntimeLoadingOperationState.Failed,
-                    percent: 0d,
-                    currentStep: 0,
-                    totalSteps: 1,
-                    message: "Runtime flow failed.",
-                    error: ex);
-                SetStatus(RuntimeExecutionState.Failed, operationCode: RuntimeOperationCodes.RunFlow, message: "Runtime flow failed.", error: ex);
-                throw;
-            }
+                    RuntimeOperationCodes.RunFlow,
+                    RuntimeExecutionState.Initializing,
+                    startMessage: "Executing runtime flow.",
+                    finalizingMessage: "Finalizing runtime flow.",
+                    successMessage: "Runtime flow completed.",
+                    cancelMessage: "Runtime flow canceled by caller.",
+                    failMessage: "Runtime flow failed.",
+                    sceneLoader,
+                    progressNotifier ?? _defaultProgressNotifier,
+                    (runner, ct) => flow.ExecuteAsync(runner, ct),
+                    cancellationToken)
+                .ConfigureAwait(false);
         }
 
         private async Task RestartSessionByReplayingFlowAsync(
@@ -108,24 +41,125 @@ namespace RuntimeFlow.Contexts
             var sceneLoader = _sceneLoader ?? throw new InvalidOperationException(
                 "Cannot replay flow for session restart before the pipeline has been run at least once.");
             var flow = _flow ?? throw new FlowNotConfiguredException();
-            var operationId = CreateLoadingOperationId(RuntimeLoadingOperationKind.RestartSession);
 
-            SetStatus(RuntimeExecutionState.Recovering, operationCode: RuntimeOperationCodes.RestartSession, message: "Replaying runtime flow for session restart.");
+            await ExecuteFlowOperationAsync(
+                    RuntimeLoadingOperationKind.RestartSession,
+                    RuntimeOperationCodes.RestartSession,
+                    RuntimeExecutionState.Recovering,
+                    startMessage: "Replaying runtime flow for session restart.",
+                    finalizingMessage: "Finalizing session restart.",
+                    successMessage: "Session restarted.",
+                    cancelMessage: "Session restart canceled by caller.",
+                    failMessage: "Session restart failed.",
+                    sceneLoader,
+                    progressNotifier ?? _defaultProgressNotifier,
+                    async (runner, ct) =>
+                    {
+                        using (RuntimeFlowReplayScope.Enter())
+                        {
+                            await _builder.ExecuteOnMainThreadAsync(
+                                    token => flow.ExecuteAsync(runner, token),
+                                    ct)
+                                .ConfigureAwait(false);
+                        }
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        private async Task ExecuteFlowOperationAsync(
+            RuntimeLoadingOperationKind operationKind,
+            string operationCode,
+            RuntimeExecutionState startState,
+            string startMessage,
+            string finalizingMessage,
+            string successMessage,
+            string cancelMessage,
+            string failMessage,
+            IGameSceneLoader sceneLoader,
+            IInitializationProgressNotifier? progressNotifier,
+            Func<RuntimeFlowRunner, CancellationToken, Task> operation,
+            CancellationToken cancellationToken)
+        {
+            var operationId = CreateLoadingOperationId(operationKind);
+
+            SetStatus(startState, operationCode: operationCode, message: startMessage);
             PublishLoadingSnapshot(
                 operationId,
-                RuntimeLoadingOperationKind.RestartSession,
+                operationKind,
                 RuntimeLoadingOperationStage.Preparing,
                 RuntimeLoadingOperationState.Running,
                 percent: 0d,
                 currentStep: 0,
                 totalSteps: 1,
-                message: "Replaying runtime flow for session restart.");
+                message: startMessage);
 
             _healthSupervisor.BeginRun();
-            var runner = new RuntimeFlowRunner(
+            var runner = CreateFlowRunner(sceneLoader, progressNotifier);
+
+            try
+            {
+                await operation(runner, cancellationToken).ConfigureAwait(false);
+                PublishLoadingSnapshot(
+                    operationId,
+                    operationKind,
+                    RuntimeLoadingOperationStage.Finalizing,
+                    RuntimeLoadingOperationState.Running,
+                    percent: 100d,
+                    currentStep: 1,
+                    totalSteps: 1,
+                    message: finalizingMessage);
+                PublishLoadingSnapshot(
+                    operationId,
+                    operationKind,
+                    RuntimeLoadingOperationStage.Completed,
+                    RuntimeLoadingOperationState.Completed,
+                    percent: 100d,
+                    currentStep: 1,
+                    totalSteps: 1,
+                    message: successMessage);
+                SetStatus(RuntimeExecutionState.Ready, operationCode: operationCode, message: successMessage);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                PublishLoadingSnapshot(
+                    operationId,
+                    operationKind,
+                    RuntimeLoadingOperationStage.Canceled,
+                    RuntimeLoadingOperationState.Canceled,
+                    percent: 0d,
+                    currentStep: 0,
+                    totalSteps: 1,
+                    message: cancelMessage);
+                SetStatus(RuntimeExecutionState.Degraded, operationCode: operationCode, message: cancelMessage);
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Pipeline operation failed");
+                PublishLoadingSnapshot(
+                    operationId,
+                    operationKind,
+                    RuntimeLoadingOperationStage.Failed,
+                    RuntimeLoadingOperationState.Failed,
+                    percent: 0d,
+                    currentStep: 0,
+                    totalSteps: 1,
+                    message: failMessage,
+                    error: ex);
+                SetStatus(RuntimeExecutionState.Failed, operationCode: operationCode, message: failMessage, error: ex);
+                throw;
+            }
+        }
+
+        private RuntimeFlowRunner CreateFlowRunner(
+            IGameSceneLoader sceneLoader,
+            IInitializationProgressNotifier? progressNotifier)
+        {
+            return new RuntimeFlowRunner(
                 _builder,
                 sceneLoader,
-                progressNotifier ?? _defaultProgressNotifier,
+                progressNotifier,
                 _loadingProgressObserver,
                 CreateLoadingOperationId,
                 _healthSupervisor,
@@ -135,66 +169,6 @@ namespace RuntimeFlow.Contexts
                 _transitionHandler,
                 _guards,
                 OnRunnerStatusChanged);
-
-            try
-            {
-                using (RuntimeFlowReplayScope.Enter())
-                {
-                    await _builder.ExecuteOnMainThreadAsync(
-                            token => flow.ExecuteAsync(runner, token),
-                            cancellationToken)
-                        .ConfigureAwait(false);
-                }
-                PublishLoadingSnapshot(
-                    operationId,
-                    RuntimeLoadingOperationKind.RestartSession,
-                    RuntimeLoadingOperationStage.Finalizing,
-                    RuntimeLoadingOperationState.Running,
-                    percent: 100d,
-                    currentStep: 1,
-                    totalSteps: 1,
-                    message: "Finalizing session restart.");
-                PublishLoadingSnapshot(
-                    operationId,
-                    RuntimeLoadingOperationKind.RestartSession,
-                    RuntimeLoadingOperationStage.Completed,
-                    RuntimeLoadingOperationState.Completed,
-                    percent: 100d,
-                    currentStep: 1,
-                    totalSteps: 1,
-                    message: "Session restarted.");
-                SetStatus(RuntimeExecutionState.Ready, operationCode: RuntimeOperationCodes.RestartSession, message: "Session restarted.");
-            }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-            {
-                PublishLoadingSnapshot(
-                    operationId,
-                    RuntimeLoadingOperationKind.RestartSession,
-                    RuntimeLoadingOperationStage.Canceled,
-                    RuntimeLoadingOperationState.Canceled,
-                    percent: 0d,
-                    currentStep: 0,
-                    totalSteps: 1,
-                    message: "Session restart canceled by caller.");
-                SetStatus(RuntimeExecutionState.Degraded, operationCode: RuntimeOperationCodes.RestartSession, message: "Session restart canceled by caller.");
-                throw;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Pipeline operation failed");
-                PublishLoadingSnapshot(
-                    operationId,
-                    RuntimeLoadingOperationKind.RestartSession,
-                    RuntimeLoadingOperationStage.Failed,
-                    RuntimeLoadingOperationState.Failed,
-                    percent: 0d,
-                    currentStep: 0,
-                    totalSteps: 1,
-                    message: "Session restart failed.",
-                    error: ex);
-                SetStatus(RuntimeExecutionState.Failed, operationCode: RuntimeOperationCodes.RestartSession, message: "Session restart failed.", error: ex);
-                throw;
-            }
         }
 
         private void OnRunnerStatusChanged(RuntimeExecutionState state, string? message)

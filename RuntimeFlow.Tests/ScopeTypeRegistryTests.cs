@@ -33,7 +33,7 @@ public sealed class ScopeTypeRegistryTests
 
         var exception = Assert.Throws<ScopeRegistrationException>(() => builder.Scene<SceneScope>());
 
-        Assert.Contains("GBSR3001", exception.Message);
+        Assert.Equal("GBSR3001", exception.DiagnosticCode);
     }
 
     [Fact]
@@ -44,7 +44,7 @@ public sealed class ScopeTypeRegistryTests
 
         var exception = Assert.Throws<ScopeRegistrationException>(() => builder.Module<SharedScope>());
 
-        Assert.Contains("GBSR3002", exception.Message);
+        Assert.Equal("GBSR3002", exception.DiagnosticCode);
     }
 
     [Fact]

@@ -101,11 +101,14 @@ namespace RuntimeFlow.Contexts
     internal sealed class RuntimeSessionRestartPreparationGuardBridge : IRuntimeFlowGuard
     {
         private readonly IReadOnlyList<IRuntimeSessionRestartPreparationHook> _hooks;
+        private readonly Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>> _dynamicHooksProvider;
 
         public RuntimeSessionRestartPreparationGuardBridge(
-            IReadOnlyList<IRuntimeSessionRestartPreparationHook> hooks)
+            IReadOnlyList<IRuntimeSessionRestartPreparationHook> hooks,
+            Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>> dynamicHooksProvider = null)
         {
             _hooks = hooks ?? throw new ArgumentNullException(nameof(hooks));
+            _dynamicHooksProvider = dynamicHooksProvider;
         }
 
         public async Task<RuntimeFlowGuardResult> EvaluateAsync(
@@ -113,11 +116,19 @@ namespace RuntimeFlow.Contexts
             CancellationToken cancellationToken = default)
         {
             if (context == null) throw new ArgumentNullException(nameof(context));
-            if (context.Stage != RuntimeFlowGuardStage.BeforeSessionRestart || _hooks.Count == 0)
+            if (context.Stage != RuntimeFlowGuardStage.BeforeSessionRestart)
+            {
                 return RuntimeFlowGuardResult.Allow();
+            }
+
+            var hooks = ResolveHooks();
+            if (hooks.Count == 0)
+            {
+                return RuntimeFlowGuardResult.Allow();
+            }
 
             var preparationContext = new RuntimeSessionRestartPreparationContext(context);
-            foreach (var hook in _hooks)
+            foreach (var hook in hooks)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 if (hook == null)
@@ -130,6 +141,54 @@ namespace RuntimeFlow.Contexts
             }
 
             return RuntimeFlowGuardResult.Allow();
+        }
+
+        private IReadOnlyList<IRuntimeSessionRestartPreparationHook> ResolveHooks()
+        {
+            var resolvedHooks = new List<IRuntimeSessionRestartPreparationHook>();
+            AppendHooks(resolvedHooks, _hooks);
+            AppendHooks(resolvedHooks, _dynamicHooksProvider?.Invoke());
+            return resolvedHooks;
+        }
+
+        private static void AppendHooks(
+            List<IRuntimeSessionRestartPreparationHook> hooks,
+            IReadOnlyList<IRuntimeSessionRestartPreparationHook> candidates)
+        {
+            if (hooks == null)
+            {
+                throw new ArgumentNullException(nameof(hooks));
+            }
+
+            if (candidates == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < candidates.Count; i++)
+            {
+                AddHook(hooks, candidates[i]);
+            }
+        }
+
+        private static void AddHook(
+            List<IRuntimeSessionRestartPreparationHook> hooks,
+            IRuntimeSessionRestartPreparationHook hook)
+        {
+            if (hook == null)
+            {
+                return;
+            }
+
+            for (var i = 0; i < hooks.Count; i++)
+            {
+                if (ReferenceEquals(hooks[i], hook))
+                {
+                    return;
+                }
+            }
+
+            hooks.Add(hook);
         }
     }
 

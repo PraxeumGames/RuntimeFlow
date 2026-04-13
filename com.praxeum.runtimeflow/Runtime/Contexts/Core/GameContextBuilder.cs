@@ -15,20 +15,13 @@ namespace RuntimeFlow.Contexts
 {
     public partial class GameContextBuilder : IGameContextBuilder
     {
-        private readonly List<Action<IGameContext>> _globalRegistrations = new();
-        private readonly List<Action<IGameContext>> _sessionRegistrations = new();
-        private readonly Dictionary<Type, ScopeProfile> _sceneProfiles = new();
-        private readonly Dictionary<Type, ScopeProfile> _moduleProfiles = new();
-        private readonly Dictionary<Type, GameContextType> _declaredScopeTypes = new();
-        private readonly List<DeferredScopedRegistration> _deferredScopedRegistrations = new();
-        private readonly List<DeferredDecoration> _deferredDecorations = new();
-
-        private readonly Dictionary<Type, ScopeLifecycleState> _scopeStates = new();
-        private readonly object _scopeStateSync = new();
+        private readonly GameContextScopeProfileStore _scopeProfiles = new();
+        private readonly GameContextScopeRegistry _scopeRegistry = new();
+        private readonly GameContextDeferredRegistrationQueue _deferredRegistrations = new();
         private readonly IInitializationExecutionScheduler _executionScheduler;
         private readonly RuntimeHealthSupervisor _healthSupervisor;
         private readonly ILogger _logger;
-        private readonly Dictionary<(GameContextType Scope, Type? ScopeKey), List<Type>> _scopeInitializationOrder = new();
+        private readonly GameContextScopeInitializationLedger _scopeInitializationLedger = new();
         private readonly Dictionary<Type, GameContext> _preloadedContexts = new();
         private readonly Dictionary<Type, GameContext> _additiveModuleContexts = new();
         private static readonly Lazy<Type[]> ExplicitDependencyTypeCatalog = new(
@@ -60,8 +53,7 @@ namespace RuntimeFlow.Contexts
         private Task _activeLoadTask = Task.CompletedTask;
         private long _runGeneration;
 
-        private readonly Dictionary<Type, (GameContext Context, GameContextType Scope, Type? ScopeKey)> _lazyServiceBindings = new();
-        private readonly HashSet<Type> _initializedLazyServices = new();
+        private readonly GameContextLazyInitializationRegistry _lazyInitialization = new();
         private readonly SemaphoreSlim _lazyInitLock = new(1, 1);
 
         public GameContextBuilder(IInitializationExecutionScheduler? executionScheduler = null)
@@ -172,7 +164,7 @@ namespace RuntimeFlow.Contexts
         public bool TryResolveScopeType(Type scopeType, out GameContextType scope)
         {
             if (scopeType == null) throw new ArgumentNullException(nameof(scopeType));
-            return _declaredScopeTypes.TryGetValue(scopeType, out scope);
+            return _scopeRegistry.TryResolveScopeType(scopeType, out scope);
         }
 
         public ScopeLifecycleState GetScopeLifecycleState(Type scopeType)
@@ -185,29 +177,7 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey,
             Action<IGameContext> registration)
         {
-            if (registration == null) throw new ArgumentNullException(nameof(registration));
-
-            switch (scope)
-            {
-                case GameContextType.Global:
-                    _globalRegistrations.Add(registration);
-                    break;
-                case GameContextType.Session:
-                    _sessionRegistrations.Add(registration);
-                    break;
-                case GameContextType.Scene:
-                    if (scopeKey == null)
-                        throw new ArgumentNullException(nameof(scopeKey), "Scene scope key is required. Use the typed ConfigureScene<TScope>() API.");
-                    GetOrCreateProfile(_sceneProfiles, scopeKey).Registrations.Add(registration);
-                    break;
-                case GameContextType.Module:
-                    if (scopeKey == null)
-                        throw new ArgumentNullException(nameof(scopeKey), "Module scope key is required. Use the typed ConfigureModule<TScope>() API.");
-                    GetOrCreateProfile(_moduleProfiles, scopeKey).Registrations.Add(registration);
-                    break;
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(scope), scope, "Unsupported scope.");
-            }
+            _scopeProfiles.BindScopedRegistration(scope, scopeKey, registration);
         }
 
         internal void DeferScopedRegistration(
@@ -215,8 +185,7 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey,
             Action<IGameContext> registration)
         {
-            if (registration == null) throw new ArgumentNullException(nameof(registration));
-            _deferredScopedRegistrations.Add(new DeferredScopedRegistration(scope, scopeKey, registration));
+            _deferredRegistrations.DeferScopedRegistration(scope, scopeKey, registration);
         }
 
         internal void DeferDecoration(
@@ -225,66 +194,24 @@ namespace RuntimeFlow.Contexts
             Type serviceType,
             Type decoratorType)
         {
-            _deferredDecorations.Add(new DeferredDecoration(scope, scopeKey, serviceType, decoratorType));
+            _deferredRegistrations.DeferDecoration(scope, scopeKey, serviceType, decoratorType);
         }
 
         internal void FlushDeferredScopedRegistrations()
         {
-            if (_deferredScopedRegistrations.Count == 0 && _deferredDecorations.Count == 0)
-                return;
-
-            foreach (var deferred in _deferredScopedRegistrations)
-            {
-                BindScopedRegistration(deferred.Scope, deferred.ScopeKey, deferred.Registration);
-            }
-
-            _deferredScopedRegistrations.Clear();
-
-            foreach (var decoration in _deferredDecorations)
-            {
-                var svcType = decoration.ServiceType;
-                var decType = decoration.DecoratorType;
-                BindScopedRegistration(decoration.Scope, decoration.ScopeKey, context =>
-                {
-                    if (context is GameContext gc)
-                        gc.Decorate(svcType, decType);
-                    else
-                        context.ConfigureContainer(builder =>
-                        {
-                            builder.Register(decType, Lifetime.Singleton).As(svcType);
-                        });
-                });
-            }
-
-            _deferredDecorations.Clear();
+            _deferredRegistrations.Flush(BindScopedRegistration);
         }
 
         private IGameContextBuilder DefineScope(Type scopeType, GameContextType scope)
         {
-            if (scopeType == null) throw new ArgumentNullException(nameof(scopeType));
-
-            if (_declaredScopeTypes.TryGetValue(scopeType, out var existingScope))
-            {
-                var scopeTypeName = scopeType.FullName ?? scopeType.Name;
-                if (existingScope == scope)
-                {
-                    throw new ScopeRegistrationException("GBSR3001",
-                        $"GBSR3001: Scope type '{scopeTypeName}' is already declared for '{existingScope}'.");
-                }
-
-                throw new ScopeRegistrationException("GBSR3002",
-                    $"GBSR3002: Scope type '{scopeTypeName}' is already declared for '{existingScope}' and cannot be declared for '{scope}'.");
-            }
-
-            _declaredScopeTypes.Add(scopeType, scope);
-            SetScopeState(scopeType, ScopeLifecycleState.NotLoaded);
+            _scopeRegistry.DeclareScope(scopeType, scope);
             return this;
         }
 
         private IGameScopeRegistrationBuilder CreateScopeRegistrationBuilder(Type scopeType)
         {
             if (scopeType == null) throw new ArgumentNullException(nameof(scopeType));
-            if (!_declaredScopeTypes.TryGetValue(scopeType, out var scope))
+            if (!_scopeRegistry.TryGetDeclaredScope(scopeType, out var scope))
             {
                 throw new ScopeNotDeclaredException(scopeType);
             }
@@ -297,7 +224,7 @@ namespace RuntimeFlow.Contexts
             if (scope != GameContextType.Global && scope != GameContextType.Session)
                 throw new ArgumentOutOfRangeException(nameof(scope), scope, "Built-in root scope helpers only support Global and Session.");
 
-            if (FindDeclaredScopeKey(scope) != null)
+            if (_scopeRegistry.FindDeclaredScopeKey(scope) != null)
                 return this;
 
             return DefineScope(builtInScopeType, scope);
@@ -308,7 +235,7 @@ namespace RuntimeFlow.Contexts
             if (scope != GameContextType.Global && scope != GameContextType.Session)
                 throw new ArgumentOutOfRangeException(nameof(scope), scope, "Built-in root scope helpers only support Global and Session.");
 
-            var scopeType = FindDeclaredScopeKey(scope);
+            var scopeType = _scopeRegistry.FindDeclaredScopeKey(scope);
             if (scopeType == null)
             {
                 DefineScope(builtInScopeType, scope);
@@ -648,7 +575,7 @@ namespace RuntimeFlow.Contexts
             ValidateSceneScopeOperationPreconditions(sceneScopeKey);
 
             var notifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
-            var sceneProfile = _sceneProfiles[sceneScopeKey];
+            var sceneProfile = _scopeProfiles.GetSceneProfile(sceneScopeKey);
 
             var initializedServices = new HashSet<Type>();
             var availableServices = new Dictionary<Type, object>();
@@ -717,7 +644,7 @@ namespace RuntimeFlow.Contexts
             ValidateModuleScopeOperationPreconditions(moduleScopeKey);
 
             var notifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
-            var moduleProfile = _moduleProfiles[moduleScopeKey];
+            var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
 
             var initializedServices = new HashSet<Type>();
             var availableServices = new Dictionary<Type, object>();
@@ -796,7 +723,7 @@ namespace RuntimeFlow.Contexts
                 throw new InvalidOperationException($"Additive module scope '{moduleScopeKey.Name}' is already loaded.");
 
             var notifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
-            var moduleProfile = _moduleProfiles[moduleScopeKey];
+            var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
 
             var initializedServices = new HashSet<Type>();
             var availableServices = new Dictionary<Type, object>();
@@ -902,23 +829,23 @@ namespace RuntimeFlow.Contexts
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
 
-            if (_initializedLazyServices.Contains(serviceType))
+            if (_lazyInitialization.IsInitialized(serviceType))
                 return;
 
-            if (!_lazyServiceBindings.TryGetValue(serviceType, out var entry))
+            if (!_lazyInitialization.TryGetBinding(serviceType, out var entry))
                 return;
 
             await _lazyInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
-                if (_initializedLazyServices.Contains(serviceType))
+                if (_lazyInitialization.IsInitialized(serviceType))
                     return;
 
                 var resolved = entry.Context.Resolve(serviceType);
                 if (resolved is IAsyncInitializableService asyncService)
                     await asyncService.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
-                _initializedLazyServices.Add(serviceType);
+                _lazyInitialization.MarkInitialized(serviceType);
                 RegisterInitializedServiceForScopeDisposal(entry.Scope, entry.ScopeKey, serviceType);
             }
             finally
@@ -934,50 +861,27 @@ namespace RuntimeFlow.Contexts
 
         internal void SetScopeState(Type scopeType, ScopeLifecycleState state)
         {
-            lock (_scopeStateSync)
-            {
-                _scopeStates[scopeType] = state;
-            }
+            _scopeRegistry.SetScopeState(scopeType, state);
         }
 
         internal ScopeLifecycleState GetScopeState(Type scopeType)
         {
-            lock (_scopeStateSync)
-            {
-                return _scopeStates.TryGetValue(scopeType, out var state) ? state : ScopeLifecycleState.NotLoaded;
-            }
+            return _scopeRegistry.GetScopeState(scopeType);
         }
 
         private void SetScopeStateIfTracked(GameContextType scope, ScopeLifecycleState state, Type? explicitScopeKey = null)
         {
-            if (explicitScopeKey != null)
-            {
-                SetScopeState(explicitScopeKey, state);
-                return;
-            }
-
-            foreach (var key in FindDeclaredScopeKeys(scope))
-                SetScopeState(key, state);
+            _scopeRegistry.SetScopeStateIfTracked(scope, state, explicitScopeKey);
         }
 
         private Type? FindDeclaredScopeKey(GameContextType scope)
         {
-            foreach (var kvp in _declaredScopeTypes)
-            {
-                if (kvp.Value == scope)
-                    return kvp.Key;
-            }
-
-            return null;
+            return _scopeRegistry.FindDeclaredScopeKey(scope);
         }
 
         private IEnumerable<Type> FindDeclaredScopeKeys(GameContextType scope)
         {
-            foreach (var kvp in _declaredScopeTypes)
-            {
-                if (kvp.Value == scope)
-                    yield return kvp.Key;
-            }
+            return _scopeRegistry.FindDeclaredScopeKeys(scope);
         }
 
         private void ValidateSceneScopeOperationPreconditions(Type sceneScopeKey)
@@ -985,7 +889,7 @@ namespace RuntimeFlow.Contexts
             if (sceneScopeKey == null) throw new ArgumentNullException(nameof(sceneScopeKey));
             if (_sessionContext == null)
                 throw new InvalidOperationException("Session context is not initialized. Call BuildAsync first.");
-            if (!_sceneProfiles.ContainsKey(sceneScopeKey))
+            if (!_scopeProfiles.HasSceneProfile(sceneScopeKey))
                 throw new InvalidOperationException($"Scene scope '{sceneScopeKey.Name}' is not configured.");
         }
 
@@ -994,7 +898,7 @@ namespace RuntimeFlow.Contexts
             if (moduleScopeKey == null) throw new ArgumentNullException(nameof(moduleScopeKey));
             if (_sceneContext == null)
                 throw new InvalidOperationException("Scene context is not initialized. Call LoadSceneAsync first.");
-            if (!_moduleProfiles.ContainsKey(moduleScopeKey))
+            if (!_scopeProfiles.HasModuleProfile(moduleScopeKey))
                 throw new InvalidOperationException($"Module scope '{moduleScopeKey.Name}' is not configured.");
         }
 
@@ -1062,7 +966,7 @@ namespace RuntimeFlow.Contexts
                     _globalEventBus = new ScopeEventBus();
                     globalContext = CreateContext(
                         null,
-                        _globalRegistrations,
+                        _scopeProfiles.GlobalRegistrations,
                         Array.Empty<ServiceDescriptor>(),
                         _onGlobalInitialized,
                         initialize: true,
@@ -1097,7 +1001,7 @@ namespace RuntimeFlow.Contexts
                 sessionContext = await CreateAndInitializeScopeContextAsync(
                         GameContextType.Session,
                         (globalContext ?? _globalContext)!,
-                        _sessionRegistrations,
+                        _scopeProfiles.SessionRegistrations,
                         Array.Empty<ServiceDescriptor>(),
                         _onSessionInitialized,
                         initializedServices,
@@ -1183,7 +1087,7 @@ namespace RuntimeFlow.Contexts
             if (_ownsGlobalContext)
                 return;
 
-            if (_globalRegistrations.Count > 0)
+            if (_scopeProfiles.HasGlobalRegistrations)
             {
                 throw new InvalidOperationException(
                     "GBBR1001: Global registrations are not allowed when using an external global context bridge.");
@@ -1193,9 +1097,8 @@ namespace RuntimeFlow.Contexts
         private async Task RestartSessionAsyncCore(long generation, IInitializationProgressNotifier progressNotifier, CancellationToken cancellationToken)
         {
             _logger.LogInformation("Session restarting");
-            _lazyServiceBindings.Clear();
-            _initializedLazyServices.Clear();
-            _scopeStates.Clear();
+            _lazyInitialization.Clear();
+            _scopeRegistry.ResetScopeStates();
 
             await DisposeAdditiveModulesAsync(cancellationToken).ConfigureAwait(false);
             await DisposePreloadedContextsAsync(cancellationToken).ConfigureAwait(false);
@@ -1269,7 +1172,7 @@ namespace RuntimeFlow.Contexts
                 sessionContext = await CreateAndInitializeScopeContextAsync(
                         GameContextType.Session,
                         _globalContext!,
-                        _sessionRegistrations,
+                        _scopeProfiles.SessionRegistrations,
                         Array.Empty<ServiceDescriptor>(),
                         _onSessionInitialized,
                         initializedServices,
@@ -1280,7 +1183,7 @@ namespace RuntimeFlow.Contexts
                         eventBus: _sessionEventBus)
                     .ConfigureAwait(false);
 
-                if (_activeSceneScopeKey != null && TryGetScopeProfile(_sceneProfiles, _activeSceneScopeKey, out var sceneProfile))
+                if (_activeSceneScopeKey != null && _scopeProfiles.TryGetSceneProfile(_activeSceneScopeKey, out var sceneProfile))
                 {
                     _sceneEventBus = new ScopeEventBus(_sessionEventBus);
                     sceneContext = await CreateAndInitializeScopeContextAsync(
@@ -1299,7 +1202,7 @@ namespace RuntimeFlow.Contexts
                         .ConfigureAwait(false);
                 }
 
-                if (_activeModuleScopeKey != null && sceneContext != null && TryGetScopeProfile(_moduleProfiles, _activeModuleScopeKey, out var moduleProfile))
+                if (_activeModuleScopeKey != null && sceneContext != null && _scopeProfiles.TryGetModuleProfile(_activeModuleScopeKey, out var moduleProfile))
                 {
                     _moduleEventBus = new ScopeEventBus(_sceneEventBus);
                     moduleContext = await CreateAndInitializeScopeContextAsync(
@@ -1371,7 +1274,7 @@ namespace RuntimeFlow.Contexts
             IInitializationProgressNotifier progressNotifier,
             CancellationToken cancellationToken)
         {
-            var sceneProfile = _sceneProfiles[sceneScopeKey];
+            var sceneProfile = _scopeProfiles.GetSceneProfile(sceneScopeKey);
 
             await DisposeAdditiveModulesAsync(cancellationToken).ConfigureAwait(false);
 
@@ -1473,7 +1376,7 @@ namespace RuntimeFlow.Contexts
             IInitializationProgressNotifier progressNotifier,
             CancellationToken cancellationToken)
         {
-            var moduleProfile = _moduleProfiles[moduleScopeKey];
+            var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
 
             if (_moduleContext != null)
             {
@@ -1839,8 +1742,18 @@ namespace RuntimeFlow.Contexts
             }
             catch (Exception ex)
             {
+                if (IsObjectDisposedFailure(ex))
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Ignoring disposed object failure while disposing {Scope} services.",
+                        scope);
+                }
+                else
+                {
                 exceptions ??= new List<Exception>();
                 exceptions.Add(ex);
+                }
             }
 
             try
@@ -1849,8 +1762,18 @@ namespace RuntimeFlow.Contexts
             }
             catch (Exception ex)
             {
+                if (IsObjectDisposedFailure(ex))
+                {
+                    _logger.LogWarning(
+                        ex,
+                        "Ignoring disposed object failure while disposing {Scope} context.",
+                        scope);
+                }
+                else
+                {
                 exceptions ??= new List<Exception>();
                 exceptions.Add(ex);
+                }
             }
 
             onDisposed?.Invoke();
@@ -1861,17 +1784,7 @@ namespace RuntimeFlow.Contexts
 
         private void RegisterInitializedServiceForScopeDisposal(GameContextType scope, Type? scopeKey, Type serviceType)
         {
-            var key = (scope, scopeKey);
-            if (!_scopeInitializationOrder.TryGetValue(key, out var initOrder))
-            {
-                initOrder = new List<Type>();
-                _scopeInitializationOrder[key] = initOrder;
-            }
-
-            if (!initOrder.Contains(serviceType))
-            {
-                initOrder.Add(serviceType);
-            }
+            _scopeInitializationLedger.RecordInitializedService(scope, scopeKey, serviceType);
         }
 
         private async Task DisposeScopeServicesAsync(
@@ -1880,17 +1793,16 @@ namespace RuntimeFlow.Contexts
             CancellationToken cancellationToken,
             Type? scopeKey = null)
         {
-            var key = (scope, scopeKey);
-            _scopeInitializationOrder.TryGetValue(key, out var initOrder);
+            var initOrder = _scopeInitializationLedger.GetInitializationOrder(scope, scopeKey);
 
             var exceptions = (List<Exception>?)null;
             var disposedTargets = new HashSet<object>(ReferenceEqualityComparer.Instance);
 
             for (var i = (initOrder?.Count ?? 0) - 1; i >= 0; i--)
             {
+                var serviceType = initOrder![i];
                 try
                 {
-                    var serviceType = initOrder![i];
                     var resolved = context.Resolve(serviceType);
                     if (!disposedTargets.Add(resolved))
                     {
@@ -1937,12 +1849,22 @@ namespace RuntimeFlow.Contexts
                 }
                 catch (Exception ex)
                 {
+                    if (IsObjectDisposedFailure(ex))
+                    {
+                        _logger.LogWarning(
+                            ex,
+                            "Ignoring disposed service {ServiceType} during {Scope} disposal.",
+                            serviceType.Name,
+                            scope);
+                        continue;
+                    }
+
                     exceptions ??= new List<Exception>();
                     exceptions.Add(ex);
                 }
             }
 
-            _scopeInitializationOrder.Remove(key);
+            _scopeInitializationLedger.RemoveScope(scope, scopeKey);
 
             if (exceptions != null)
                 throw new AggregateException(exceptions);
@@ -2018,6 +1940,23 @@ namespace RuntimeFlow.Contexts
             return false;
         }
 
+        private static bool IsObjectDisposedFailure(Exception exception)
+        {
+            if (exception is ObjectDisposedException)
+                return true;
+
+            if (exception is AggregateException aggregateException)
+            {
+                var flattened = aggregateException.Flatten().InnerExceptions;
+                return flattened.Count > 0 && flattened.All(IsObjectDisposedFailure);
+            }
+
+            if (exception.InnerException != null && IsObjectDisposedFailure(exception.InnerException))
+                return true;
+
+            return exception.Message?.IndexOf("Cannot access a disposed object.", StringComparison.Ordinal) >= 0;
+        }
+
         private static AggregateException CreateCleanupAggregateException(
             string operationName,
             Exception operationException,
@@ -2080,7 +2019,7 @@ namespace RuntimeFlow.Contexts
             foreach (var lazy in lazyBindings)
             {
                 initializers.Remove(lazy);
-                _lazyServiceBindings[lazy.ServiceType] = (context, scope, scopeKey);
+                _lazyInitialization.RegisterLazyBinding(lazy.ServiceType, context, scope, scopeKey);
             }
 
             var totalServices = initializers.Count;
@@ -2174,7 +2113,7 @@ namespace RuntimeFlow.Contexts
                 }
             }
 
-            _scopeInitializationOrder[(scope, scopeKey)] = initOrder;
+            _scopeInitializationLedger.SetInitializationOrder(scope, scopeKey, initOrder);
             return totalServices;
         }
 
@@ -2302,7 +2241,8 @@ namespace RuntimeFlow.Contexts
 
         private static List<ServiceInitializerBinding> DiscoverInitializers(GameContext context)
         {
-            var compiledGraph = RuntimeFlowCompiledInitializationGraph.RuleVersion == InitializationGraphRules.Version
+            var useCompiledGraph = ShouldUseCompiledInitializationGraph(RuntimeFlowCompiledInitializationGraph.RuleVersion);
+            var compiledGraph = useCompiledGraph
                 ? RuntimeFlowCompiledInitializationGraph.Nodes
                     .GroupBy(node => node.ServiceType)
                     .ToDictionary(group => group.Key, group => group.Last())
@@ -2421,6 +2361,20 @@ namespace RuntimeFlow.Contexts
             }
 
             return initializers;
+        }
+
+        internal static bool ShouldUseCompiledInitializationGraph(string compiledRuleVersion)
+        {
+            if (string.IsNullOrEmpty(compiledRuleVersion))
+                return false;
+
+            if (!string.Equals(compiledRuleVersion, InitializationGraphRules.Version, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    $"Compiled initialization graph rule version mismatch. Expected '{InitializationGraphRules.Version}', actual '{compiledRuleVersion}'.");
+            }
+
+            return true;
         }
 
         private static IEnumerable<Type> DiscoverRegisteredAsyncServiceTypes(GameContext context)
@@ -2788,9 +2742,7 @@ namespace RuntimeFlow.Contexts
         {
             foreach (var kvp in _preloadedContexts.ToArray())
             {
-                var scopeType = _declaredScopeTypes.TryGetValue(kvp.Key, out var declaredScopeType)
-                    ? declaredScopeType
-                    : GameContextType.Scene;
+                var scopeType = _scopeRegistry.GetDeclaredScopeOrDefault(kvp.Key, GameContextType.Scene);
 
                 if (scopeType is GameContextType.Scene or GameContextType.Module)
                 {

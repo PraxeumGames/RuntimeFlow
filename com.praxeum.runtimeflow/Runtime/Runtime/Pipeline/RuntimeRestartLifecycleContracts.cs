@@ -387,7 +387,7 @@ namespace RuntimeFlow.Contexts
                 }
                 else
                 {
-                    taskToAwait = RunRestartInternalAsync(request);
+                    taskToAwait = RunRestartInternalAsync(request, cancellationToken);
                     _inFlightRestartTask = taskToAwait;
                 }
             }
@@ -395,8 +395,9 @@ namespace RuntimeFlow.Contexts
             return WaitWithCancellationAsync(taskToAwait, cancellationToken);
         }
 
-        private async Task RunRestartInternalAsync(RuntimeRestartRequest request)
+        private async Task RunRestartInternalAsync(RuntimeRestartRequest request, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             try
             {
                 UpdateSnapshot(RuntimeRestartLifecycleStage.WaitingReadiness, request.ReasonCode, request.Diagnostic);
@@ -412,7 +413,7 @@ namespace RuntimeFlow.Contexts
                 if (_guard != null)
                 {
                     var guardResult = await _guard
-                        .EvaluateAsync(CreateGuardContext(request, restartReadiness), CancellationToken.None)
+                        .EvaluateAsync(CreateGuardContext(request, restartReadiness), cancellationToken)
                         .ConfigureAwait(false);
                     if (!guardResult.IsAllowed)
                     {
@@ -424,12 +425,12 @@ namespace RuntimeFlow.Contexts
                 }
 
                 UpdateSnapshot(RuntimeRestartLifecycleStage.Restarting, request.ReasonCode, request.Diagnostic);
-                await _restartOperation(request, CancellationToken.None).ConfigureAwait(false);
+                await _restartOperation(request, cancellationToken).ConfigureAwait(false);
 
                 if (_replayOperation != null)
                 {
                     UpdateSnapshot(RuntimeRestartLifecycleStage.ReplayingFlow, request.ReasonCode, request.Diagnostic);
-                    await _replayOperation(request, CancellationToken.None).ConfigureAwait(false);
+                    await _replayOperation(request, cancellationToken).ConfigureAwait(false);
                 }
 
                 lock (_sync)

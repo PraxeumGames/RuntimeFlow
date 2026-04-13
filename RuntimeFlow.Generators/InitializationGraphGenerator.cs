@@ -15,7 +15,7 @@ namespace RuntimeFlow.Generators
         private const string SessionMarkerInterface = "RuntimeFlow.Contexts.ISessionInitializableService";
         private const string SceneMarkerInterface = "RuntimeFlow.Contexts.ISceneInitializableService";
         private const string ModuleMarkerInterface = "RuntimeFlow.Contexts.IModuleInitializableService";
-        private const string GraphRulesVersion = "compiled-constructor-v1";
+        private const string GraphRulesVersion = "compiled-constructor-v3";
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
