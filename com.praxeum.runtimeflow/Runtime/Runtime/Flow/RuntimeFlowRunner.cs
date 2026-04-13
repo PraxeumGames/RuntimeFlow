@@ -68,28 +68,16 @@ namespace RuntimeFlow.Contexts
         public async Task LoadScopeSceneAsync(Type sceneScopeKey, CancellationToken cancellationToken = default)
         {
             if (sceneScopeKey == null) throw new ArgumentNullException(nameof(sceneScopeKey));
-
-            var transitionContext = new ScopeTransitionContext(
-                _builder.ActiveSceneScopeKey != null ? GameContextType.Scene : GameContextType.Session,
-                _builder.ActiveSceneScopeKey,
-                GameContextType.Scene,
-                sceneScopeKey);
-
-            await _transitionHandler.OnTransitionOutAsync(transitionContext, cancellationToken).ConfigureAwait(false);
-
-            await ExecuteWithRecoveryAsync(
-                operation: async (notifier, token) =>
-                {
-                    await _builder.LoadSceneAsync(sceneScopeKey, notifier, token).ConfigureAwait(false);
-                    await _transitionHandler.OnTransitionProgressAsync(transitionContext, 1f, token).ConfigureAwait(false);
-                },
-                retryAfterRecovery: true,
-                operationCode: RuntimeOperationCodes.LoadSceneScope,
-                loadingOperationKind: RuntimeLoadingOperationKind.LoadScene,
-                splitOperationPerScope: false,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
-            await _transitionHandler.OnTransitionInAsync(transitionContext, cancellationToken).ConfigureAwait(false);
+            await ExecuteScopedTransitionAsync(
+                    scopeKey: sceneScopeKey,
+                    sourceScopeType: _builder.ActiveSceneScopeKey != null ? GameContextType.Scene : GameContextType.Session,
+                    sourceScopeKey: _builder.ActiveSceneScopeKey,
+                    targetScopeType: GameContextType.Scene,
+                    operationCode: RuntimeOperationCodes.LoadSceneScope,
+                    loadingOperationKind: RuntimeLoadingOperationKind.LoadScene,
+                    loadOperation: (notifier, token) => _builder.LoadSceneAsync(sceneScopeKey, notifier, token),
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
         }
 
         public Task LoadScopeSceneAsync<TSceneScope>(CancellationToken cancellationToken = default)
@@ -100,28 +88,16 @@ namespace RuntimeFlow.Contexts
         public async Task LoadScopeModuleAsync(Type moduleScopeKey, CancellationToken cancellationToken = default)
         {
             if (moduleScopeKey == null) throw new ArgumentNullException(nameof(moduleScopeKey));
-
-            var transitionContext = new ScopeTransitionContext(
-                _builder.ActiveModuleScopeKey != null ? GameContextType.Module : GameContextType.Scene,
-                _builder.ActiveModuleScopeKey,
-                GameContextType.Module,
-                moduleScopeKey);
-
-            await _transitionHandler.OnTransitionOutAsync(transitionContext, cancellationToken).ConfigureAwait(false);
-
-            await ExecuteWithRecoveryAsync(
-                operation: async (notifier, token) =>
-                {
-                    await _builder.LoadModuleAsync(moduleScopeKey, notifier, token).ConfigureAwait(false);
-                    await _transitionHandler.OnTransitionProgressAsync(transitionContext, 1f, token).ConfigureAwait(false);
-                },
-                retryAfterRecovery: true,
-                operationCode: RuntimeOperationCodes.LoadModuleScope,
-                loadingOperationKind: RuntimeLoadingOperationKind.LoadModule,
-                splitOperationPerScope: false,
-                cancellationToken: cancellationToken).ConfigureAwait(false);
-
-            await _transitionHandler.OnTransitionInAsync(transitionContext, cancellationToken).ConfigureAwait(false);
+            await ExecuteScopedTransitionAsync(
+                    scopeKey: moduleScopeKey,
+                    sourceScopeType: _builder.ActiveModuleScopeKey != null ? GameContextType.Module : GameContextType.Scene,
+                    sourceScopeKey: _builder.ActiveModuleScopeKey,
+                    targetScopeType: GameContextType.Module,
+                    operationCode: RuntimeOperationCodes.LoadModuleScope,
+                    loadingOperationKind: RuntimeLoadingOperationKind.LoadModule,
+                    loadOperation: (notifier, token) => _builder.LoadModuleAsync(moduleScopeKey, notifier, token),
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
         }
 
         public Task LoadScopeModuleAsync<TModuleScope>(CancellationToken cancellationToken = default)
@@ -278,6 +254,39 @@ namespace RuntimeFlow.Contexts
         public Task UnloadAdditiveModuleAsync<TModuleScope>(CancellationToken cancellationToken = default)
         {
             return _builder.UnloadAdditiveModuleAsync(typeof(TModuleScope), cancellationToken);
+        }
+
+        private async Task ExecuteScopedTransitionAsync(
+            Type scopeKey,
+            GameContextType sourceScopeType,
+            Type? sourceScopeKey,
+            GameContextType targetScopeType,
+            string operationCode,
+            RuntimeLoadingOperationKind loadingOperationKind,
+            Func<IInitializationProgressNotifier, CancellationToken, Task> loadOperation,
+            CancellationToken cancellationToken)
+        {
+            var transitionContext = new ScopeTransitionContext(
+                sourceScopeType,
+                sourceScopeKey,
+                targetScopeType,
+                scopeKey);
+
+            await _transitionHandler.OnTransitionOutAsync(transitionContext, cancellationToken).ConfigureAwait(false);
+
+            await ExecuteWithRecoveryAsync(
+                operation: async (notifier, token) =>
+                {
+                    await loadOperation(notifier, token).ConfigureAwait(false);
+                    await _transitionHandler.OnTransitionProgressAsync(transitionContext, 1f, token).ConfigureAwait(false);
+                },
+                retryAfterRecovery: true,
+                operationCode: operationCode,
+                loadingOperationKind: loadingOperationKind,
+                splitOperationPerScope: false,
+                cancellationToken: cancellationToken).ConfigureAwait(false);
+
+            await _transitionHandler.OnTransitionInAsync(transitionContext, cancellationToken).ConfigureAwait(false);
         }
 
     }
