@@ -58,6 +58,9 @@ namespace RuntimeFlow.Contexts
             if (!IsEnabled)
                 return Timeout.InfiniteTimeSpan;
 
+            if (_options.ServiceTimeoutOverrides.TryGetValue(serviceType, out var overrideTimeout))
+                return overrideTimeout;
+
             var expected = _options.MinimumExpectedServiceDuration;
             if (_baselineStore.TryGetBaseline(_deviceProfile, scope, serviceType, out var baseline))
             {

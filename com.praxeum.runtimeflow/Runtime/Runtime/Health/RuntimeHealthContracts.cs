@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Collections.Generic;
 
 namespace RuntimeFlow.Contexts
 {
@@ -25,6 +26,15 @@ namespace RuntimeFlow.Contexts
         /// Set to <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable (default).
         /// </summary>
         public TimeSpan WaveStallTimeout { get; set; } = System.Threading.Timeout.InfiniteTimeSpan;
+
+        /// <summary>
+        /// Per-service timeout overrides. If a service type is present, its value is returned directly
+        /// by <see cref="RuntimeHealthSupervisor.GetServiceTimeout"/> without going through the
+        /// baseline + multiplier + clamp computation.
+        /// Use <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> to disable the timeout for a
+        /// specific service (e.g. services that wait for user interaction).
+        /// </summary>
+        public Dictionary<Type, TimeSpan> ServiceTimeoutOverrides { get; } = new();
 
         public Func<string>? DeviceProfileResolver { get; set; } = DefaultDeviceProfileResolver;
 
