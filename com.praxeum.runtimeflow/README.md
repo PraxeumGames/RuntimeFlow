@@ -29,10 +29,10 @@ Or via git URL in Package Manager:
 https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer
 ```
 
-Install RuntimeFlow package:
+Install RuntimeFlow package and pin version `0.1.0`:
 
 ```text
-https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow
+https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.1.0
 ```
 
 In `Packages/manifest.json`:
@@ -41,11 +41,12 @@ In `Packages/manifest.json`:
 {
   "dependencies": {
     "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer",
-    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow"
+    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.1.0"
   }
 }
 ```
 
+> `#0.1.0` pins the dependency to the RuntimeFlow `0.1.0` git tag. Publish that tag in Git before using the URL in Unity.
 > `RuntimeFlow.Runtime.asmdef` references `Microsoft.Extensions.Logging.Abstractions.dll` as a precompiled dependency.
 
 ## Quick start
