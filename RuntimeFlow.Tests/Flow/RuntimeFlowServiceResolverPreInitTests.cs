@@ -17,7 +17,7 @@ public sealed class RuntimeFlowServiceResolverPreInitTests
         var exception = Record.Exception(() =>
         {
             var resolved = RuntimeFlowServiceResolver.TryResolveFromContext(
-                (IGameContext)null,
+                (IGameContext?)null,
                 out PreInitProbeService service);
 
             Assert.False(resolved);

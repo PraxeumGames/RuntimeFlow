@@ -8,7 +8,7 @@ namespace RuntimeFlow.Contexts
     {
         bool HasCurrent { get; }
         RuntimePipeline Current { get; }
-        bool TryGetCurrent(out RuntimePipeline pipeline);
+        bool TryGetCurrent(out RuntimePipeline? pipeline);
         void SetCurrent(RuntimePipeline pipeline, IGameSceneLoader sceneLoader);
         void ClearCurrent(RuntimePipeline pipeline);
         bool IsReplayInProgress();
@@ -16,8 +16,8 @@ namespace RuntimeFlow.Contexts
         string DescribeCurrentStatus();
         RuntimeReadinessStatus GetRuntimeReadinessStatus();
         IRuntimeRestartCoordinator CreateRestartCoordinator(
-            Func<RuntimeReadinessStatus> runtimeReadinessProvider = null,
-            Func<DateTimeOffset> timestampProvider = null);
+            Func<RuntimeReadinessStatus>? runtimeReadinessProvider = null,
+            Func<DateTimeOffset>? timestampProvider = null);
         Task ReplayCurrentFlowAsync(CancellationToken cancellationToken = default);
     }
 
@@ -28,8 +28,8 @@ namespace RuntimeFlow.Contexts
     public sealed class RuntimeFlowPipelineProvider : IRuntimeFlowPipelineProvider
     {
         private readonly object _sync = new object();
-        private RuntimePipeline _current;
-        private IGameSceneLoader _sceneLoader;
+        private RuntimePipeline? _current;
+        private IGameSceneLoader? _sceneLoader;
 
         public bool HasCurrent
         {
@@ -56,7 +56,7 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        public bool TryGetCurrent(out RuntimePipeline pipeline)
+        public bool TryGetCurrent(out RuntimePipeline? pipeline)
         {
             lock (_sync)
             {
@@ -168,7 +168,7 @@ namespace RuntimeFlow.Contexts
                 return pipelineStateQuery.GetReadinessStatus();
             }
 
-            var runtimeStatus = pipeline.GetRuntimeStatus();
+            var runtimeStatus = pipeline!.GetRuntimeStatus();
             return new RuntimeReadinessStatus(
                 isReady: runtimeStatus.IsReady,
                 updatedAtUtc: runtimeStatus.UpdatedAtUtc,
@@ -178,8 +178,8 @@ namespace RuntimeFlow.Contexts
         }
 
         public IRuntimeRestartCoordinator CreateRestartCoordinator(
-            Func<RuntimeReadinessStatus> runtimeReadinessProvider = null,
-            Func<DateTimeOffset> timestampProvider = null)
+            Func<RuntimeReadinessStatus>? runtimeReadinessProvider = null,
+            Func<DateTimeOffset>? timestampProvider = null)
         {
             var safeTimestampProvider = timestampProvider ?? (() => DateTimeOffset.UtcNow);
             return new RuntimeRestartCoordinator(
@@ -193,8 +193,8 @@ namespace RuntimeFlow.Contexts
 
         public async Task ReplayCurrentFlowAsync(CancellationToken cancellationToken = default)
         {
-            RuntimePipeline pipeline;
-            IGameSceneLoader sceneLoader;
+            RuntimePipeline? pipeline;
+            IGameSceneLoader? sceneLoader;
             lock (_sync)
             {
                 pipeline = _current;
@@ -212,7 +212,7 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        private IRuntimeExecutionContext BuildExecutionContext()
+        private IRuntimeExecutionContext? BuildExecutionContext()
         {
             if (!TryGetCurrent(out var pipeline))
             {
@@ -222,13 +222,13 @@ namespace RuntimeFlow.Contexts
             return (pipeline as IRuntimeExecutionContextProvider)?.GetExecutionContext();
         }
 
-        private RuntimeRestartLifecycleSnapshot BuildRestartLifecycleSnapshot()
+        private RuntimeRestartLifecycleSnapshot? BuildRestartLifecycleSnapshot()
         {
             var lifecycleManager = ResolveRestartLifecycleManager();
             return lifecycleManager?.Snapshot;
         }
 
-        private IRuntimeRestartLifecycleManager ResolveRestartLifecycleManager()
+        private IRuntimeRestartLifecycleManager? ResolveRestartLifecycleManager()
         {
             if (!TryGetCurrent(out var pipeline))
             {

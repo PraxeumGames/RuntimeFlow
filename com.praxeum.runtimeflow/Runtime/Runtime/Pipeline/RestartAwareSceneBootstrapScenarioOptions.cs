@@ -4,7 +4,7 @@ namespace RuntimeFlow.Contexts
 {
     public sealed class RestartAwareSceneBootstrapScenarioOptions
     {
-        private static readonly Func<PreBootstrapStageStatus, string, string> DefaultPreBootstrapReasonCodeResolver =
+        private static readonly Func<PreBootstrapStageStatus, string, string?> DefaultPreBootstrapReasonCodeResolver =
             ResolveDefaultPreBootstrapReasonCode;
 
         public string? SceneName { get; set; }
@@ -20,7 +20,7 @@ namespace RuntimeFlow.Contexts
         public string RunCompleteReasonCode { get; set; } = "runtime-flow.run.completed";
         public string RunFailReasonCode { get; set; } = "runtime-flow.run.failed";
 
-        public Func<PreBootstrapStageStatus, string, string>? PreBootstrapReasonCodeResolver { get; set; } =
+        public Func<PreBootstrapStageStatus, string, string?>? PreBootstrapReasonCodeResolver { get; set; } =
             DefaultPreBootstrapReasonCodeResolver;
 
         public string? PreBootstrapFailedReasonCodeFallback { get; set; } = "prebootstrap.failed";
@@ -69,7 +69,7 @@ namespace RuntimeFlow.Contexts
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
 
-        private static string ResolveDefaultPreBootstrapReasonCode(PreBootstrapStageStatus status, string reasonCode)
+        private static string? ResolveDefaultPreBootstrapReasonCode(PreBootstrapStageStatus status, string reasonCode)
         {
             var normalizedReasonCode = Normalize(reasonCode);
             if (!string.IsNullOrEmpty(normalizedReasonCode))

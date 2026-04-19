@@ -1,0 +1,18 @@
+<Project>
+
+  <!--
+    Shared MSBuild properties for the .NET wrapper, generator, and test projects.
+    Unity does NOT read this file when compiling com.praxeum.runtimeflow/, so
+    these settings are safe and Unity-friendly by construction.
+  -->
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <AnalysisLevel>latest</AnalysisLevel>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+</Project>

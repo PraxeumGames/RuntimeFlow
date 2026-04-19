@@ -1,0 +1,45 @@
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{yml,yaml,json,md}]
+indent_size = 2
+
+[*.cs]
+# .NET formatting
+dotnet_sort_system_directives_first = true
+dotnet_separate_import_directive_groups = false
+
+# C# braces / blocks
+csharp_new_line_before_open_brace = all
+csharp_new_line_before_else = true
+csharp_new_line_before_catch = true
+csharp_new_line_before_finally = true
+csharp_prefer_braces = true:suggestion
+
+# Modern language features
+csharp_style_namespace_declarations = block_scoped:suggestion
+csharp_style_var_for_built_in_types = false:suggestion
+csharp_style_var_when_type_is_apparent = true:suggestion
+
+# Diagnostics — keep noise low; promote real issues
+dotnet_diagnostic.CA1822.severity = suggestion   # Mark members as static
+dotnet_diagnostic.CA2007.severity = none         # ConfigureAwait(false) — оставляем на усмотрение
+dotnet_diagnostic.CA1063.severity = warning      # Implement IDisposable correctly
+dotnet_diagnostic.CA1816.severity = warning      # Call GC.SuppressFinalize correctly
+dotnet_diagnostic.IDE0011.severity = suggestion  # Add braces
+
+# Nullable: явные нарушения должны быть видны
+dotnet_diagnostic.CS8600.severity = warning
+dotnet_diagnostic.CS8601.severity = warning
+dotnet_diagnostic.CS8602.severity = warning
+dotnet_diagnostic.CS8603.severity = warning
+dotnet_diagnostic.CS8604.severity = warning
+dotnet_diagnostic.CS8618.severity = warning
+dotnet_diagnostic.CS8625.severity = warning

@@ -101,11 +101,11 @@ namespace RuntimeFlow.Contexts
     internal sealed class RuntimeSessionRestartPreparationGuardBridge : IRuntimeFlowGuard
     {
         private readonly IReadOnlyList<IRuntimeSessionRestartPreparationHook> _hooks;
-        private readonly Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>> _dynamicHooksProvider;
+        private readonly Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>>? _dynamicHooksProvider;
 
         public RuntimeSessionRestartPreparationGuardBridge(
             IReadOnlyList<IRuntimeSessionRestartPreparationHook> hooks,
-            Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>> dynamicHooksProvider = null)
+            Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>>? dynamicHooksProvider = null)
         {
             _hooks = hooks ?? throw new ArgumentNullException(nameof(hooks));
             _dynamicHooksProvider = dynamicHooksProvider;
@@ -153,7 +153,7 @@ namespace RuntimeFlow.Contexts
 
         private static void AppendHooks(
             List<IRuntimeSessionRestartPreparationHook> hooks,
-            IReadOnlyList<IRuntimeSessionRestartPreparationHook> candidates)
+            IReadOnlyList<IRuntimeSessionRestartPreparationHook>? candidates)
         {
             if (hooks == null)
             {
@@ -173,7 +173,7 @@ namespace RuntimeFlow.Contexts
 
         private static void AddHook(
             List<IRuntimeSessionRestartPreparationHook> hooks,
-            IRuntimeSessionRestartPreparationHook hook)
+            IRuntimeSessionRestartPreparationHook? hook)
         {
             if (hook == null)
             {

@@ -34,10 +34,10 @@ namespace RuntimeFlow.Contexts
             TStage stage,
             RuntimePipelineStageState state,
             DateTimeOffset updatedAtUtc,
-            string reasonCode = null,
-            string diagnostic = null,
-            string errorType = null,
-            string errorMessage = null)
+            string? reasonCode = null,
+            string? diagnostic = null,
+            string? errorType = null,
+            string? errorMessage = null)
         {
             if (ReferenceEquals(stage, null))
                 throw new ArgumentNullException(nameof(stage));
@@ -54,12 +54,12 @@ namespace RuntimeFlow.Contexts
         public TStage Stage { get; }
         public RuntimePipelineStageState State { get; }
         public DateTimeOffset UpdatedAtUtc { get; }
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
-        public string ErrorType { get; }
-        public string ErrorMessage { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
+        public string? ErrorType { get; }
+        public string? ErrorMessage { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -93,11 +93,11 @@ namespace RuntimeFlow.Contexts
     public interface IRuntimePipelineStageStateProvider<in TStage, out TSnapshot>
         : IRuntimePipelineStageStateQuery<TStage, TSnapshot>
     {
-        void StartStage(TStage stage, string reasonCode = null, string diagnostic = null);
-        void CompleteStage(TStage stage, string reasonCode = null, string diagnostic = null);
-        void FailStage(TStage stage, string reasonCode, Exception exception = null, string diagnostic = null);
+        void StartStage(TStage stage, string? reasonCode = null, string? diagnostic = null);
+        void CompleteStage(TStage stage, string? reasonCode = null, string? diagnostic = null);
+        void FailStage(TStage stage, string? reasonCode, Exception? exception = null, string? diagnostic = null);
         void Report(string diagnostic);
-        void Stop(string reasonCode, string diagnostic = null, Exception exception = null);
+        void Stop(string? reasonCode, string? diagnostic = null, Exception? exception = null);
     }
 
 }

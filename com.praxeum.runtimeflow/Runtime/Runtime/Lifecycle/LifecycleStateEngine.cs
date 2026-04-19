@@ -3,7 +3,7 @@ using System.Collections.Generic;
 
 namespace RuntimeFlow.Lifecycle
 {
-    public sealed class LifecycleStateEngine<TLifecycleKey>
+    public sealed class LifecycleStateEngine<TLifecycleKey> where TLifecycleKey : notnull
     {
         private static readonly IReadOnlyCollection<LifecycleSnapshot<TLifecycleKey>> EmptySnapshots =
             Array.Empty<LifecycleSnapshot<TLifecycleKey>>();
@@ -12,12 +12,12 @@ namespace RuntimeFlow.Lifecycle
         private readonly Dictionary<TLifecycleKey, LifecycleSnapshot<TLifecycleKey>> _snapshots = new();
         private readonly Func<DateTimeOffset> _timestampProvider;
 
-        public LifecycleStateEngine(Func<DateTimeOffset> timestampProvider = null)
+        public LifecycleStateEngine(Func<DateTimeOffset>? timestampProvider = null)
         {
             _timestampProvider = timestampProvider ?? (() => DateTimeOffset.UtcNow);
         }
 
-        public event Action<LifecycleSnapshot<TLifecycleKey>> SnapshotPublished;
+        public event Action<LifecycleSnapshot<TLifecycleKey>>? SnapshotPublished;
 
         public bool TryGetSnapshot(TLifecycleKey lifecycleKey, out LifecycleSnapshot<TLifecycleKey> snapshot)
         {
@@ -64,10 +64,10 @@ namespace RuntimeFlow.Lifecycle
             TLifecycleKey lifecycleKey,
             LifecycleState nextState,
             float progress,
-            string reasonCode = null,
-            string diagnostic = null,
-            string errorType = null,
-            string errorMessage = null)
+            string? reasonCode = null,
+            string? diagnostic = null,
+            string? errorType = null,
+            string? errorMessage = null)
         {
             return PublishInternal(
                 lifecycleKey,
@@ -88,10 +88,10 @@ namespace RuntimeFlow.Lifecycle
             LifecycleState nextState,
             float progress,
             out LifecycleSnapshot<TLifecycleKey> snapshot,
-            string reasonCode = null,
-            string diagnostic = null,
-            string errorType = null,
-            string errorMessage = null)
+            string? reasonCode = null,
+            string? diagnostic = null,
+            string? errorType = null,
+            string? errorMessage = null)
         {
             snapshot = PublishInternal(
                 lifecycleKey,
@@ -113,16 +113,16 @@ namespace RuntimeFlow.Lifecycle
             LifecycleState? expectedCurrentState,
             LifecycleState nextState,
             float progress,
-            string reasonCode,
-            string diagnostic,
-            string errorType,
-            string errorMessage,
+            string? reasonCode,
+            string? diagnostic,
+            string? errorType,
+            string? errorMessage,
             bool validateExpectedState,
             out bool published)
         {
             EnsureKey(lifecycleKey, nameof(lifecycleKey));
 
-            Action<LifecycleSnapshot<TLifecycleKey>> handlers = null;
+            Action<LifecycleSnapshot<TLifecycleKey>>? handlers = null;
             LifecycleSnapshot<TLifecycleKey> snapshot;
 
             lock (_sync)

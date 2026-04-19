@@ -13,14 +13,14 @@ namespace RuntimeFlow.Contexts
         {
             if (sceneReferences == null)
             {
-                service = null;
+                service = default!; // callers must check the bool return before using service
                 return false;
             }
 
             var scope = sceneReferences.GetComponentInChildren<LifetimeScope>(true);
             if (scope == null || scope.Container == null)
             {
-                service = null;
+                service = default!; // callers must check the bool return before using service
                 return false;
             }
 
@@ -34,15 +34,15 @@ namespace RuntimeFlow.Contexts
         {
             if (context == null)
             {
-                service = null;
+                service = default!; // callers must check the bool return before using service
                 return false;
             }
 
-            return context.TryResolveSessionService(out service);
+            return context.TryResolveSessionService(out service!);
         }
 
         public static bool TryResolveFromContext<TService>(
-            IGameContext context,
+            IGameContext? context,
             out TService service)
             where TService : class
         {
@@ -50,17 +50,17 @@ namespace RuntimeFlow.Contexts
         }
 
         public static bool TryResolveFromResolver<TService>(
-            IObjectResolver resolver,
+            IObjectResolver? resolver,
             out TService service)
             where TService : class
         {
             if (resolver == null)
             {
-                service = null;
+                service = default!; // callers must check the bool return before using service
                 return false;
             }
 
-            return resolver.TryResolve(out service);
+            return resolver.TryResolve(out service!);
         }
     }
 }

@@ -37,7 +37,8 @@ namespace RuntimeFlow.Contexts
             _resettableStages = new HashSet<string>(
                 (options.ResettableStages ?? Array.Empty<string>())
                 .Select(NormalizeStage)
-                .Where(stage => stage != null),
+                .Where(stage => stage != null)
+                .Select(stage => stage!),
                 StringComparer.Ordinal);
             _stateStore = CreateStore();
         }
@@ -64,7 +65,7 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        public void StartStage(string stage, string reasonCode = null, string diagnostic = null)
+        public void StartStage(string stage, string? reasonCode = null, string? diagnostic = null)
         {
             var normalizedStage = NormalizeStage(stage);
             if (normalizedStage == null)
@@ -91,7 +92,7 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        public void CompleteStage(string stage, string reasonCode = null, string diagnostic = null)
+        public void CompleteStage(string stage, string? reasonCode = null, string? diagnostic = null)
         {
             var normalizedStage = NormalizeStage(stage);
             if (normalizedStage == null)
@@ -113,7 +114,7 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        public void FailStage(string stage, string reasonCode, Exception exception = null, string diagnostic = null)
+        public void FailStage(string stage, string? reasonCode, Exception? exception = null, string? diagnostic = null)
         {
             var normalizedStage = NormalizeStage(stage);
             if (normalizedStage == null)
@@ -150,7 +151,7 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        public void Stop(string reasonCode, string diagnostic = null, Exception exception = null)
+        public void Stop(string? reasonCode, string? diagnostic = null, Exception? exception = null)
         {
             lock (_sync)
             {
@@ -187,13 +188,13 @@ namespace RuntimeFlow.Contexts
                 snapshotObserver: _snapshotObserver);
         }
 
-        private static string NormalizeStage(string value)
+        private static string? NormalizeStage(string? value)
         {
             var normalized = Normalize(value);
             return string.IsNullOrWhiteSpace(normalized) ? null : normalized;
         }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }

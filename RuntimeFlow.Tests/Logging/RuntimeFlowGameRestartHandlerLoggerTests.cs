@@ -149,7 +149,7 @@ public sealed class RuntimeFlowGameRestartHandlerLoggerTests
                    && string.Equals(_snapshot.Stage, stage, StringComparison.Ordinal);
         }
 
-        public void StartStage(string stage, string reasonCode = null, string diagnostic = null)
+        public void StartStage(string stage, string? reasonCode = null, string? diagnostic = null)
         {
             if (IsStopped) return;
             _snapshot = new RuntimePipelineStageSnapshot<string>(
@@ -160,7 +160,7 @@ public sealed class RuntimeFlowGameRestartHandlerLoggerTests
                 diagnostic);
         }
 
-        public void CompleteStage(string stage, string reasonCode = null, string diagnostic = null)
+        public void CompleteStage(string stage, string? reasonCode = null, string? diagnostic = null)
         {
             if (IsStopped) return;
             _snapshot = new RuntimePipelineStageSnapshot<string>(
@@ -171,7 +171,7 @@ public sealed class RuntimeFlowGameRestartHandlerLoggerTests
                 diagnostic);
         }
 
-        public void FailStage(string stage, string reasonCode, Exception exception = null, string diagnostic = null)
+        public void FailStage(string stage, string? reasonCode, Exception? exception = null, string? diagnostic = null)
         {
             if (IsStopped) return;
             _snapshot = new RuntimePipelineStageSnapshot<string>(
@@ -188,7 +188,7 @@ public sealed class RuntimeFlowGameRestartHandlerLoggerTests
         {
         }
 
-        public void Stop(string reasonCode, string diagnostic = null, Exception exception = null)
+        public void Stop(string? reasonCode, string? diagnostic = null, Exception? exception = null)
         {
             IsStopped = true;
             _snapshot = new RuntimePipelineStageSnapshot<string>(

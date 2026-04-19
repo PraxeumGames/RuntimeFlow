@@ -165,7 +165,7 @@ public sealed class RestartCancellationPropagationTests
                 updatedAtUtc: DateTimeOffset.UtcNow);
         }
 
-        public IDisposable Block(string reasonCode, string reason = null!)
+        public IDisposable Block(string reasonCode, string? reason = null)
         {
             return NullDisposable.Instance;
         }

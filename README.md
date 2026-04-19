@@ -1,5 +1,8 @@
 # RuntimeFlow
 
+[![CI](https://github.com/PraxeumGames/RuntimeFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/PraxeumGames/RuntimeFlow/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 **RuntimeFlow is a Unity startup orchestration framework centered on scoped DI, async lifecycle execution, and runtime recovery controls.**
 
 For package installation and Unity integration usage, start with [`com.praxeum.runtimeflow/README.md`](com.praxeum.runtimeflow/README.md).
@@ -72,6 +75,13 @@ Useful focused runs:
 dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~ScopeEventBusTests"
 dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~RuntimeScopeReloadApiTests"
 ```
+
+## Quality gates
+
+- `dotnet build RuntimeFlow.sln` — must succeed with zero warnings (warnings are treated as errors via `Directory.Build.props`).
+- `dotnet test RuntimeFlow.Tests --no-build` — unit + integration tests for the runtime.
+- `dotnet test RuntimeFlow.Generators.Tests --no-build` — Roslyn generator regression tests for RF0001..RF0004 diagnostics.
+- The same gates run on every push / pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml), with coverage collected via Coverlet (Cobertura) and uploaded as a workflow artifact.
 
 ## License
 

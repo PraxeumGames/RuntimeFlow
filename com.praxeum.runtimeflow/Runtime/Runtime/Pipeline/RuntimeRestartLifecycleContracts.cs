@@ -18,16 +18,16 @@ namespace RuntimeFlow.Contexts
 
     public sealed class RuntimeRestartRequest
     {
-        public RuntimeRestartRequest(string reasonCode = null, string diagnostic = null)
+        public RuntimeRestartRequest(string? reasonCode = null, string? diagnostic = null)
         {
             ReasonCode = Normalize(reasonCode);
             Diagnostic = Normalize(diagnostic);
         }
 
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -38,10 +38,10 @@ namespace RuntimeFlow.Contexts
         public RuntimeRestartLifecycleSnapshot(
             RuntimeRestartLifecycleStage stage,
             DateTimeOffset updatedAtUtc,
-            string reasonCode = null,
-            string diagnostic = null,
-            string errorType = null,
-            string errorMessage = null)
+            string? reasonCode = null,
+            string? diagnostic = null,
+            string? errorType = null,
+            string? errorMessage = null)
         {
             Stage = stage;
             UpdatedAtUtc = updatedAtUtc;
@@ -53,17 +53,17 @@ namespace RuntimeFlow.Contexts
 
         public RuntimeRestartLifecycleStage Stage { get; }
         public DateTimeOffset UpdatedAtUtc { get; }
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
-        public string ErrorType { get; }
-        public string ErrorMessage { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
+        public string? ErrorType { get; }
+        public string? ErrorMessage { get; }
 
         public bool IsInProgress => Stage == RuntimeRestartLifecycleStage.WaitingReadiness
                                     || Stage == RuntimeRestartLifecycleStage.GuardValidation
                                     || Stage == RuntimeRestartLifecycleStage.Restarting
                                     || Stage == RuntimeRestartLifecycleStage.ReplayingFlow;
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -74,8 +74,8 @@ namespace RuntimeFlow.Contexts
         public RuntimeRestartReadiness(
             bool isReady,
             DateTimeOffset updatedAtUtc,
-            string blockingReasonCode = null,
-            string blockingReason = null)
+            string? blockingReasonCode = null,
+            string? blockingReason = null)
         {
             IsReady = isReady;
             UpdatedAtUtc = updatedAtUtc;
@@ -85,10 +85,10 @@ namespace RuntimeFlow.Contexts
 
         public bool IsReady { get; }
         public DateTimeOffset UpdatedAtUtc { get; }
-        public string BlockingReasonCode { get; }
-        public string BlockingReason { get; }
+        public string? BlockingReasonCode { get; }
+        public string? BlockingReason { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -98,11 +98,11 @@ namespace RuntimeFlow.Contexts
     {
         public RuntimeRestartGuardContext(
             RuntimeRestartRequest request,
-            RuntimeRestartLifecycleSnapshot snapshot = null,
-            IRuntimeExecutionContext executionContext = null,
-            RuntimeStatus runtimeStatus = null,
-            RuntimeReadinessStatus runtimeReadinessStatus = null,
-            RuntimeRestartReadiness restartReadiness = null)
+            RuntimeRestartLifecycleSnapshot? snapshot = null,
+            IRuntimeExecutionContext? executionContext = null,
+            RuntimeStatus? runtimeStatus = null,
+            RuntimeReadinessStatus? runtimeReadinessStatus = null,
+            RuntimeRestartReadiness? restartReadiness = null)
         {
             Request = request ?? throw new ArgumentNullException(nameof(request));
             Snapshot = snapshot;
@@ -113,11 +113,11 @@ namespace RuntimeFlow.Contexts
         }
 
         public RuntimeRestartRequest Request { get; }
-        public RuntimeRestartLifecycleSnapshot Snapshot { get; }
-        public IRuntimeExecutionContext ExecutionContext { get; }
-        public RuntimeStatus RuntimeStatus { get; }
-        public RuntimeReadinessStatus RuntimeReadinessStatus { get; }
-        public RuntimeRestartReadiness RestartReadiness { get; }
+        public RuntimeRestartLifecycleSnapshot? Snapshot { get; }
+        public IRuntimeExecutionContext? ExecutionContext { get; }
+        public RuntimeStatus? RuntimeStatus { get; }
+        public RuntimeReadinessStatus? RuntimeReadinessStatus { get; }
+        public RuntimeRestartReadiness? RestartReadiness { get; }
     }
 
     public interface IRuntimeRestartReadinessProvider
@@ -140,7 +140,7 @@ namespace RuntimeFlow.Contexts
 
     public interface IRuntimeReadinessGate : IRuntimeRestartReadinessProvider
     {
-        IDisposable Block(string reasonCode, string reason = null);
+        IDisposable Block(string reasonCode, string? reason = null);
         Task<RuntimeRestartReadiness> WaitUntilReadyAsync(
             TimeSpan timeout,
             TimeSpan? pollInterval = null,

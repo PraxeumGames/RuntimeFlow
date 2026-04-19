@@ -16,7 +16,7 @@ namespace RuntimeFlow.Contexts
         RuntimeExecutionPhase Phase { get; }
         bool IsReplay { get; }
         RuntimeExecutionState State { get; }
-        string CurrentOperationCode { get; }
+        string? CurrentOperationCode { get; }
         DateTimeOffset UpdatedAtUtc { get; }
     }
 
@@ -27,7 +27,7 @@ namespace RuntimeFlow.Contexts
             bool isReplay,
             RuntimeExecutionState state,
             DateTimeOffset updatedAtUtc,
-            string currentOperationCode = null)
+            string? currentOperationCode = null)
         {
             Phase = phase;
             IsReplay = isReplay;
@@ -39,10 +39,10 @@ namespace RuntimeFlow.Contexts
         public RuntimeExecutionPhase Phase { get; }
         public bool IsReplay { get; }
         public RuntimeExecutionState State { get; }
-        public string CurrentOperationCode { get; }
+        public string? CurrentOperationCode { get; }
         public DateTimeOffset UpdatedAtUtc { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -97,9 +97,9 @@ namespace RuntimeFlow.Contexts
         public RuntimeExecutionContextManager(
             RuntimeExecutionPhase initialPhase = RuntimeExecutionPhase.Unknown,
             RuntimeExecutionState initialState = RuntimeExecutionState.ColdStart,
-            string currentOperationCode = null,
+            string? currentOperationCode = null,
             bool initialIsReplay = false,
-            Func<DateTimeOffset> timestampProvider = null)
+            Func<DateTimeOffset>? timestampProvider = null)
         {
             _timestampProvider = timestampProvider ?? (() => DateTimeOffset.UtcNow);
             _snapshot = new RuntimeExecutionContextSnapshot(
@@ -129,7 +129,7 @@ namespace RuntimeFlow.Contexts
         public RuntimeExecutionContextSnapshot Update(
             RuntimeExecutionPhase phase,
             RuntimeExecutionState state,
-            string currentOperationCode = null,
+            string? currentOperationCode = null,
             bool? isReplay = null)
         {
             lock (_sync)

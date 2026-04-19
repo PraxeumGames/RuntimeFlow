@@ -49,8 +49,8 @@ namespace RuntimeFlow.Contexts
         public PreBootstrapFailureClassification(
             PreBootstrapFailureKind failureKind,
             bool isRetryable,
-            string reasonCode = null,
-            string diagnostic = null)
+            string? reasonCode = null,
+            string? diagnostic = null)
         {
             FailureKind = failureKind;
             IsRetryable = isRetryable;
@@ -60,10 +60,10 @@ namespace RuntimeFlow.Contexts
 
         public PreBootstrapFailureKind FailureKind { get; }
         public bool IsRetryable { get; }
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -104,8 +104,8 @@ namespace RuntimeFlow.Contexts
             TStatus currentStatus,
             DateTimeOffset timestampUtc,
             int attempt = 0,
-            string reasonCode = null,
-            string diagnostic = null)
+            string? reasonCode = null,
+            string? diagnostic = null)
         {
             if (attempt < 0)
                 throw new ArgumentOutOfRangeException(nameof(attempt), attempt, "Attempt cannot be negative.");
@@ -122,10 +122,10 @@ namespace RuntimeFlow.Contexts
         public TStatus CurrentStatus { get; }
         public DateTimeOffset TimestampUtc { get; }
         public int Attempt { get; }
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -137,11 +137,11 @@ namespace RuntimeFlow.Contexts
             TStatus status,
             DateTimeOffset updatedAtUtc,
             int attempt = 0,
-            string reasonCode = null,
-            string diagnostic = null,
-            string errorType = null,
-            string errorMessage = null,
-            PreBootstrapTransition<TStatus> lastTransition = null)
+            string? reasonCode = null,
+            string? diagnostic = null,
+            string? errorType = null,
+            string? errorMessage = null,
+            PreBootstrapTransition<TStatus>? lastTransition = null)
         {
             if (attempt < 0)
                 throw new ArgumentOutOfRangeException(nameof(attempt), attempt, "Attempt cannot be negative.");
@@ -159,13 +159,13 @@ namespace RuntimeFlow.Contexts
         public TStatus Status { get; }
         public DateTimeOffset UpdatedAtUtc { get; }
         public int Attempt { get; }
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
-        public string ErrorType { get; }
-        public string ErrorMessage { get; }
-        public PreBootstrapTransition<TStatus> LastTransition { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
+        public string? ErrorType { get; }
+        public string? ErrorMessage { get; }
+        public PreBootstrapTransition<TStatus>? LastTransition { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -200,7 +200,7 @@ namespace RuntimeFlow.Contexts
             TStatus runningStatus,
             TStatus succeededStatus,
             TStatus failedStatus,
-            IEqualityComparer<TStatus> comparer = null)
+            IEqualityComparer<TStatus>? comparer = null)
         {
             NotStartedStatus = notStartedStatus;
             RunningStatus = runningStatus;
@@ -227,9 +227,9 @@ namespace RuntimeFlow.Contexts
             IRuntimePipelineStageStateProvider<TStage, TSnapshot> pipelineState,
             TStage pipelineStage,
             PreBootstrapProjectionStatusMap<TStatus> statusMap,
-            Func<TStatus, string, string> reasonCodeResolver,
-            string failedReasonCodeFallback = null,
-            string failedDiagnosticFallback = null)
+            Func<TStatus, string?, string?> reasonCodeResolver,
+            string? failedReasonCodeFallback = null,
+            string? failedDiagnosticFallback = null)
         {
             if (preBootstrapStageService == null || pipelineState == null)
             {
@@ -276,7 +276,7 @@ namespace RuntimeFlow.Contexts
                 diagnostic: diagnostic ?? Normalize(failedDiagnosticFallback));
         }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }

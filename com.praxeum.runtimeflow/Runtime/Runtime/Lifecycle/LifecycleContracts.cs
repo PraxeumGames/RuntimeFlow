@@ -22,8 +22,8 @@ namespace RuntimeFlow.Lifecycle
             LifecycleState previousState,
             LifecycleState currentState,
             DateTimeOffset timestampUtc,
-            string reasonCode = null,
-            string diagnostic = null)
+            string? reasonCode = null,
+            string? diagnostic = null)
         {
             if (lifecycleKey == null)
                 throw new ArgumentNullException(nameof(lifecycleKey));
@@ -40,10 +40,10 @@ namespace RuntimeFlow.Lifecycle
         public LifecycleState PreviousState { get; }
         public LifecycleState CurrentState { get; }
         public DateTimeOffset TimestampUtc { get; }
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -56,11 +56,11 @@ namespace RuntimeFlow.Lifecycle
             LifecycleState state,
             float progress,
             DateTimeOffset timestampUtc,
-            string reasonCode = null,
-            string diagnostic = null,
-            string errorType = null,
-            string errorMessage = null,
-            LifecycleTransition<TLifecycleKey> lastTransition = null)
+            string? reasonCode = null,
+            string? diagnostic = null,
+            string? errorType = null,
+            string? errorMessage = null,
+            LifecycleTransition<TLifecycleKey>? lastTransition = null)
         {
             if (lifecycleKey == null)
                 throw new ArgumentNullException(nameof(lifecycleKey));
@@ -82,13 +82,13 @@ namespace RuntimeFlow.Lifecycle
         public LifecycleState State { get; }
         public float Progress { get; }
         public DateTimeOffset TimestampUtc { get; }
-        public string ReasonCode { get; }
-        public string Diagnostic { get; }
-        public string ErrorType { get; }
-        public string ErrorMessage { get; }
-        public LifecycleTransition<TLifecycleKey> LastTransition { get; }
+        public string? ReasonCode { get; }
+        public string? Diagnostic { get; }
+        public string? ErrorType { get; }
+        public string? ErrorMessage { get; }
+        public LifecycleTransition<TLifecycleKey>? LastTransition { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }

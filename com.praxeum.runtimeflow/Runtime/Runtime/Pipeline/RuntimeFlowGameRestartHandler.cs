@@ -62,7 +62,7 @@ namespace SFS.Core.GameLoading
             IGameDataCleaner gameDataCleaner,
             IRuntimeFlowPipelineProvider pipelineProvider,
             IRuntimePipelineStageStateProvider<string, RuntimePipelineStageSnapshot<string>> loadingState,
-            ILogger logger = null)
+            ILogger? logger = null)
         {
             _stateSaver = stateSaver ?? throw new ArgumentNullException(nameof(stateSaver));
             _gameDataCleaner = gameDataCleaner ?? throw new ArgumentNullException(nameof(gameDataCleaner));
@@ -98,7 +98,7 @@ namespace SFS.Core.GameLoading
             Restart(reason, forceSave: false, _gameDataCleaner.ClearAllUserData);
         }
 
-        public void Restart(string reason, bool forceSave = true, Action callback = null)
+        public void Restart(string reason, bool forceSave = true, Action? callback = null)
         {
             if (string.IsNullOrWhiteSpace(reason))
             {
@@ -250,7 +250,7 @@ namespace SFS.Core.GameLoading
             return result.Exception ?? new InvalidOperationException("RuntimeFlow restart failed.");
         }
 
-        private static ILogger ResolveLogger(IObjectResolver resolver, ILogger fallbackLogger)
+        private static ILogger ResolveLogger(IObjectResolver resolver, ILogger? fallbackLogger)
         {
             if (resolver != null)
             {

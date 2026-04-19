@@ -16,14 +16,14 @@ namespace RuntimeFlow.Contexts
         private readonly object _sync = new object();
         private readonly Func<DateTimeOffset> _timestampProvider;
         private readonly IRuntimeReadinessGate _readinessGate;
-        private readonly IRuntimeRestartGuard _guard;
-        private readonly IRuntimeExecutionContextProvider _executionContextProvider;
-        private readonly IRuntimePipelineStateQuery _pipelineStateQuery;
+        private readonly IRuntimeRestartGuard? _guard;
+        private readonly IRuntimeExecutionContextProvider? _executionContextProvider;
+        private readonly IRuntimePipelineStateQuery? _pipelineStateQuery;
         private readonly Func<RuntimeRestartRequest, CancellationToken, Task> _restartOperation;
-        private readonly Func<RuntimeRestartRequest, CancellationToken, Task> _replayOperation;
+        private readonly Func<RuntimeRestartRequest, CancellationToken, Task>? _replayOperation;
 
         private RuntimeRestartLifecycleSnapshot _snapshot;
-        private Task _inFlightRestartTask;
+        private Task? _inFlightRestartTask;
         private long _completedCount;
         private long _failedCount;
         private long _deduplicatedRequestCount;
@@ -31,12 +31,12 @@ namespace RuntimeFlow.Contexts
 
         public RuntimeRestartLifecycleManager(
             Func<RuntimeRestartRequest, CancellationToken, Task> restartOperation,
-            Func<RuntimeRestartRequest, CancellationToken, Task> replayOperation = null,
-            IRuntimeReadinessGate readinessGate = null,
-            IRuntimeRestartGuard guard = null,
-            IRuntimeExecutionContextProvider executionContextProvider = null,
-            IRuntimePipelineStateQuery pipelineStateQuery = null,
-            Func<DateTimeOffset> timestampProvider = null)
+            Func<RuntimeRestartRequest, CancellationToken, Task>? replayOperation = null,
+            IRuntimeReadinessGate? readinessGate = null,
+            IRuntimeRestartGuard? guard = null,
+            IRuntimeExecutionContextProvider? executionContextProvider = null,
+            IRuntimePipelineStateQuery? pipelineStateQuery = null,
+            Func<DateTimeOffset>? timestampProvider = null)
         {
             _restartOperation = restartOperation ?? throw new ArgumentNullException(nameof(restartOperation));
             _replayOperation = replayOperation;
@@ -196,8 +196,8 @@ namespace RuntimeFlow.Contexts
 
         private void UpdateSnapshot(
             RuntimeRestartLifecycleStage stage,
-            string reasonCode,
-            string diagnostic)
+            string? reasonCode,
+            string? diagnostic)
         {
             lock (_sync)
             {

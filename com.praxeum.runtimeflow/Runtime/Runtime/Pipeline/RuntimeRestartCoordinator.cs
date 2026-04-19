@@ -8,13 +8,13 @@ namespace RuntimeFlow.Contexts
     {
         private readonly object _sync = new object();
         private readonly Func<IRuntimeReadinessGate> _readinessGateFactory;
-        private readonly Func<IRuntimeRestartLifecycleManager> _restartLifecycleManagerProvider;
-        private Task<RuntimeRestartExecutionResult> _inFlightTask;
+        private readonly Func<IRuntimeRestartLifecycleManager?> _restartLifecycleManagerProvider;
+        private Task<RuntimeRestartExecutionResult>? _inFlightTask;
         private long _inFlightGeneration;
 
         public RuntimeRestartCoordinator(
             Func<IRuntimeReadinessGate> readinessGateFactory,
-            Func<IRuntimeRestartLifecycleManager> restartLifecycleManagerProvider)
+            Func<IRuntimeRestartLifecycleManager?> restartLifecycleManagerProvider)
         {
             _readinessGateFactory = readinessGateFactory ?? throw new ArgumentNullException(nameof(readinessGateFactory));
             _restartLifecycleManagerProvider = restartLifecycleManagerProvider ?? throw new ArgumentNullException(nameof(restartLifecycleManagerProvider));
@@ -55,7 +55,7 @@ namespace RuntimeFlow.Contexts
             RuntimeRestartCoordinatorRequest request,
             long generation)
         {
-            IRuntimeReadinessGate readinessGate = null;
+            IRuntimeReadinessGate? readinessGate = null;
             var readinessWaitCompleted = false;
             var cancellationToken = request.CancellationToken;
 

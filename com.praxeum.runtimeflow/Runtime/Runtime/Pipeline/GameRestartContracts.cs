@@ -6,7 +6,7 @@ namespace SFS.Core.GameLoading
     public interface IGameRestartHandler
     {
         IReadOnlyReactiveProperty<bool> IsApplicationRestarting { get; }
-        void Restart(string reason, bool forceSave = true, Action callback = null);
+        void Restart(string reason, bool forceSave = true, Action? callback = null);
         void RestartAndClearSecondaryUserData(string reason, bool forceSave = true);
         void HardRestart(string reason);
     }

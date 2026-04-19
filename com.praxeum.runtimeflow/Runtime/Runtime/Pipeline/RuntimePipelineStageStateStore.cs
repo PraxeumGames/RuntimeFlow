@@ -17,8 +17,8 @@ namespace RuntimeFlow.Contexts
 
         public RuntimePipelineStageStateStore(
             TStage initialStage,
-            Func<DateTimeOffset> timestampProvider = null,
-            IRuntimePipelineStageSnapshotObserver<TStage> snapshotObserver = null)
+            Func<DateTimeOffset>? timestampProvider = null,
+            IRuntimePipelineStageSnapshotObserver<TStage>? snapshotObserver = null)
         {
             if (ReferenceEquals(initialStage, null))
                 throw new ArgumentNullException(nameof(initialStage));
@@ -66,7 +66,7 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        public void StartStage(TStage stage, string reasonCode = null, string diagnostic = null)
+        public void StartStage(TStage stage, string? reasonCode = null, string? diagnostic = null)
         {
             if (ReferenceEquals(stage, null))
                 throw new ArgumentNullException(nameof(stage));
@@ -89,7 +89,7 @@ namespace RuntimeFlow.Contexts
             _snapshotObserver.OnSnapshot(snapshot);
         }
 
-        public void CompleteStage(TStage stage, string reasonCode = null, string diagnostic = null)
+        public void CompleteStage(TStage stage, string? reasonCode = null, string? diagnostic = null)
         {
             if (ReferenceEquals(stage, null))
                 throw new ArgumentNullException(nameof(stage));
@@ -112,7 +112,7 @@ namespace RuntimeFlow.Contexts
             _snapshotObserver.OnSnapshot(snapshot);
         }
 
-        public void FailStage(TStage stage, string reasonCode, Exception exception = null, string diagnostic = null)
+        public void FailStage(TStage stage, string? reasonCode, Exception? exception = null, string? diagnostic = null)
         {
             if (ReferenceEquals(stage, null))
                 throw new ArgumentNullException(nameof(stage));
@@ -159,7 +159,7 @@ namespace RuntimeFlow.Contexts
             _snapshotObserver.OnSnapshot(snapshot);
         }
 
-        public void Stop(string reasonCode, string diagnostic = null, Exception exception = null)
+        public void Stop(string? reasonCode, string? diagnostic = null, Exception? exception = null)
         {
             if (string.IsNullOrWhiteSpace(reasonCode))
                 throw new ArgumentException("Reason code is required.", nameof(reasonCode));
@@ -186,9 +186,9 @@ namespace RuntimeFlow.Contexts
         private RuntimePipelineStageSnapshot<TStage> CreateSnapshot(
             TStage stage,
             RuntimePipelineStageState state,
-            string reasonCode,
-            string diagnostic,
-            Exception exception,
+            string? reasonCode,
+            string? diagnostic,
+            Exception? exception,
             bool preserveError = false)
         {
             return new RuntimePipelineStageSnapshot<TStage>(

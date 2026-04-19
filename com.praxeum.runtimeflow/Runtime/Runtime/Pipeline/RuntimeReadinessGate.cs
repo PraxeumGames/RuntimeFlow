@@ -13,18 +13,18 @@ namespace RuntimeFlow.Contexts
     {
         private readonly object _sync = new object();
         private readonly Func<DateTimeOffset> _timestampProvider;
-        private readonly Func<RuntimeReadinessStatus> _runtimeReadinessProvider;
-        private readonly Func<IRuntimeExecutionContext> _executionContextProvider;
-        private readonly Func<RuntimeRestartLifecycleSnapshot> _restartLifecycleSnapshotProvider;
+        private readonly Func<RuntimeReadinessStatus>? _runtimeReadinessProvider;
+        private readonly Func<IRuntimeExecutionContext?>? _executionContextProvider;
+        private readonly Func<RuntimeRestartLifecycleSnapshot?>? _restartLifecycleSnapshotProvider;
         private readonly HashSet<string> _blockers = new HashSet<string>(StringComparer.Ordinal);
-        private string _blockingReasonCode;
-        private string _blockingReason;
+        private string? _blockingReasonCode;
+        private string? _blockingReason;
 
         public RuntimeReadinessGate(
-            Func<RuntimeReadinessStatus> runtimeReadinessProvider = null,
-            Func<IRuntimeExecutionContext> executionContextProvider = null,
-            Func<RuntimeRestartLifecycleSnapshot> restartLifecycleSnapshotProvider = null,
-            Func<DateTimeOffset> timestampProvider = null)
+            Func<RuntimeReadinessStatus>? runtimeReadinessProvider = null,
+            Func<IRuntimeExecutionContext?>? executionContextProvider = null,
+            Func<RuntimeRestartLifecycleSnapshot?>? restartLifecycleSnapshotProvider = null,
+            Func<DateTimeOffset>? timestampProvider = null)
         {
             _runtimeReadinessProvider = runtimeReadinessProvider;
             _executionContextProvider = executionContextProvider;
@@ -82,7 +82,7 @@ namespace RuntimeFlow.Contexts
                 updatedAtUtc: _timestampProvider());
         }
 
-        public IDisposable Block(string reasonCode, string reason = null)
+        public IDisposable Block(string reasonCode, string? reason = null)
         {
             var normalizedReasonCode = string.IsNullOrWhiteSpace(reasonCode)
                 ? "readiness.blocked"

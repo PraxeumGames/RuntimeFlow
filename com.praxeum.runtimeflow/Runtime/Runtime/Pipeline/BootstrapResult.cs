@@ -12,8 +12,8 @@ namespace RuntimeFlow.Contexts
     /// </summary>
     public sealed class BootstrapResult : IDisposable, IAsyncDisposable
     {
-        private readonly ILogger _logger;
-        private IRuntimeFlowPipelineProvider _pipelineProvider;
+        private readonly ILogger? _logger;
+        private IRuntimeFlowPipelineProvider? _pipelineProvider;
 
         public RuntimePipeline Pipeline { get; }
         public IObjectResolver RootContainer { get; }
@@ -25,14 +25,14 @@ namespace RuntimeFlow.Contexts
         /// <summary>True after bootstrap has finished (regardless of outcome).</summary>
         public bool IsCompleted { get; private set; }
 
-        private WeakReference<IGameContext> _sessionContextReference;
+        private WeakReference<IGameContext>? _sessionContextReference;
 
         /// <summary>
         /// The session-scope game context. Available after successful bootstrap.
         /// Stored weakly so BootstrapResult does not keep an old session graph alive across restarts.
         /// Use Resolve&lt;T&gt;() to access session-scoped services in tests.
         /// </summary>
-        public IGameContext SessionContext
+        public IGameContext? SessionContext
         {
             get
             {
@@ -62,7 +62,7 @@ namespace RuntimeFlow.Contexts
             RuntimePipeline pipeline,
             IObjectResolver rootContainer,
             CancellationTokenSource cts,
-            ILogger logger = null)
+            ILogger? logger = null)
             : this(pipeline, rootContainer, cts, logger, pipelineProvider: null)
         {
         }
@@ -71,8 +71,8 @@ namespace RuntimeFlow.Contexts
             RuntimePipeline pipeline,
             IObjectResolver rootContainer,
             CancellationTokenSource cts,
-            ILogger logger,
-            IRuntimeFlowPipelineProvider pipelineProvider)
+            ILogger? logger,
+            IRuntimeFlowPipelineProvider? pipelineProvider)
         {
             Pipeline = pipeline;
             RootContainer = rootContainer;
@@ -107,7 +107,7 @@ namespace RuntimeFlow.Contexts
             {
                 try
                 {
-                    await Pipeline.DisposeAsync(CancellationTokenSource?.Token ?? CancellationToken.None);
+                    await Pipeline.DisposeAsync();
                 }
                 catch (Exception ex)
                 {
@@ -123,8 +123,9 @@ namespace RuntimeFlow.Contexts
         }
 
         /// <summary>
-        /// Synchronous disposal — used by GameEntryPoint.OnDestroy (cannot be async).
+        /// Synchronous disposal — used by <c>GameEntryPoint.OnDestroy</c> (cannot be async).
         /// Pipeline disposal is best-effort synchronous wait.
+        /// Prefer <see cref="DisposeAsync"/> when an async context is available.
         /// </summary>
         public void Dispose()
         {

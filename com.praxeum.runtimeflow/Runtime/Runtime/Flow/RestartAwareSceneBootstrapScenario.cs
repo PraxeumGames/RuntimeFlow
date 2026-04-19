@@ -24,7 +24,7 @@ namespace RuntimeFlow.Contexts
         private readonly string _replayRunStartReasonCode;
         private readonly string _runCompleteReasonCode;
         private readonly string _runFailReasonCode;
-        private readonly Func<PreBootstrapStageStatus, string, string> _preBootstrapReasonCodeResolver;
+        private readonly Func<PreBootstrapStageStatus, string, string?> _preBootstrapReasonCodeResolver;
         private readonly string? _preBootstrapFailedReasonCodeFallback;
         private readonly string? _preBootstrapFailedDiagnosticFallback;
         private bool _isPreBootstrapCompleted;

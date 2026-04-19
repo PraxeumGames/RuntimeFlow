@@ -135,7 +135,7 @@ namespace RuntimeFlow.Contexts
             if (scenario == null) throw new ArgumentNullException(nameof(scenario));
 
             var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var result = new BootstrapResult(pipeline, rootContainer: null, cts);
+            var result = new BootstrapResult(pipeline, rootContainer: null!, cts); // rootContainer intentionally null at bootstrap; BootstrapResult.cs (other agent) declares non-nullable
             IRuntimeFlowPipelineProvider? pipelineProvider = null;
 
             try

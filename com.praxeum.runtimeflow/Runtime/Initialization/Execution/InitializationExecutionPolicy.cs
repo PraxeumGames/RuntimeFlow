@@ -64,6 +64,12 @@ namespace RuntimeFlow.Contexts
             await operation(cancellationToken).ConfigureAwait(false);
         }
 
+        /// <summary>
+        /// Invoked via <see cref="SynchronizationContext.Post"/> and therefore declared <c>async void</c>.
+        /// Exceptions from <paramref name="operation"/> are routed through <paramref name="tcs"/> rather
+        /// than escaping to the synchronization context's unhandled-exception handler, making the caller's
+        /// awaited task fault or cancel correctly.
+        /// </summary>
         private static async void RunOnPostedContext(
             Func<CancellationToken, Task> operation,
             CancellationToken cancellationToken,

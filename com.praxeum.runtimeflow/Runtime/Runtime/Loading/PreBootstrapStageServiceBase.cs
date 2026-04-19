@@ -15,24 +15,24 @@ namespace RuntimeFlow.Contexts
         private readonly Func<DateTimeOffset> _timestampProvider;
         private readonly IPreBootstrapFailureClassifier _failureClassifier;
         private readonly PreBootstrapStagePolicy _policy;
-        private readonly IPreBootstrapTransitionObserver<TStatus> _transitionObserver;
+        private readonly IPreBootstrapTransitionObserver<TStatus>? _transitionObserver;
         private readonly Random _jitterRandom = new Random();
 
         private TStatus _status;
         private int _attempt;
-        private Task _executionTask;
+        private Task? _executionTask; // lazily created on first EnsureCompletedAsync call
         private PreBootstrapSnapshot<TStatus> _snapshot;
-        private PreBootstrapTransition<TStatus> _lastTransition;
+        private PreBootstrapTransition<TStatus>? _lastTransition; // null until first transition
 
         protected PreBootstrapStageServiceBase(
             TStatus initialStatus,
             TStatus runningStatus,
             TStatus succeededStatus,
             TStatus failedStatus,
-            PreBootstrapStagePolicy policy = null,
-            IPreBootstrapFailureClassifier failureClassifier = null,
-            IPreBootstrapTransitionObserver<TStatus> transitionObserver = null,
-            Func<DateTimeOffset> timestampProvider = null)
+            PreBootstrapStagePolicy? policy = null,
+            IPreBootstrapFailureClassifier? failureClassifier = null,
+            IPreBootstrapTransitionObserver<TStatus>? transitionObserver = null,
+            Func<DateTimeOffset>? timestampProvider = null)
         {
             RunningStatus = runningStatus;
             SucceededStatus = succeededStatus;
@@ -172,7 +172,7 @@ namespace RuntimeFlow.Contexts
         private async Task RunExecutionAsync()
         {
             var maxAttempts = Math.Max(1, _policy.MaxAttempts);
-            Exception lastException = null;
+            Exception? lastException = null;
 
             TransitionTo(RunningStatus, reasonCode: ResolveStartedReasonCode(), diagnostic: null, attempt: 1);
 
@@ -264,8 +264,8 @@ namespace RuntimeFlow.Contexts
         private void TransitionTo(
             TStatus newStatus,
             string reasonCode,
-            string diagnostic,
-            Exception error = null,
+            string? diagnostic,
+            Exception? error = null,
             int attempt = 0)
         {
             PreBootstrapTransition<TStatus> transition;

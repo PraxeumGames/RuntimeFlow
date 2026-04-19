@@ -73,7 +73,7 @@ namespace RuntimeFlow.Contexts
             RuntimeRestartRequest restartRequest,
             TimeSpan readinessTimeout,
             TimeSpan? readinessPollInterval = null,
-            Func<CancellationToken, Task> onBeforeRestartAsync = null,
+            Func<CancellationToken, Task>? onBeforeRestartAsync = null,
             CancellationToken cancellationToken = default)
         {
             if (restartRequest == null)
@@ -93,7 +93,7 @@ namespace RuntimeFlow.Contexts
         public RuntimeRestartRequest RestartRequest { get; }
         public TimeSpan ReadinessTimeout { get; }
         public TimeSpan? ReadinessPollInterval { get; }
-        public Func<CancellationToken, Task> OnBeforeRestartAsync { get; }
+        public Func<CancellationToken, Task>? OnBeforeRestartAsync { get; }
         public CancellationToken CancellationToken { get; }
     }
 
@@ -103,8 +103,8 @@ namespace RuntimeFlow.Contexts
             RuntimeRestartExecutionOutcome outcome,
             RuntimeRestartRequest request,
             RuntimeRestartDuplicateReason duplicateReason = RuntimeRestartDuplicateReason.None,
-            RuntimeRestartReadiness readiness = null,
-            Exception exception = null)
+            RuntimeRestartReadiness? readiness = null,
+            Exception? exception = null)
         {
             Outcome = outcome;
             Request = request;
@@ -116,8 +116,8 @@ namespace RuntimeFlow.Contexts
         public RuntimeRestartExecutionOutcome Outcome { get; }
         public RuntimeRestartRequest Request { get; }
         public RuntimeRestartDuplicateReason DuplicateReason { get; }
-        public RuntimeRestartReadiness Readiness { get; }
-        public Exception Exception { get; }
+        public RuntimeRestartReadiness? Readiness { get; }
+        public Exception? Exception { get; }
 
         public static RuntimeRestartExecutionResult Completed(RuntimeRestartRequest request)
             => new RuntimeRestartExecutionResult(RuntimeRestartExecutionOutcome.Completed, request);
@@ -132,7 +132,7 @@ namespace RuntimeFlow.Contexts
 
         public static RuntimeRestartExecutionResult TimedOut(
             RuntimeRestartRequest request,
-            RuntimeRestartReadiness readiness)
+            RuntimeRestartReadiness? readiness)
             => new RuntimeRestartExecutionResult(
                 RuntimeRestartExecutionOutcome.TimedOut,
                 request,

@@ -36,14 +36,14 @@ namespace RuntimeFlow.Contexts
         }
 
         public TStage Stage { get; }
-        public string PreparingReasonCode { get; }
-        public string DuplicateReasonCode { get; }
-        public string CompletedReasonCode { get; }
-        public string FailedReasonCode { get; }
-        public string TimedOutReasonCode { get; }
-        public string LifecycleManagerMissingReasonCode { get; }
+        public string? PreparingReasonCode { get; }
+        public string? DuplicateReasonCode { get; }
+        public string? CompletedReasonCode { get; }
+        public string? FailedReasonCode { get; }
+        public string? TimedOutReasonCode { get; }
+        public string? LifecycleManagerMissingReasonCode { get; }
 
-        private static string Normalize(string value)
+        private static string? Normalize(string? value)
         {
             return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
         }
@@ -55,7 +55,7 @@ namespace RuntimeFlow.Contexts
             RuntimeRestartDispatch dispatch,
             IRuntimePipelineStageStateProvider<TStage, TSnapshot> stageStateProvider,
             RuntimeRestartStageProjectionOptions<TStage> options,
-            string diagnostic = null)
+            string? diagnostic = null)
         {
             if (stageStateProvider == null)
                 throw new ArgumentNullException(nameof(stageStateProvider));
@@ -76,10 +76,10 @@ namespace RuntimeFlow.Contexts
             RuntimeRestartExecutionResult result,
             IRuntimePipelineStageStateProvider<TStage, TSnapshot> stageStateProvider,
             RuntimeRestartStageProjectionOptions<TStage> options,
-            string diagnostic = null,
-            Func<RuntimeRestartExecutionResult, string> timeoutDiagnosticResolver = null,
-            Func<RuntimeRestartExecutionResult, string> lifecycleMissingDiagnosticResolver = null,
-            Func<RuntimeRestartExecutionResult, Exception> failedExceptionResolver = null)
+            string? diagnostic = null,
+            Func<RuntimeRestartExecutionResult, string>? timeoutDiagnosticResolver = null,
+            Func<RuntimeRestartExecutionResult, string>? lifecycleMissingDiagnosticResolver = null,
+            Func<RuntimeRestartExecutionResult, Exception>? failedExceptionResolver = null)
         {
             if (result == null)
                 throw new ArgumentNullException(nameof(result));
