@@ -35,14 +35,14 @@ jobs:
             nuget-${{ runner.os }}-
 
       - name: Restore
-        run: dotnet restore RuntimeFlow.sln
+        run: dotnet restore "${{ github.workspace }}/RuntimeFlow.sln"
 
       - name: Build
-        run: dotnet build RuntimeFlow.sln --configuration Release --no-restore --nologo
+        run: dotnet build "${{ github.workspace }}/RuntimeFlow.sln" --configuration Release --no-restore --nologo
 
       - name: Test (with coverage)
         run: |
-          dotnet test RuntimeFlow.Tests \
+          dotnet test "${{ github.workspace }}/RuntimeFlow.Tests/RuntimeFlow.Tests.csproj" \
             --configuration Release \
             --no-build \
             --nologo \
@@ -52,7 +52,7 @@ jobs:
 
       - name: Test generator
         run: |
-          dotnet test RuntimeFlow.Generators.Tests \
+          dotnet test "${{ github.workspace }}/RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj" \
             --configuration Release \
             --no-build \
             --nologo \
