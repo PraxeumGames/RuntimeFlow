@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using VContainer;
 
@@ -56,9 +57,9 @@ namespace RuntimeFlow.Contexts
             Type serviceType,
             bool initialized,
             IObjectResolver? container,
-            out Type implementationType)
+            [MaybeNullWhen(false)] out Type implementationType)
         {
-            if (_implementationTypes.TryGetValue(serviceType, out implementationType!))
+            if (_implementationTypes.TryGetValue(serviceType, out implementationType))
                 return true;
 
             if (initialized
@@ -71,13 +72,13 @@ namespace RuntimeFlow.Contexts
                 return true;
             }
 
-            implementationType = null!;
+            implementationType = null;
             return false;
         }
 
-        public bool TryGetRegisteredInstance(Type serviceType, out object instance)
+        public bool TryGetRegisteredInstance(Type serviceType, [MaybeNullWhen(false)] out object instance)
         {
-            return _registeredInstances.TryGetValue(serviceType, out instance!);
+            return _registeredInstances.TryGetValue(serviceType, out instance);
         }
 
         public KeyValuePair<Type, object>[] GetRegisteredInstanceEntriesSnapshot()

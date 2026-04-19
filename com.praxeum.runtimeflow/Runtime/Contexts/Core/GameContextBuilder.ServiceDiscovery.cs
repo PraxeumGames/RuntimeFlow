@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using VContainer;
@@ -112,11 +113,11 @@ namespace RuntimeFlow.Contexts
                 $"Cannot resolve constructor dependency {parameterType.Name} for {context.GetType().Name}.");
         }
 
-        private static bool TryResolveFromParent(IGameContext? parent, Type serviceType, out object resolved)
+        private static bool TryResolveFromParent(IGameContext? parent, Type serviceType, [MaybeNullWhen(false)] out object resolved)
         {
             if (parent == null)
             {
-                resolved = null!;
+                resolved = null;
                 return false;
             }
 
@@ -127,12 +128,12 @@ namespace RuntimeFlow.Contexts
             }
             catch (VContainerException)
             {
-                resolved = null!;
+                resolved = null;
                 return false;
             }
             catch (InvalidOperationException)
             {
-                resolved = null!;
+                resolved = null;
                 return false;
             }
         }
@@ -169,7 +170,7 @@ namespace RuntimeFlow.Contexts
             var rawBindingsByImplementation = new Dictionary<Type, (Type serviceType, Type implementationType, IReadOnlyCollection<Type> rawDependencies)>();
             foreach (var serviceType in candidateServiceTypes.OrderBy(GetDeterministicTypeName, StringComparer.Ordinal))
             {
-                Type implementationType;
+                Type? implementationType;
                 IReadOnlyCollection<Type> rawDependencies;
 
                 if (compiledGraph.TryGetValue(serviceType, out var compiledNode))

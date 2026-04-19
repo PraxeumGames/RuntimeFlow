@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 
 namespace RuntimeFlow.Contexts
 {
@@ -38,16 +39,16 @@ namespace RuntimeFlow.Contexts
             return _moduleProfiles[scopeKey];
         }
 
-        public bool TryGetSceneProfile(Type scopeKey, out ScopeProfile profile)
+        public bool TryGetSceneProfile(Type scopeKey, [MaybeNullWhen(false)] out ScopeProfile profile)
         {
             if (scopeKey == null) throw new ArgumentNullException(nameof(scopeKey));
-            return _sceneProfiles.TryGetValue(scopeKey, out profile!);
+            return _sceneProfiles.TryGetValue(scopeKey, out profile);
         }
 
-        public bool TryGetModuleProfile(Type scopeKey, out ScopeProfile profile)
+        public bool TryGetModuleProfile(Type scopeKey, [MaybeNullWhen(false)] out ScopeProfile profile)
         {
             if (scopeKey == null) throw new ArgumentNullException(nameof(scopeKey));
-            return _moduleProfiles.TryGetValue(scopeKey, out profile!);
+            return _moduleProfiles.TryGetValue(scopeKey, out profile);
         }
 
         public void BindScopedRegistration(

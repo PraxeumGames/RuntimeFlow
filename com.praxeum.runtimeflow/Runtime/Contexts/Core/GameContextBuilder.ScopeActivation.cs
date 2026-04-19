@@ -17,7 +17,7 @@ namespace RuntimeFlow.Contexts
 
             foreach (var serviceType in context.RegisteredServiceTypes.Distinct())
             {
-                Type implementationType;
+                Type? implementationType;
                 if (!context.TryGetImplementationType(serviceType, out implementationType))
                 {
                     if (serviceType.IsInterface)

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using VContainer;
 
@@ -15,9 +16,9 @@ namespace RuntimeFlow.Contexts
             _decorations.Add((serviceType, decoratorType));
         }
 
-        public bool TryGetDecoratedInstance(Type serviceType, out object instance)
+        public bool TryGetDecoratedInstance(Type serviceType, [MaybeNullWhen(false)] out object instance)
         {
-            return _decoratedInstances.TryGetValue(serviceType, out instance!);
+            return _decoratedInstances.TryGetValue(serviceType, out instance);
         }
 
         public void ValidateRegistrations(Func<Type, bool> isRegistered)

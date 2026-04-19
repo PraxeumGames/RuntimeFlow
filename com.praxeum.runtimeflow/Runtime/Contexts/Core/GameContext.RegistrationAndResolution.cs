@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics.CodeAnalysis;
 using VContainer;
 
 namespace RuntimeFlow.Contexts
@@ -106,14 +107,14 @@ namespace RuntimeFlow.Contexts
             return _container!.Resolve(serviceType);
         }
 
-        internal bool TryGetImplementationType(Type serviceType, out Type implementationType)
+        internal bool TryGetImplementationType(Type serviceType, [MaybeNullWhen(false)] out Type implementationType)
         {
             return _registrationStore.TryGetImplementationType(serviceType, _initialized, _container, out implementationType);
         }
 
-        internal bool TryGetRegisteredInstance(Type serviceType, out object instance)
+        internal bool TryGetRegisteredInstance(Type serviceType, [MaybeNullWhen(false)] out object instance)
         {
-            return _registrationStore.TryGetRegisteredInstance(serviceType, out instance!);
+            return _registrationStore.TryGetRegisteredInstance(serviceType, out instance);
         }
 
         internal KeyValuePair<Type, object>[] GetRegisteredInstanceEntriesSnapshot()
