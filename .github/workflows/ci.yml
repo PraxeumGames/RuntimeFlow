@@ -35,10 +35,14 @@ jobs:
             nuget-${{ runner.os }}-
 
       - name: Restore
-        run: dotnet restore ./RuntimeFlow.sln
+        run: |
+          dotnet restore ./RuntimeFlow.Tests/RuntimeFlow.Tests.csproj --nologo
+          dotnet restore ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --nologo
 
       - name: Build
-        run: dotnet build ./RuntimeFlow.sln --configuration Release --no-restore --nologo
+        run: |
+          dotnet build ./RuntimeFlow.Tests/RuntimeFlow.Tests.csproj --configuration Release --no-restore --nologo
+          dotnet build ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --configuration Release --no-restore --nologo
 
       - name: Test (with coverage)
         run: |
