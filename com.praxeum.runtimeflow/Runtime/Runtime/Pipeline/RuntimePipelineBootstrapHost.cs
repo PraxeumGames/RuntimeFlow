@@ -10,7 +10,6 @@ namespace RuntimeFlow.Contexts
     {
         public IGameSceneLoader? SceneLoader { get; set; }
         public RestartAwareSceneBootstrapScenarioOptions? ScenarioOptions { get; set; }
-        public Func<RestartAwareSceneBootstrapScenarioOptions, IRuntimeFlowScenario>? RestartAwareScenarioFactory { get; set; }
         public Action<GameContextBuilder, IPreBootstrapStageService?>? ConfigureBuilder { get; set; }
         public IEnumerable<IRuntimeFlowGuard>? Guards { get; set; }
         public Action<RuntimePipelineOptions>? ConfigurePipelineOptions { get; set; }
@@ -32,34 +31,61 @@ namespace RuntimeFlow.Contexts
             if (options == null) throw new ArgumentNullException(nameof(options));
             if (options.SceneLoader == null) throw new ArgumentException("Scene loader is required.", nameof(options));
             if (options.ScenarioOptions == null) throw new ArgumentException("Scenario options are required.", nameof(options));
-            if (options.RestartAwareScenarioFactory == null)
-                throw new ArgumentException("Restart-aware scenario factory is required.", nameof(options));
 
             var callbackContext = SynchronizationContext.Current;
             var scenarioOptions = CloneRestartAwareSceneBootstrapOptions(options.ScenarioOptions);
-            var scenarioFactory = options.RestartAwareScenarioFactory;
-            var preBootstrapStageService = options.PreBootstrapStageService
-                ?? scenarioOptions.PreBootstrapStageService
-                ?? options.PreBootstrapStageServiceFactory?.Invoke();
+            var preBootstrapStageService = await EnsurePreBootstrapReadyAsync(
+                    options.PreBootstrapStageService ?? scenarioOptions.PreBootstrapStageService,
+                    options.PreBootstrapStageServiceFactory,
+                    options.OnPreBootstrapCompleted,
+                    callbackContext,
+                    cancellationToken)
+                .ConfigureAwait(false);
 
             if (preBootstrapStageService != null)
-            {
-                await preBootstrapStageService.EnsureCompletedAsync(cancellationToken).ConfigureAwait(false);
                 scenarioOptions.PreBootstrapStageService = preBootstrapStageService;
-                await InvokeOnCapturedContextAsync(
-                        options.OnPreBootstrapCompleted,
-                        callbackContext,
-                        cancellationToken)
-                    .ConfigureAwait(false);
-            }
 
             return await RunAsync(
                     configure: builder => options.ConfigureBuilder?.Invoke(builder, preBootstrapStageService),
                     sceneLoader: options.SceneLoader,
-                    scenario: scenarioFactory(scenarioOptions),
+                    scenario: RuntimeFlowPresets.RestartAwareSceneBootstrap(scenarioOptions),
                     guards: options.Guards,
                     configureOptions: options.ConfigurePipelineOptions,
                     loggerFactory: options.LoggerFactory,
+                    cancellationToken: cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        public static async Task<BootstrapResult> RunAsync(
+            Action<GameContextBuilder, IPreBootstrapStageService?> configure,
+            IGameSceneLoader sceneLoader,
+            IRuntimeFlowScenario scenario,
+            IPreBootstrapStageService? preBootstrapStageService = null,
+            Func<IPreBootstrapStageService>? preBootstrapStageServiceFactory = null,
+            Action? onPreBootstrapCompleted = null,
+            IEnumerable<IRuntimeFlowGuard>? guards = null,
+            Action<RuntimePipelineOptions>? configureOptions = null,
+            Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory = null,
+            CancellationToken cancellationToken = default)
+        {
+            if (configure == null) throw new ArgumentNullException(nameof(configure));
+
+            var callbackContext = SynchronizationContext.Current;
+            var effectivePreBootstrapStageService = await EnsurePreBootstrapReadyAsync(
+                    preBootstrapStageService,
+                    preBootstrapStageServiceFactory,
+                    onPreBootstrapCompleted,
+                    callbackContext,
+                    cancellationToken)
+                .ConfigureAwait(false);
+
+            return await RunAsync(
+                    configure: builder => configure(builder, effectivePreBootstrapStageService),
+                    sceneLoader: sceneLoader,
+                    scenario: scenario,
+                    guards: guards,
+                    configureOptions: configureOptions,
+                    loggerFactory: loggerFactory,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -101,6 +127,28 @@ namespace RuntimeFlow.Contexts
             }, null);
 
             return tcs.Task;
+        }
+
+        private static async Task<IPreBootstrapStageService?> EnsurePreBootstrapReadyAsync(
+            IPreBootstrapStageService? preBootstrapStageService,
+            Func<IPreBootstrapStageService>? preBootstrapStageServiceFactory,
+            Action? onPreBootstrapCompleted,
+            SynchronizationContext? callbackContext,
+            CancellationToken cancellationToken)
+        {
+            var effectivePreBootstrapStageService = preBootstrapStageService ?? preBootstrapStageServiceFactory?.Invoke();
+            if (effectivePreBootstrapStageService == null)
+            {
+                return null;
+            }
+
+            await effectivePreBootstrapStageService.EnsureCompletedAsync(cancellationToken).ConfigureAwait(false);
+            PreBootstrapRuntimeValidator.EnsureSucceeded(
+                effectivePreBootstrapStageService,
+                "Prebootstrap must be completed before continuing runtime bootstrap.");
+            await InvokeOnCapturedContextAsync(onPreBootstrapCompleted, callbackContext, cancellationToken)
+                .ConfigureAwait(false);
+            return effectivePreBootstrapStageService;
         }
 
         public static Task<BootstrapResult> RunAsync(

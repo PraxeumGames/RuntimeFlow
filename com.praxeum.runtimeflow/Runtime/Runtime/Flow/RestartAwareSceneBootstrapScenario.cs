@@ -5,7 +5,7 @@ using UnityEngine.SceneManagement;
 
 namespace RuntimeFlow.Contexts
 {
-    internal sealed class RestartAwareSceneBootstrapScenario : IRuntimeFlowScenario
+    internal sealed class RestartAwareSceneBootstrapScenario : IRestartAwareSceneBootstrapScenario
     {
         private static readonly PreBootstrapProjectionStatusMap<PreBootstrapStageStatus> PreBootstrapStatusMap =
             new(
@@ -27,7 +27,6 @@ namespace RuntimeFlow.Contexts
         private readonly Func<PreBootstrapStageStatus, string, string?> _preBootstrapReasonCodeResolver;
         private readonly string? _preBootstrapFailedReasonCodeFallback;
         private readonly string? _preBootstrapFailedDiagnosticFallback;
-        private bool _isPreBootstrapCompleted;
         private bool _isPreBootstrapProjected;
 
         public RestartAwareSceneBootstrapScenario(RestartAwareSceneBootstrapScenarioOptions options)
@@ -63,7 +62,9 @@ namespace RuntimeFlow.Contexts
 
             try
             {
-                await EnsurePreBootstrapAsync(loadingState, cancellationToken).ConfigureAwait(false);
+                PreBootstrapRuntimeValidator.EnsureSucceeded(
+                    _preBootstrapStageService,
+                    "Prebootstrap must be completed before executing the restart-aware bootstrap scenario.");
 
                 var sceneWasUnloadedForReplay = false;
                 if (RuntimeFlowReplayScope.IsActive)
@@ -96,32 +97,6 @@ namespace RuntimeFlow.Contexts
             catch (Exception ex)
             {
                 loadingState?.FailStage(_runStageName, _runFailReasonCode, ex, ex.Message);
-                throw;
-            }
-        }
-
-        private async Task EnsurePreBootstrapAsync(
-            IRuntimePipelineStageStateProvider<string, RuntimePipelineStageSnapshot<string>>? loadingState,
-            CancellationToken cancellationToken)
-        {
-            if (_isPreBootstrapCompleted || _preBootstrapStageService == null)
-            {
-                return;
-            }
-
-            try
-            {
-                await _preBootstrapStageService.EnsureCompletedAsync(cancellationToken).ConfigureAwait(false);
-                _isPreBootstrapCompleted = true;
-                ProjectPreBootstrapState(loadingState);
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception)
-            {
-                ProjectPreBootstrapState(loadingState);
                 throw;
             }
         }
@@ -217,5 +192,6 @@ namespace RuntimeFlow.Contexts
                 return loadedScenes > 1;
             }, cancellationToken);
         }
+
     }
 }

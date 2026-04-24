@@ -282,4 +282,46 @@ namespace RuntimeFlow.Contexts
         }
     }
 
+    internal static class PreBootstrapRuntimeValidator
+    {
+        public static void EnsureSucceeded(
+            IPreBootstrapStageService? preBootstrapStageService,
+            string failureMessagePrefix)
+        {
+            if (preBootstrapStageService == null)
+            {
+                return;
+            }
+
+            if (string.IsNullOrWhiteSpace(failureMessagePrefix))
+                throw new ArgumentException("Failure message prefix is required.", nameof(failureMessagePrefix));
+
+            if (preBootstrapStageService.Status == PreBootstrapStageStatus.Succeeded)
+            {
+                return;
+            }
+
+            var snapshot = (preBootstrapStageService as IPreBootstrapStageStateProvider<PreBootstrapStageStatus>)?.Snapshot;
+            var message = $"{failureMessagePrefix} status={preBootstrapStageService.Status}";
+            var reasonCode = Normalize(snapshot?.ReasonCode);
+            if (!string.IsNullOrEmpty(reasonCode))
+            {
+                message += $", reasonCode={reasonCode}";
+            }
+
+            var diagnostic = Normalize(snapshot?.Diagnostic) ?? Normalize(snapshot?.ErrorMessage);
+            if (!string.IsNullOrEmpty(diagnostic))
+            {
+                message += $", diagnostic={diagnostic}";
+            }
+
+            throw new InvalidOperationException(message);
+        }
+
+        private static string? Normalize(string? value)
+        {
+            return string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+        }
+    }
+
 }

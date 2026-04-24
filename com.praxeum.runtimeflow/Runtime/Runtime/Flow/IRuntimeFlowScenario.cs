@@ -8,4 +8,9 @@ namespace RuntimeFlow.Contexts
     {
         Task ExecuteAsync(IRuntimeFlowContext context, CancellationToken cancellationToken = default);
     }
+
+    /// <summary>Marker for the framework's restart-aware scene bootstrap scenario contract.</summary>
+    public interface IRestartAwareSceneBootstrapScenario : IRuntimeFlowScenario
+    {
+    }
 }
