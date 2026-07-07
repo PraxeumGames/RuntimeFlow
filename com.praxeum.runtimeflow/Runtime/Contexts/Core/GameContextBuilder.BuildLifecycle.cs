@@ -143,14 +143,15 @@ namespace RuntimeFlow.Contexts
             }
             catch (Exception ex)
             {
+                var cleanupCancellationToken = CreateFailureCleanupCancellationToken();
                 var cleanupFailures = await CaptureCleanupFailuresAsync(
-                        cancellationToken,
+                        cleanupCancellationToken,
                         async () =>
                         {
                             await DisposeScopeContextAsync(
                                     GameContextType.Module,
                                     moduleContext,
-                                    cancellationToken,
+                                    cleanupCancellationToken,
                                     activeModuleScopeKey)
                                 .ConfigureAwait(false);
                             moduleContext = null;
@@ -160,7 +161,7 @@ namespace RuntimeFlow.Contexts
                             await DisposeScopeContextAsync(
                                     GameContextType.Scene,
                                     sceneContext,
-                                    cancellationToken,
+                                    cleanupCancellationToken,
                                     activeSceneScopeKey)
                                 .ConfigureAwait(false);
                             sceneContext = null;
@@ -170,7 +171,7 @@ namespace RuntimeFlow.Contexts
                             await DisposeScopeContextAsync(
                                     GameContextType.Session,
                                     sessionContext,
-                                    cancellationToken)
+                                    cleanupCancellationToken)
                                 .ConfigureAwait(false);
                             sessionContext = null;
                         },
@@ -185,12 +186,12 @@ namespace RuntimeFlow.Contexts
                                 await DisposeScopeContextAsync(
                                         GameContextType.Global,
                                         ownedGlobalContext,
-                                        cancellationToken)
+                                        cleanupCancellationToken)
                                     .ConfigureAwait(false);
                             }
                             else
                             {
-                                await DisposeContextAsync(globalContext, cancellationToken).ConfigureAwait(false);
+                                await DisposeContextAsync(globalContext, cleanupCancellationToken).ConfigureAwait(false);
                             }
 
                             globalContext = null;
@@ -226,6 +227,8 @@ namespace RuntimeFlow.Contexts
         {
             _logger.LogInformation("Session restarting");
             ResetRuntimeLifecycleBookkeeping();
+            if (_globalContext != null)
+                SetScopeStateIfTracked(GameContextType.Global, ScopeLifecycleState.Active);
 
             await DisposeAdditiveModulesAsync(cancellationToken).ConfigureAwait(false);
             await DisposePreloadedContextsAsync(cancellationToken).ConfigureAwait(false);
@@ -345,14 +348,15 @@ namespace RuntimeFlow.Contexts
             }
             catch (Exception ex)
             {
+                var cleanupCancellationToken = CreateFailureCleanupCancellationToken();
                 var cleanupFailures = await CaptureCleanupFailuresAsync(
-                        cancellationToken,
+                        cleanupCancellationToken,
                         async () =>
                         {
                             await DisposeScopeContextAsync(
                                     GameContextType.Module,
                                     moduleContext,
-                                    cancellationToken,
+                                    cleanupCancellationToken,
                                     _activeModuleScopeKey)
                                 .ConfigureAwait(false);
                             moduleContext = null;
@@ -362,7 +366,7 @@ namespace RuntimeFlow.Contexts
                             await DisposeScopeContextAsync(
                                     GameContextType.Scene,
                                     sceneContext,
-                                    cancellationToken,
+                                    cleanupCancellationToken,
                                     _activeSceneScopeKey)
                                 .ConfigureAwait(false);
                             sceneContext = null;
@@ -372,7 +376,7 @@ namespace RuntimeFlow.Contexts
                             await DisposeScopeContextAsync(
                                     GameContextType.Session,
                                     sessionContext,
-                                    cancellationToken)
+                                    cleanupCancellationToken)
                                 .ConfigureAwait(false);
                             sessionContext = null;
                         })

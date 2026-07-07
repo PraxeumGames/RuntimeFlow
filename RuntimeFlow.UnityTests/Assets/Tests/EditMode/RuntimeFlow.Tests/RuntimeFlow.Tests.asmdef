@@ -1,0 +1,25 @@
+{
+    "name": "RuntimeFlow.Tests",
+    "rootNamespace": "RuntimeFlow.Tests",
+    "references": [
+        "RuntimeFlow.Runtime",
+        "VContainer"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "Microsoft.Extensions.DependencyInjection.Abstractions.dll",
+        "Microsoft.Extensions.Logging.Abstractions.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "noEngineReferences": false
+}

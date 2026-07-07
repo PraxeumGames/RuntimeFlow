@@ -79,7 +79,7 @@ namespace RuntimeFlow.Contexts
             options ??= new RuntimeFlowSessionBootstrapInstallerOptions();
 
             RegisterSessionInfrastructure(builder, options.SessionInfrastructure);
-            RegisterSessionSyncEntryPointsBootstrap(builder, options.SessionSyncEntryPointsBootstrap);
+            RegisterSessionVContainerEntryPoints(builder, options.SessionVContainerEntryPoints);
             RegisterLoadingAndRestartInfrastructure(builder, options.LoadingAndRestartInfrastructure);
         }
 

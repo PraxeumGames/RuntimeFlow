@@ -8,6 +8,13 @@ using RuntimeFlow.Events;
 
 namespace RuntimeFlow.Contexts
 {
+    /// <summary>
+    /// Builds and owns the four-level <see cref="GameContext"/> hierarchy
+    /// (Global → Session → Scene → Module). Coordinates service registration,
+    /// scope activation/deactivation, ordered async initialization driven by the
+    /// generated dependency graph, and reverse-order disposal. Each scope is
+    /// constructed lazily and torn down deterministically when its owner exits.
+    /// </summary>
     public partial class GameContextBuilder : IGameContextBuilder
     {
         private readonly GameContextScopeProfileStore _scopeProfiles = new();
@@ -17,6 +24,7 @@ namespace RuntimeFlow.Contexts
         private readonly RuntimeHealthSupervisor _healthSupervisor;
         private readonly ILogger _logger;
         private readonly GameContextScopeInitializationLedger _scopeInitializationLedger = new();
+        private readonly ScopeTransitionEngine _scopeTransitions;
         private readonly Dictionary<Type, GameContext> _preloadedContexts = new();
         private readonly Dictionary<Type, GameContext> _additiveModuleContexts = new();
         private static readonly Lazy<Type[]> ExplicitDependencyTypeCatalog = new(
@@ -46,7 +54,11 @@ namespace RuntimeFlow.Contexts
 
         private CancellationTokenSource? _activeLoadCts;
         private Task _activeLoadTask = Task.CompletedTask;
+        private readonly object _activeLoadSync = new();
+        private readonly SemaphoreSlim _exclusiveScopeOperationStartLock = new(1, 1);
         private long _runGeneration;
+        private readonly object _scopeGenerationSync = new();
+        private readonly SemaphoreSlim _sideScopeOperationLock = new(1, 1);
 
         private readonly GameContextLazyInitializationRegistry _lazyInitialization = new();
         private readonly SemaphoreSlim _lazyInitLock = new(1, 1);
@@ -64,6 +76,7 @@ namespace RuntimeFlow.Contexts
             _executionScheduler = executionScheduler ?? InlineInitializationExecutionScheduler.Instance;
             _healthSupervisor = healthSupervisor ?? RuntimeHealthSupervisor.Disabled;
             _logger = logger ?? NullLogger.Instance;
+            _scopeTransitions = new ScopeTransitionEngine(this);
         }
 
         internal Task ExecuteOnMainThreadAsync(

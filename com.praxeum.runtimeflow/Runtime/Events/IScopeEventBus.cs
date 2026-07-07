@@ -30,7 +30,18 @@ namespace RuntimeFlow.Events
         /// <summary>Subscribe to events of type <typeparamref name="TEvent"/> with an async handler.</summary>
         IDisposable Subscribe<TEvent>(Func<TEvent, System.Threading.Tasks.Task> handler) where TEvent : IScopeEvent;
 
-        /// <summary>Publish an event with the specified propagation strategy.</summary>
+        /// <summary>
+        /// Publish an event with the specified propagation strategy.
+        /// Only synchronous handlers (and async handlers that complete synchronously) are supported.
+        /// If any matched handler returns a non-completed <see cref="System.Threading.Tasks.Task"/>, this method throws
+        /// <see cref="System.InvalidOperationException"/>; use <see cref="PublishAsync{TEvent}"/> for truly asynchronous handlers.
+        /// </summary>
         void Publish<TEvent>(TEvent evt, EventPropagation propagation = EventPropagation.Local) where TEvent : IScopeEvent;
+
+        /// <summary>
+        /// Publish an event with the specified propagation strategy and await all handler tasks.
+        /// Use this overload when subscribers register async handlers that perform real asynchronous work.
+        /// </summary>
+        System.Threading.Tasks.Task PublishAsync<TEvent>(TEvent evt, EventPropagation propagation = EventPropagation.Local) where TEvent : IScopeEvent;
     }
 }

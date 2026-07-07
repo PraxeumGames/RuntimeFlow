@@ -4,7 +4,10 @@ using System.Threading.Tasks;
 
 namespace RuntimeFlow.Contexts
 {
-    public sealed class RuntimeLoadingProgressNotifierAdapter : IInitializationProgressNotifier, IRuntimeScopeLifecycleProgressNotifier
+    public sealed class RuntimeLoadingProgressNotifierAdapter :
+        IInitializationProgressNotifier,
+        IRuntimeScopeLifecycleProgressNotifier,
+        IStartupOperationProgressNotifier
     {
         private readonly IRuntimeLoadingProgressObserver _observer;
         private readonly RuntimeLoadingOperationKind _operationKind;
@@ -15,6 +18,8 @@ namespace RuntimeFlow.Contexts
         private int _scopeSequence;
         private string? _activeScopeOperationId;
         private GameContextType? _activeScope;
+        private RuntimeStartupSnapshot? _currentStartupOperation;
+        private RuntimeStartupSnapshot? _lastStartupOperation;
 
         public RuntimeLoadingProgressNotifierAdapter(
             IRuntimeLoadingProgressObserver? observer,
@@ -28,6 +33,24 @@ namespace RuntimeFlow.Contexts
             _operationId = string.IsNullOrWhiteSpace(operationId) ? Guid.NewGuid().ToString("N") : operationId;
             _timestampProvider = timestampProvider ?? (() => DateTimeOffset.UtcNow);
             _splitOperationPerScope = splitOperationPerScope;
+        }
+
+        public RuntimeStartupSnapshot? CurrentStartupOperation
+        {
+            get
+            {
+                lock (_sync)
+                    return _currentStartupOperation;
+            }
+        }
+
+        public RuntimeStartupSnapshot? LastStartupOperation
+        {
+            get
+            {
+                lock (_sync)
+                    return _lastStartupOperation;
+            }
         }
 
         public void OnScopeStarted(GameContextType scope, int totalServices)
@@ -183,6 +206,174 @@ namespace RuntimeFlow.Contexts
                 message: $"Scope '{scope}' deactivation completed.");
         }
 
+        public void OnStartupOperationStarted(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            SetCurrentStartupOperation(
+                scope,
+                phase,
+                operationName,
+                step: null,
+                detail: null,
+                elapsed,
+                RuntimeStartupOperationState.Started);
+            var normalized = NormalizeLifecycleProgress(completedOperations, totalOperations);
+            PublishSnapshot(
+                ResolveScopeOperationId(scope),
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: normalized.CurrentStep,
+                totalSteps: normalized.TotalSteps,
+                message: $"phase={phase} operation={operationName} started");
+        }
+
+        public void OnStartupOperationStep(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            string step,
+            string? detail,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            SetCurrentStartupOperation(
+                scope,
+                phase,
+                operationName,
+                step,
+                detail,
+                elapsed,
+                RuntimeStartupOperationState.Step);
+            var normalized = NormalizeLifecycleProgress(completedOperations, totalOperations);
+            PublishSnapshot(
+                ResolveScopeOperationId(scope),
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: normalized.CurrentStep,
+                totalSteps: normalized.TotalSteps,
+                message: FormatStartupOperationMessage(phase, operationName, step, detail));
+        }
+
+        public void OnStartupOperationCompleted(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            CompleteStartupOperationPreservingCurrent(
+                scope,
+                phase,
+                operationName,
+                elapsed);
+            var normalized = NormalizeLifecycleProgress(completedOperations, totalOperations);
+            PublishSnapshot(
+                ResolveScopeOperationId(scope),
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: normalized.CurrentStep,
+                totalSteps: normalized.TotalSteps,
+                message: $"phase={phase} operation={operationName} completed");
+        }
+
+        public void OnStartupOperationFailed(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            string? step,
+            string? detail,
+            Exception exception,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            var isCanceled = IsCancellationFailure(exception);
+            CompleteStartupOperation(
+                new RuntimeStartupSnapshot(
+                    scope,
+                    phase,
+                    operationName,
+                    step,
+                    detail,
+                    elapsed,
+                    isCanceled
+                        ? RuntimeStartupOperationState.Canceled
+                        : RuntimeStartupOperationState.Failed,
+                    exception.GetType().Name,
+                    exception.Message));
+            var normalized = NormalizeLifecycleProgress(completedOperations, totalOperations);
+            PublishSnapshot(
+                ResolveScopeOperationId(scope),
+                scope,
+                stage: isCanceled ? RuntimeLoadingOperationStage.Canceled : RuntimeLoadingOperationStage.Failed,
+                state: isCanceled ? RuntimeLoadingOperationState.Canceled : RuntimeLoadingOperationState.Failed,
+                currentStep: normalized.CurrentStep,
+                totalSteps: normalized.TotalSteps,
+                message: FormatStartupOperationMessage(phase, operationName, step ?? "<none>", detail),
+                error: exception);
+        }
+
+        private void SetCurrentStartupOperation(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            string? step,
+            string? detail,
+            TimeSpan elapsed,
+            RuntimeStartupOperationState state)
+        {
+            lock (_sync)
+            {
+                _currentStartupOperation = new RuntimeStartupSnapshot(
+                    scope,
+                    phase,
+                    operationName,
+                    step,
+                    detail,
+                    elapsed,
+                    state);
+            }
+        }
+
+        private void CompleteStartupOperation(RuntimeStartupSnapshot snapshot)
+        {
+            lock (_sync)
+            {
+                _lastStartupOperation = snapshot;
+                _currentStartupOperation = null;
+            }
+        }
+
+        private void CompleteStartupOperationPreservingCurrent(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            TimeSpan elapsed)
+        {
+            lock (_sync)
+            {
+                _lastStartupOperation = new RuntimeStartupSnapshot(
+                    scope,
+                    phase,
+                    operationName,
+                    _currentStartupOperation?.Step ?? "completed",
+                    _currentStartupOperation?.Detail,
+                    elapsed,
+                    RuntimeStartupOperationState.Completed);
+                _currentStartupOperation = null;
+            }
+        }
+
         private void PublishSnapshot(
             string operationId,
             GameContextType scope,
@@ -190,7 +381,8 @@ namespace RuntimeFlow.Contexts
             RuntimeLoadingOperationState state,
             int currentStep,
             int totalSteps,
-            string message)
+            string message,
+            Exception? error = null)
         {
             var snapshot = new RuntimeLoadingOperationSnapshot(
                 operationId: operationId,
@@ -203,7 +395,9 @@ namespace RuntimeFlow.Contexts
                 currentStep: currentStep,
                 totalSteps: totalSteps,
                 message: message,
-                timestampUtc: _timestampProvider());
+                timestampUtc: _timestampProvider(),
+                errorType: error?.GetType().Name,
+                errorMessage: error?.Message);
 
             _observer.OnLoadingProgress(snapshot);
         }
@@ -283,6 +477,24 @@ namespace RuntimeFlow.Contexts
                 return state == RuntimeLoadingOperationState.Completed ? 100d : 0d;
 
             return currentStep * 100d / totalSteps;
+        }
+
+        private static string FormatStartupOperationMessage(
+            string phase,
+            string operationName,
+            string step,
+            string? detail)
+        {
+            var message = $"phase={phase} operation={operationName} step={step}";
+            return string.IsNullOrWhiteSpace(detail)
+                ? message
+                : $"{message} detail={detail.Trim()}";
+        }
+
+        private static bool IsCancellationFailure(Exception exception)
+        {
+            return exception is OperationCanceledException
+                   || exception is RuntimeStartupOperationException { InnerException: OperationCanceledException };
         }
 
         private static Type ResolveScopeKey(GameContextType scope)

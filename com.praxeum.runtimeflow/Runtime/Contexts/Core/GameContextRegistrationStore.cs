@@ -1,9 +1,11 @@
 using System;
+using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using VContainer;
+using VContainer.Unity;
 
 namespace RuntimeFlow.Contexts
 {
@@ -74,6 +76,75 @@ namespace RuntimeFlow.Contexts
 
             implementationType = null;
             return false;
+        }
+
+        public IReadOnlyList<Registration> GetRegistrationsForServiceType(
+            Type serviceType,
+            bool initialized,
+            IObjectResolver? container)
+        {
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+
+            var registrations = new List<Registration>();
+
+            if (initialized && container != null)
+            {
+                var collectionType = typeof(IReadOnlyList<>).MakeGenericType(serviceType);
+                if (container.TryGetRegistration(collectionType, out var collectionRegistration)
+                    && collectionRegistration?.Provider is IEnumerable collectionProvider)
+                {
+                    registrations.AddRange(collectionProvider
+                        .Cast<object>()
+                        .OfType<Registration>());
+                }
+
+                if (container.TryGetRegistration(serviceType, out var registration) && registration != null)
+                {
+                    registrations.Add(registration);
+                }
+
+                var parentRegistrations = GetParentRegistrationsForServiceType(serviceType, container);
+                if (parentRegistrations.Count > 0)
+                {
+                    registrations = registrations
+                        .Where(registration => !parentRegistrations.Contains(registration))
+                        .ToList();
+                }
+            }
+
+            return registrations
+                .GroupBy(registration => registration.ImplementationType)
+                .Select(group => group.First())
+                .ToArray();
+        }
+
+        private static HashSet<Registration> GetParentRegistrationsForServiceType(
+            Type serviceType,
+            IObjectResolver container)
+        {
+            var registrations = new HashSet<Registration>();
+            if (container is not IScopedObjectResolver scopedResolver || scopedResolver.Parent == null)
+            {
+                return registrations;
+            }
+
+            var parent = scopedResolver.Parent;
+            var collectionType = typeof(IReadOnlyList<>).MakeGenericType(serviceType);
+            if (parent.TryGetRegistration(collectionType, out var collectionRegistration)
+                && collectionRegistration?.Provider is IEnumerable collectionProvider)
+            {
+                foreach (var registration in collectionProvider.Cast<object>().OfType<Registration>())
+                {
+                    registrations.Add(registration);
+                }
+            }
+
+            if (parent.TryGetRegistration(serviceType, out var directRegistration) && directRegistration != null)
+            {
+                registrations.Add(directRegistration);
+            }
+
+            return registrations;
         }
 
         public bool TryGetRegisteredInstance(Type serviceType, [MaybeNullWhen(false)] out object instance)

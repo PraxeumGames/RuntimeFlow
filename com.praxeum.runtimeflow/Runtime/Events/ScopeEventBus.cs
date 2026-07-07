@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 
 namespace RuntimeFlow.Events
@@ -61,6 +62,29 @@ namespace RuntimeFlow.Events
             }
         }
 
+        public async Task PublishAsync<TEvent>(TEvent evt, EventPropagation propagation = EventPropagation.Local) where TEvent : IScopeEvent
+        {
+            if (evt == null) throw new ArgumentNullException(nameof(evt));
+            switch (propagation)
+            {
+                case EventPropagation.Local:
+                    await InvokeLocalAsync(evt).ConfigureAwait(false);
+                    break;
+                case EventPropagation.Bubble:
+                    await InvokeLocalAsync(evt).ConfigureAwait(false);
+                    if (_parent != null)
+                        await _parent.PublishAsync(evt, EventPropagation.Bubble).ConfigureAwait(false);
+                    break;
+                case EventPropagation.Broadcast:
+                    await InvokeLocalAsync(evt).ConfigureAwait(false);
+                    ScopeEventBus[] children;
+                    lock (_sync) children = _children.ToArray();
+                    foreach (var child in children)
+                        await child.PublishAsync(evt, EventPropagation.Broadcast).ConfigureAwait(false);
+                    break;
+            }
+        }
+
         public void Dispose()
         {
             ScopeEventBus[] childrenSnapshot;
@@ -87,8 +111,36 @@ namespace RuntimeFlow.Events
             var eventType = typeof(TEvent);
             foreach (var entry in snapshot)
             {
+                if (entry.EventType != eventType) continue;
+
+                var task = entry.Handler(evt!);
+                if (!task.IsCompleted)
+                {
+                    throw new InvalidOperationException(
+                        $"Async handler for event '{eventType.FullName}' did not complete synchronously. " +
+                        "Use IScopeEventBus.PublishAsync to dispatch events to async handlers.");
+                }
+
+                if (task.IsFaulted && task.Exception != null)
+                {
+                    var inner = task.Exception.InnerExceptions.Count == 1
+                        ? task.Exception.InnerExceptions[0]
+                        : task.Exception;
+                    ExceptionDispatchInfo.Capture(inner).Throw();
+                }
+            }
+        }
+
+        private async Task InvokeLocalAsync<TEvent>(TEvent evt) where TEvent : IScopeEvent
+        {
+            SubscriptionEntry[] snapshot;
+            lock (_sync) snapshot = _subscriptions.ToArray();
+
+            var eventType = typeof(TEvent);
+            foreach (var entry in snapshot)
+            {
                 if (entry.EventType == eventType)
-                    entry.Handler(evt!).GetAwaiter().GetResult();
+                    await entry.Handler(evt!).ConfigureAwait(false);
             }
         }
 

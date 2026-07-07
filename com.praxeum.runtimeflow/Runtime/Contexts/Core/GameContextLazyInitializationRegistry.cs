@@ -5,7 +5,7 @@ namespace RuntimeFlow.Contexts
 {
     internal sealed class GameContextLazyInitializationRegistry
     {
-        private readonly Dictionary<Type, (GameContext Context, GameContextType Scope, Type? ScopeKey)> _lazyServiceBindings = new();
+        private readonly Dictionary<Type, (GameContext Context, GameContextType Scope, Type? ScopeKey, ServiceInitializerBinding Initializer)> _lazyServiceBindings = new();
         private readonly HashSet<Type> _initializedLazyServices = new();
 
         public bool IsInitialized(Type serviceType)
@@ -15,14 +15,14 @@ namespace RuntimeFlow.Contexts
 
         public bool TryGetBinding(
             Type serviceType,
-            out (GameContext Context, GameContextType Scope, Type? ScopeKey) binding)
+            out (GameContext Context, GameContextType Scope, Type? ScopeKey, ServiceInitializerBinding Initializer) binding)
         {
             return _lazyServiceBindings.TryGetValue(serviceType, out binding);
         }
 
-        public void RegisterLazyBinding(Type serviceType, GameContext context, GameContextType scope, Type? scopeKey)
+        public void RegisterLazyBinding(ServiceInitializerBinding initializer, GameContext context, GameContextType scope, Type? scopeKey)
         {
-            _lazyServiceBindings[serviceType] = (context, scope, scopeKey);
+            _lazyServiceBindings[initializer.ServiceType] = (context, scope, scopeKey, initializer);
         }
 
         public void MarkInitialized(Type serviceType)

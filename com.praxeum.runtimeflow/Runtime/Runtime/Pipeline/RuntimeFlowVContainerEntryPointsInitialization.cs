@@ -10,54 +10,117 @@ using VContainer.Unity;
 
 namespace RuntimeFlow.Contexts
 {
-    public abstract class RuntimeFlowVContainerEntryPointsInitializationService
+    internal static class RuntimeFlowVContainerEntryPointPhaseRunner
     {
-        private readonly IObjectResolver _resolver;
-        private readonly string _scopeName;
-        private readonly ILogger _logger;
-        private readonly RuntimeFlowVContainerEntryPointsSettings _settings;
-
-        protected RuntimeFlowVContainerEntryPointsInitializationService(
-            IObjectResolver resolver,
-            string scopeName,
+        internal static Task InitializeInitializablesAsync(
+            VContainerEntryPointsStartupPlan plan,
             ILogger logger,
-            RuntimeFlowVContainerEntryPointsSettings? settings = null)
+            CancellationToken cancellationToken)
         {
-            _resolver = resolver ?? throw new ArgumentNullException(nameof(resolver));
-            _scopeName = scopeName ?? throw new ArgumentNullException(nameof(scopeName));
-            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _settings = settings ?? RuntimeFlowVContainerEntryPointsSettings.Default;
+            return InitializeInitializablesAsync(
+                plan.ScopeResolver,
+                plan.EntryPointResolver,
+                plan.ScopeName,
+                logger,
+                plan.Settings,
+                plan.UseSessionStageOrder,
+                cancellationToken,
+                plan.InitializableRegistrations);
         }
 
-        protected string ScopeName => _scopeName;
-        protected ILogger Logger => _logger;
-
-        protected Task InitializeVContainerEntryPointsAsync(CancellationToken cancellationToken)
+        internal static Task InitializeInitializablesAsync(
+            IObjectResolver scopeResolver,
+            IObjectResolver entryPointResolver,
+            string scopeName,
+            ILogger logger,
+            RuntimeFlowVContainerEntryPointsSettings settings,
+            bool useSessionStageOrder,
+            CancellationToken cancellationToken,
+            IReadOnlyList<Registration>? initializableRegistrations = null)
         {
-            InitializePrioritizedInitializables(cancellationToken);
+            if (scopeResolver == null) throw new ArgumentNullException(nameof(scopeResolver));
+            if (entryPointResolver == null) throw new ArgumentNullException(nameof(entryPointResolver));
+            if (scopeName == null) throw new ArgumentNullException(nameof(scopeName));
+            if (logger == null) throw new ArgumentNullException(nameof(logger));
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
 
-            var resolver = GetEntryPointResolver(_resolver);
-            var initializableRegistrations = GetScopeLocalRegistrations<IInitializable>(resolver);
-            var startableRegistrations = GetScopeLocalRegistrations<IStartable>(resolver);
-            _logger.LogInformation(
-                "Resolving VContainer entry points for {Scope} scope. Resolver={ResolverType}, Initializables={InitializableRegistrations}, Startables={StartableRegistrations}",
-                _scopeName,
-                resolver.GetType().FullName ?? resolver.GetType().Name,
-                DescribeRegistrations(initializableRegistrations),
+            InitializePrioritizedInitializables(scopeResolver, settings, logger, cancellationToken);
+
+            initializableRegistrations ??= GetScopeLocalRegistrations<IInitializable>(entryPointResolver, settings);
+            logger.LogInformation(
+                "Resolving VContainer initializables for {Scope} scope. Resolver={ResolverType}, Initializables={InitializableRegistrations}",
+                scopeName,
+                entryPointResolver.GetType().FullName ?? entryPointResolver.GetType().Name,
+                DescribeRegistrations(initializableRegistrations));
+
+            logger.LogInformation(
+                "Initializing VContainer entry points for {Scope} scope. Initializables={Initializables}",
+                scopeName,
+                initializableRegistrations.Count);
+
+            if (useSessionStageOrder)
+            {
+                RuntimeFlowVContainerInitializableRunner.InitializeSessionByStages(
+                    entryPointResolver,
+                    initializableRegistrations,
+                    scopeName,
+                    logger,
+                    cancellationToken);
+            }
+            else
+            {
+                RuntimeFlowVContainerInitializableRunner.InitializeSequential(
+                    entryPointResolver,
+                    initializableRegistrations,
+                    cancellationToken);
+            }
+
+            return Task.CompletedTask;
+        }
+
+        internal static Task StartStartablesAsync(
+            VContainerEntryPointsStartupPlan plan,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            return StartStartablesAsync(
+                plan.EntryPointResolver,
+                plan.ScopeName,
+                logger,
+                plan.Settings,
+                cancellationToken,
+                plan.StartableRegistrations);
+        }
+
+        internal static Task StartStartablesAsync(
+            IObjectResolver entryPointResolver,
+            string scopeName,
+            ILogger logger,
+            RuntimeFlowVContainerEntryPointsSettings settings,
+            CancellationToken cancellationToken,
+            IReadOnlyList<Registration>? startableRegistrations = null)
+        {
+            if (entryPointResolver == null) throw new ArgumentNullException(nameof(entryPointResolver));
+            if (scopeName == null) throw new ArgumentNullException(nameof(scopeName));
+            if (logger == null) throw new ArgumentNullException(nameof(logger));
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+
+            startableRegistrations ??= GetScopeLocalRegistrations<IStartable>(entryPointResolver, settings);
+            logger.LogInformation(
+                "Resolving VContainer startables for {Scope} scope. Resolver={ResolverType}, Startables={StartableRegistrations}",
+                scopeName,
+                entryPointResolver.GetType().FullName ?? entryPointResolver.GetType().Name,
                 DescribeRegistrations(startableRegistrations));
 
-            _logger.LogInformation(
-                "Initializing VContainer entry points for {Scope} scope. Initializables={Initializables}, Startables={Startables}",
-                _scopeName,
-                initializableRegistrations.Count,
+            logger.LogInformation(
+                "Starting VContainer entry points for {Scope} scope. Startables={Startables}",
+                scopeName,
                 startableRegistrations.Count);
-
-            InitializeInitializables(resolver, initializableRegistrations, cancellationToken);
 
             foreach (var registration in startableRegistrations)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                if (resolver.Resolve(registration) is not IStartable startable)
+                if (entryPointResolver.Resolve(registration) is not IStartable startable)
                 {
                     throw new InvalidOperationException(
                         $"Resolved entry point '{registration.ImplementationType?.FullName ?? registration.ImplementationType?.Name ?? "<unknown>"}' " +
@@ -70,32 +133,69 @@ namespace RuntimeFlow.Contexts
             return Task.CompletedTask;
         }
 
-        protected virtual IObjectResolver GetEntryPointResolver(IObjectResolver resolver) => resolver;
-
-        protected virtual void InitializeInitializables(
-            IObjectResolver resolver,
-            IReadOnlyList<Registration> initializableRegistrations,
-            CancellationToken cancellationToken)
+        internal static IObjectResolver ResolveEntryPointResolver(GameContextType scope, IObjectResolver resolver)
         {
-            RuntimeFlowVContainerInitializableRunner.InitializeSequential(
-                resolver,
-                initializableRegistrations,
-                cancellationToken);
+            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            if (scope != GameContextType.Global)
+                return resolver;
+
+            if (resolver is not IScopedObjectResolver scopedResolver)
+            {
+                return resolver;
+            }
+
+            var current = scopedResolver;
+            while (current.Parent is IScopedObjectResolver parentScopedResolver)
+            {
+                current = parentScopedResolver;
+            }
+
+            return current.Parent ?? current;
         }
 
-        private void InitializePrioritizedInitializables(CancellationToken cancellationToken)
+        internal static IReadOnlyList<Registration> GetScopeLocalRegistrations<TEntryPoint>(
+            IObjectResolver resolver,
+            RuntimeFlowVContainerEntryPointsSettings settings)
+            where TEntryPoint : class
         {
-            foreach (var initializableType in _settings.PrioritizedInitializableImplementationTypes)
+            if (resolver == null) throw new ArgumentNullException(nameof(resolver));
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+
+            var collectionType = typeof(IReadOnlyList<TEntryPoint>);
+            if (!resolver.TryGetRegistration(collectionType, out var registration) || registration?.Provider == null)
+            {
+                return Array.Empty<Registration>();
+            }
+
+            if (registration.Provider is IEnumerable registrations)
+            {
+                return registrations
+                    .Cast<object>()
+                    .OfType<Registration>()
+                    .Where(registration => !ShouldSkipRegistration<TEntryPoint>(registration, settings))
+                    .ToArray();
+            }
+
+            return Array.Empty<Registration>();
+        }
+
+        private static void InitializePrioritizedInitializables(
+            IObjectResolver scopeResolver,
+            RuntimeFlowVContainerEntryPointsSettings settings,
+            ILogger logger,
+            CancellationToken cancellationToken)
+        {
+            foreach (var initializableType in settings.PrioritizedInitializableImplementationTypes)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var initializable = RuntimeFlowPrioritizedInitializableResolver.ResolvePrioritizedInitializable(
-                    _resolver,
+                    scopeResolver,
                     initializableType,
-                    _logger);
+                    logger);
                 initializable.Initialize();
             }
 
-            _settings.AfterPrioritizedInitializablesInitialized?.Invoke(_resolver);
+            settings.AfterPrioritizedInitializablesInitialized?.Invoke(scopeResolver);
         }
 
         private static string DescribeRegistrations(IReadOnlyCollection<Registration> registrations)
@@ -111,28 +211,9 @@ namespace RuntimeFlow.Contexts
             return names.Length == 0 ? "empty" : string.Join(", ", names);
         }
 
-        private IReadOnlyList<Registration> GetScopeLocalRegistrations<TEntryPoint>(IObjectResolver resolver)
-            where TEntryPoint : class
-        {
-            var collectionType = typeof(IReadOnlyList<TEntryPoint>);
-            if (!resolver.TryGetRegistration(collectionType, out var registration) || registration?.Provider == null)
-            {
-                return Array.Empty<Registration>();
-            }
-
-            if (registration.Provider is IEnumerable registrations)
-            {
-                return registrations
-                    .Cast<object>()
-                    .OfType<Registration>()
-                    .Where(registration => !ShouldSkipRegistration<TEntryPoint>(registration))
-                    .ToArray();
-            }
-
-            return Array.Empty<Registration>();
-        }
-
-        private bool ShouldSkipRegistration<TEntryPoint>(Registration registration)
+        private static bool ShouldSkipRegistration<TEntryPoint>(
+            Registration registration,
+            RuntimeFlowVContainerEntryPointsSettings settings)
             where TEntryPoint : class
         {
             var implementationType = registration.ImplementationType;
@@ -142,18 +223,12 @@ namespace RuntimeFlow.Contexts
             }
 
             if (typeof(TEntryPoint) == typeof(IInitializable)
-                && _settings.ExcludedInitializableImplementationTypes.Contains(implementationType))
+                && settings.ExcludedInitializableImplementationTypes.Contains(implementationType))
             {
                 return true;
             }
 
-            if (typeof(TEntryPoint) != typeof(IInitializable)
-                && typeof(TEntryPoint) != typeof(IStartable))
-            {
-                return false;
-            }
-
-            return _settings.ManagedServiceMarkerTypes.Any(serviceType => serviceType.IsAssignableFrom(implementationType));
+            return false;
         }
     }
 }

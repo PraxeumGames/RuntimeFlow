@@ -1,0 +1,98 @@
+{
+  "dependencies": {
+    "com.praxeum.runtimeflow": {
+      "version": "file:../../com.praxeum.runtimeflow",
+      "depth": 0,
+      "source": "local",
+      "dependencies": {}
+    },
+    "com.unity.ext.nunit": {
+      "version": "2.0.3",
+      "depth": 1,
+      "source": "registry",
+      "dependencies": {},
+      "url": "https://packages.unity.com"
+    },
+    "com.unity.test-framework": {
+      "version": "1.4.6",
+      "depth": 0,
+      "source": "registry",
+      "dependencies": {
+        "com.unity.ext.nunit": "2.0.3",
+        "com.unity.modules.imgui": "1.0.0",
+        "com.unity.modules.jsonserialize": "1.0.0"
+      },
+      "url": "https://packages.unity.com"
+    },
+    "jp.hadashikick.vcontainer": {
+      "version": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1",
+      "depth": 0,
+      "source": "git",
+      "dependencies": {},
+      "hash": "c30a8af94809177788cd4392ea9b6ff6373c51b9"
+    },
+    "com.unity.modules.animation": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.assetbundle": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.audio": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.imgui": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.jsonserialize": {
+      "version": "1.0.0",
+      "depth": 1,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.physics": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.physics2d": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.ui": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.unitywebrequest": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {}
+    },
+    "com.unity.modules.unitywebrequestassetbundle": {
+      "version": "1.0.0",
+      "depth": 0,
+      "source": "builtin",
+      "dependencies": {
+        "com.unity.modules.assetbundle": "1.0.0",
+        "com.unity.modules.unitywebrequest": "1.0.0"
+      }
+    }
+  }
+}

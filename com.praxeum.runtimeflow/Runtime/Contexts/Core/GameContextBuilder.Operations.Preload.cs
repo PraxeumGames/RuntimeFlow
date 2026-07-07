@@ -12,65 +12,44 @@ namespace RuntimeFlow.Contexts
             IInitializationProgressNotifier? progressNotifier = null,
             CancellationToken cancellationToken = default)
         {
-            FlushDeferredScopedRegistrations();
-            ValidateSceneScopeOperationPreconditions(sceneScopeKey);
+            await ExecuteGenerationBoundSideScopeOperationAsync(
+                    progressNotifier,
+                    cancellationToken,
+                    async operation =>
+                    {
+                        FlushDeferredScopedRegistrations();
+                        ValidateSceneScopeOperationPreconditions(sceneScopeKey);
 
-            var notifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
-            var sceneProfile = _scopeProfiles.GetSceneProfile(sceneScopeKey);
+                        var sceneProfile = _scopeProfiles.GetSceneProfile(sceneScopeKey);
 
-            var (initializedServices, availableServices) = CreateSeededInitializationState(_globalContext, _sessionContext);
+                        var (initializedServices, availableServices) = CreateSeededInitializationState(_globalContext, _sessionContext);
 
-            GameContext? preloadedContext = null;
-            try
-            {
-                preloadedContext = await CreateAndInitializeScopeContextAsync(
-                        GameContextType.Scene,
-                        _sessionContext!,
-                        sceneProfile.Registrations,
-                        sceneProfile.Services,
-                        _onSceneInitialized,
-                        initializedServices,
-                        availableServices,
-                        notifier,
-                        Volatile.Read(ref _runGeneration),
-                        cancellationToken,
-                        sceneScopeKey,
-                        skipActivation: true)
-                    .ConfigureAwait(false);
+                        var preloadedContext = await _scopeTransitions.EnterScopeAsync(
+                                "PreloadScene",
+                                GameContextType.Scene,
+                                sceneScopeKey,
+                                _sessionContext!,
+                                sceneProfile,
+                                _onSceneInitialized,
+                                initializedServices,
+                                availableServices,
+                                operation.ProgressNotifier,
+                                operation.Generation,
+                                operation.CancellationToken,
+                                skipActivation: true,
+                                verifyGenerationAfterCreate: false)
+                            .ConfigureAwait(false);
 
-                if (_preloadedContexts.TryGetValue(sceneScopeKey, out var existingPreloadedSceneContext))
-                {
-                    await DisposeScopeContextAsync(
-                            GameContextType.Scene,
-                            existingPreloadedSceneContext,
-                            cancellationToken,
-                            sceneScopeKey)
-                        .ConfigureAwait(false);
-                }
-
-                _preloadedContexts[sceneScopeKey] = preloadedContext;
-            }
-            catch (Exception ex)
-            {
-                var cleanupFailures = await CaptureCleanupFailuresAsync(
-                        cancellationToken,
-                        async () =>
-                        {
-                            await DisposeScopeContextAsync(
-                                    GameContextType.Scene,
-                                    preloadedContext,
-                                    cancellationToken,
-                                    sceneScopeKey)
-                                .ConfigureAwait(false);
-                            preloadedContext = null;
-                        })
-                    .ConfigureAwait(false);
-
-                if (cleanupFailures.Count > 0)
-                    throw CreateCleanupAggregateException("PreloadScene", ex, cleanupFailures);
-
-                throw;
-            }
+                        await _scopeTransitions.ReplacePreloadedScopeAsync(
+                                "PreloadScene",
+                                GameContextType.Scene,
+                                sceneScopeKey,
+                                preloadedContext,
+                                operation.Generation,
+                                operation.CancellationToken)
+                            .ConfigureAwait(false);
+                    })
+                .ConfigureAwait(false);
         }
 
         public async Task PreloadModuleAsync(
@@ -78,68 +57,47 @@ namespace RuntimeFlow.Contexts
             IInitializationProgressNotifier? progressNotifier = null,
             CancellationToken cancellationToken = default)
         {
-            FlushDeferredScopedRegistrations();
-            ValidateModuleScopeOperationPreconditions(moduleScopeKey);
+            await ExecuteGenerationBoundSideScopeOperationAsync(
+                    progressNotifier,
+                    cancellationToken,
+                    async operation =>
+                    {
+                        FlushDeferredScopedRegistrations();
+                        ValidateModuleScopeOperationPreconditions(moduleScopeKey);
 
-            var notifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
-            var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
+                        var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
 
-            var (initializedServices, availableServices) = CreateSeededInitializationState(
-                _globalContext,
-                _sessionContext,
-                _sceneContext);
+                        var (initializedServices, availableServices) = CreateSeededInitializationState(
+                            _globalContext,
+                            _sessionContext,
+                            _sceneContext);
 
-            GameContext? preloadedContext = null;
-            try
-            {
-                preloadedContext = await CreateAndInitializeScopeContextAsync(
-                        GameContextType.Module,
-                        _sceneContext!,
-                        moduleProfile.Registrations,
-                        moduleProfile.Services,
-                        _onModuleInitialized,
-                        initializedServices,
-                        availableServices,
-                        notifier,
-                        Volatile.Read(ref _runGeneration),
-                        cancellationToken,
-                        moduleScopeKey,
-                        skipActivation: true)
-                    .ConfigureAwait(false);
+                        var preloadedContext = await _scopeTransitions.EnterScopeAsync(
+                                "PreloadModule",
+                                GameContextType.Module,
+                                moduleScopeKey,
+                                _sceneContext!,
+                                moduleProfile,
+                                _onModuleInitialized,
+                                initializedServices,
+                                availableServices,
+                                operation.ProgressNotifier,
+                                operation.Generation,
+                                operation.CancellationToken,
+                                skipActivation: true,
+                                verifyGenerationAfterCreate: false)
+                            .ConfigureAwait(false);
 
-                if (_preloadedContexts.TryGetValue(moduleScopeKey, out var existingPreloadedModuleContext))
-                {
-                    await DisposeScopeContextAsync(
-                            GameContextType.Module,
-                            existingPreloadedModuleContext,
-                            cancellationToken,
-                            moduleScopeKey)
-                        .ConfigureAwait(false);
-                }
-
-                _preloadedContexts[moduleScopeKey] = preloadedContext;
-            }
-            catch (Exception ex)
-            {
-                var cleanupFailures = await CaptureCleanupFailuresAsync(
-                        cancellationToken,
-                        async () =>
-                        {
-                            await DisposeScopeContextAsync(
-                                    GameContextType.Module,
-                                    preloadedContext,
-                                    cancellationToken,
-                                    moduleScopeKey)
-                                .ConfigureAwait(false);
-                            preloadedContext = null;
-                        })
-                    .ConfigureAwait(false);
-
-                if (cleanupFailures.Count > 0)
-                    throw CreateCleanupAggregateException("PreloadModule", ex, cleanupFailures);
-
-                throw;
-            }
+                        await _scopeTransitions.ReplacePreloadedScopeAsync(
+                                "PreloadModule",
+                                GameContextType.Module,
+                                moduleScopeKey,
+                                preloadedContext,
+                                operation.Generation,
+                                operation.CancellationToken)
+                            .ConfigureAwait(false);
+                    })
+                .ConfigureAwait(false);
         }
 
         public bool HasPreloadedScope(Type scopeKey)
@@ -153,80 +111,74 @@ namespace RuntimeFlow.Contexts
             IInitializationProgressNotifier? progressNotifier = null,
             CancellationToken cancellationToken = default)
         {
-            FlushDeferredScopedRegistrations();
-            ValidateModuleScopeOperationPreconditions(moduleScopeKey);
+            await ExecuteGenerationBoundSideScopeOperationAsync(
+                    progressNotifier,
+                    cancellationToken,
+                    async operation =>
+                    {
+                        FlushDeferredScopedRegistrations();
+                        ValidateModuleScopeOperationPreconditions(moduleScopeKey);
 
-            if (_additiveModuleContexts.ContainsKey(moduleScopeKey))
-                throw new InvalidOperationException($"Additive module scope '{moduleScopeKey.Name}' is already loaded.");
+                        if (_additiveModuleContexts.ContainsKey(moduleScopeKey))
+                            throw new InvalidOperationException($"Additive module scope '{moduleScopeKey.Name}' is already loaded.");
 
-            var notifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
-            var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
+                        var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
 
-            var (initializedServices, availableServices) = CreateSeededInitializationState(
-                _globalContext,
-                _sessionContext,
-                _sceneContext);
+                        var (initializedServices, availableServices) = CreateSeededInitializationState(
+                            _globalContext,
+                            _sessionContext,
+                            _sceneContext);
 
-            GameContext? moduleContext = null;
-            try
-            {
-                moduleContext = await CreateAndInitializeScopeContextAsync(
-                        GameContextType.Module,
-                        _sceneContext!,
-                        moduleProfile.Registrations,
-                        moduleProfile.Services,
-                        _onModuleInitialized,
-                        initializedServices,
-                        availableServices,
-                        notifier,
-                        Volatile.Read(ref _runGeneration),
-                        cancellationToken,
-                        moduleScopeKey)
-                    .ConfigureAwait(false);
+                        var moduleContext = await _scopeTransitions.EnterScopeAsync(
+                                "LoadAdditiveModule",
+                                GameContextType.Module,
+                                moduleScopeKey,
+                                _sceneContext!,
+                                moduleProfile,
+                                _onModuleInitialized,
+                                initializedServices,
+                                availableServices,
+                                operation.ProgressNotifier,
+                                operation.Generation,
+                                operation.CancellationToken,
+                                verifyGenerationAfterCreate: false)
+                            .ConfigureAwait(false);
 
-                _additiveModuleContexts[moduleScopeKey] = moduleContext;
-            }
-            catch (Exception ex)
-            {
-                var cleanupFailures = await CaptureCleanupFailuresAsync(
-                        cancellationToken,
-                        async () =>
-                        {
-                            await DisposeScopeContextAsync(
-                                    GameContextType.Module,
-                                    moduleContext,
-                                    cancellationToken,
-                                    moduleScopeKey)
-                                .ConfigureAwait(false);
-                            moduleContext = null;
-                        })
-                    .ConfigureAwait(false);
-
-                if (cleanupFailures.Count > 0)
-                    throw CreateCleanupAggregateException("LoadAdditiveModule", ex, cleanupFailures);
-
-                throw;
-            }
+                        await _scopeTransitions.PublishAdditiveModuleScopeAsync(
+                                "LoadAdditiveModule",
+                                moduleScopeKey,
+                                moduleContext,
+                                operation.Generation,
+                                operation.CancellationToken)
+                            .ConfigureAwait(false);
+                    })
+                .ConfigureAwait(false);
         }
 
         public async Task UnloadAdditiveModuleAsync(
             Type moduleScopeKey,
             CancellationToken cancellationToken = default)
         {
-            if (moduleScopeKey == null) throw new ArgumentNullException(nameof(moduleScopeKey));
-            if (!_additiveModuleContexts.TryGetValue(moduleScopeKey, out var context))
-                throw new InvalidOperationException($"Additive module scope '{moduleScopeKey.Name}' is not loaded.");
-
-            SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Deactivating, moduleScopeKey);
-            await ExecuteScopeActivationExitAsync(GameContextType.Module, context, NullInitializationProgressNotifier.Instance, cancellationToken).ConfigureAwait(false);
-            await DisposeScopeContextAsync(
-                    GameContextType.Module,
-                    context,
+            await ExecuteGenerationBoundSideScopeOperationAsync(
+                    NullInitializationProgressNotifier.Instance,
                     cancellationToken,
-                    moduleScopeKey,
-                    () => SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, moduleScopeKey))
+                    async operation =>
+                    {
+                        if (moduleScopeKey == null) throw new ArgumentNullException(nameof(moduleScopeKey));
+                        if (!_additiveModuleContexts.TryGetValue(moduleScopeKey, out var context))
+                            throw new InvalidOperationException($"Additive module scope '{moduleScopeKey.Name}' is not loaded.");
+
+                        await _scopeTransitions.ExitActivatedScopeAsync(
+                                GameContextType.Module,
+                                context,
+                                moduleScopeKey,
+                                ScopeLifecycleState.Deactivating,
+                                operation.ProgressNotifier,
+                                operation.CancellationToken,
+                                () => _additiveModuleContexts.Remove(moduleScopeKey))
+                            .ConfigureAwait(false);
+                    })
                 .ConfigureAwait(false);
-            _additiveModuleContexts.Remove(moduleScopeKey);
         }
     }
 }

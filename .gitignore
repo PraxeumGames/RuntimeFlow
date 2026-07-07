@@ -25,6 +25,10 @@ BenchmarkDotNet.Artifacts/
 *.snupkg
 packages/
 !packages/repositories.config
+!RuntimeFlow.UnityTests/Packages/
+!RuntimeFlow.UnityTests/Packages/**
+!RuntimeFlow.UnityTests/Assets/Packages/
+!RuntimeFlow.UnityTests/Assets/Packages/**
 
 ## =========================
 ## Unity
@@ -42,8 +46,11 @@ Asset[Ss]tore[Tt]ools/
 
 # Unity auto-generated files
 *.csproj
+!RuntimeFlow.Generators/RuntimeFlow.Generators.csproj
+!RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj
 *.unityproj
 *.sln
+!RuntimeFlow.sln
 *.pidb
 *.booproj
 *.svd

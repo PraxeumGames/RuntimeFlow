@@ -93,6 +93,26 @@ namespace RuntimeFlow.Contexts
             return DispatchToMainThread(() => ResolveCore(serviceType), $"resolve '{serviceType.FullName}'");
         }
 
+        internal object Resolve(ServiceInitializerBinding initializer)
+        {
+            if (initializer == null) throw new ArgumentNullException(nameof(initializer));
+            if (!_initialized || _container == null) throw new InvalidOperationException("Context not initialized");
+
+            return DispatchToMainThread(
+                () => ResolveCore(initializer),
+                $"resolve '{initializer.ServiceType.FullName}'");
+        }
+
+        internal object Resolve(Registration registration)
+        {
+            if (registration == null) throw new ArgumentNullException(nameof(registration));
+            if (!_initialized || _container == null) throw new InvalidOperationException("Context not initialized");
+
+            return DispatchToMainThread(
+                () => _container!.Resolve(registration),
+                $"resolve '{registration.ImplementationType?.FullName ?? registration.ImplementationType?.Name ?? "<unknown>"}'");
+        }
+
         private object ResolveCore(Type serviceType)
         {
             if (_decorationChain.TryGetDecoratedInstance(serviceType, out var decorated))
@@ -107,9 +127,22 @@ namespace RuntimeFlow.Contexts
             return _container!.Resolve(serviceType);
         }
 
+        private object ResolveCore(ServiceInitializerBinding initializer)
+        {
+            if (initializer.Registration != null)
+                return _container!.Resolve(initializer.Registration);
+
+            return ResolveCore(initializer.ResolveServiceType);
+        }
+
         internal bool TryGetImplementationType(Type serviceType, [MaybeNullWhen(false)] out Type implementationType)
         {
             return _registrationStore.TryGetImplementationType(serviceType, _initialized, _container, out implementationType);
+        }
+
+        internal IReadOnlyList<Registration> GetRegistrationsForServiceType(Type serviceType)
+        {
+            return _registrationStore.GetRegistrationsForServiceType(serviceType, _initialized, _container);
         }
 
         internal bool TryGetRegisteredInstance(Type serviceType, [MaybeNullWhen(false)] out object instance)

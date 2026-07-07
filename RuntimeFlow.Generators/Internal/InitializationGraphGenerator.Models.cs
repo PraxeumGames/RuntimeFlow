@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using Microsoft.CodeAnalysis;
 
 namespace RuntimeFlow.Generators
@@ -60,13 +61,15 @@ namespace RuntimeFlow.Generators
                 INamedTypeSymbol? globalMarker,
                 INamedTypeSymbol? sessionMarker,
                 INamedTypeSymbol? sceneMarker,
-                INamedTypeSymbol? moduleMarker)
+                INamedTypeSymbol? moduleMarker,
+                IReadOnlyCollection<INamedTypeSymbol> markerOnlyAsyncContracts)
             {
                 AsyncInitializable = asyncInitializable;
                 GlobalMarker = globalMarker;
                 SessionMarker = sessionMarker;
                 SceneMarker = sceneMarker;
                 ModuleMarker = moduleMarker;
+                MarkerOnlyAsyncContracts = markerOnlyAsyncContracts;
             }
 
             public INamedTypeSymbol? AsyncInitializable { get; }
@@ -74,7 +77,14 @@ namespace RuntimeFlow.Generators
             public INamedTypeSymbol? SessionMarker { get; }
             public INamedTypeSymbol? SceneMarker { get; }
             public INamedTypeSymbol? ModuleMarker { get; }
+            public IReadOnlyCollection<INamedTypeSymbol> MarkerOnlyAsyncContracts { get; }
             public bool IsValid => AsyncInitializable != null;
+
+            public bool IsMarkerOnlyAsyncContract(INamedTypeSymbol type)
+            {
+                return MarkerOnlyAsyncContracts.Any(marker =>
+                    SymbolEqualityComparer.Default.Equals(type, marker));
+            }
 
             public static GeneratorSymbols Create(Compilation compilation)
             {
@@ -83,7 +93,12 @@ namespace RuntimeFlow.Generators
                     compilation.GetTypeByMetadataName(GlobalMarkerInterface),
                     compilation.GetTypeByMetadataName(SessionMarkerInterface),
                     compilation.GetTypeByMetadataName(SceneMarkerInterface),
-                    compilation.GetTypeByMetadataName(ModuleMarkerInterface));
+                    compilation.GetTypeByMetadataName(ModuleMarkerInterface),
+                    MarkerOnlyAsyncContractInterfaces
+                        .Select(compilation.GetTypeByMetadataName)
+                        .Where(symbol => symbol != null)
+                        .Select(symbol => symbol!)
+                        .ToArray());
             }
         }
 

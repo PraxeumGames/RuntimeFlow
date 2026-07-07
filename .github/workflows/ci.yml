@@ -14,8 +14,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  build-and-test:
-    name: Build & Test (.NET 9)
+  generator-build-and-test:
+    name: Generator Build & Test (.NET 9)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -36,23 +36,23 @@ jobs:
 
       - name: Restore
         run: |
-          dotnet restore ./RuntimeFlow.Tests/RuntimeFlow.Tests.csproj --nologo
           dotnet restore ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --nologo
 
       - name: Build
         run: |
-          dotnet build ./RuntimeFlow.Tests/RuntimeFlow.Tests.csproj --configuration Release --no-restore --nologo
           dotnet build ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --configuration Release --no-restore --nologo
 
-      - name: Test (with coverage)
+      - name: Validate packaged analyzer
         run: |
-          dotnet test ./RuntimeFlow.Tests/RuntimeFlow.Tests.csproj \
-            --configuration Release \
-            --no-build \
-            --nologo \
-            --logger "trx;LogFileName=test-results.trx" \
-            --collect:"XPlat Code Coverage" \
-            --results-directory ./TestResults
+          dotnet build ./RuntimeFlow.Generators/RuntimeFlow.Generators.csproj --configuration Release --no-restore --nologo
+          cmp -s \
+            ./RuntimeFlow.Generators/bin/Release/netstandard2.0/RuntimeFlow.Generators.dll \
+            ./com.praxeum.runtimeflow/Analyzers/RuntimeFlow.Generators.dll \
+            || { echo "::error::Packaged RuntimeFlow.Generators.dll is stale. Rebuild and copy the Release analyzer into com.praxeum.runtimeflow/Analyzers/."; exit 1; }
+          if grep -a "GameBuilder.Generators" ./com.praxeum.runtimeflow/Analyzers/RuntimeFlow.Generators.dll; then
+            echo "::error::Packaged RuntimeFlow.Generators.dll still references GameBuilder.Generators."
+            exit 1
+          fi
 
       - name: Test generator
         run: |
@@ -77,4 +77,31 @@ jobs:
         with:
           name: coverage
           path: ./TestResults/**/coverage.cobertura.xml
+          if-no-files-found: warn
+
+  unity-editmode-runtime-tests:
+    name: Unity EditMode Runtime Tests
+    runs-on: ubuntu-latest
+    if: ${{ vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Unity EditMode tests
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: RuntimeFlow.UnityTests
+          testMode: editmode
+          artifactsPath: TestResults/UnityEditMode
+
+      - name: Upload Unity test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-editmode-test-results
+          path: TestResults/UnityEditMode
           if-no-files-found: warn

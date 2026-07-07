@@ -23,16 +23,16 @@ Install VContainer first:
 openupm add jp.hadashikick.vcontainer
 ```
 
-Or via git URL in Package Manager:
+Or via the pinned git URL used by the RuntimeFlow Unity test project and SF2:
 
 ```text
-https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer
+https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1
 ```
 
-Install RuntimeFlow package and pin version `0.1.0`:
+Install RuntimeFlow package and pin version `0.3.0`:
 
 ```text
-https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.1.0
+https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.3.0
 ```
 
 In `Packages/manifest.json`:
@@ -40,13 +40,13 @@ In `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer",
-    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.1.0"
+    "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1",
+    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.3.0"
   }
 }
 ```
 
-> `#0.1.0` pins the dependency to the RuntimeFlow `0.1.0` git tag. Publish that tag in Git before using the URL in Unity.
+> `#0.3.0` pins the dependency to the RuntimeFlow `0.3.0` git tag. Publish that tag in Git before using the URL in Unity.
 > `RuntimeFlow.Runtime.asmdef` references `Microsoft.Extensions.Logging.Abstractions.dll` as a precompiled dependency.
 
 ## Quick start

@@ -10,13 +10,10 @@ namespace RuntimeFlow.Contexts
     {
         public IGameSceneLoader? SceneLoader { get; set; }
         public RestartAwareSceneBootstrapScenarioOptions? ScenarioOptions { get; set; }
-        public Action<GameContextBuilder, IPreBootstrapStageService?>? ConfigureBuilder { get; set; }
+        public Action<GameContextBuilder>? ConfigureBuilder { get; set; }
         public IEnumerable<IRuntimeFlowGuard>? Guards { get; set; }
         public Action<RuntimePipelineOptions>? ConfigurePipelineOptions { get; set; }
         public Microsoft.Extensions.Logging.ILoggerFactory? LoggerFactory { get; set; }
-        public IPreBootstrapStageService? PreBootstrapStageService { get; set; }
-        public Func<IPreBootstrapStageService>? PreBootstrapStageServiceFactory { get; set; }
-        public Action? OnPreBootstrapCompleted { get; set; }
     }
 
     /// <summary>
@@ -32,21 +29,10 @@ namespace RuntimeFlow.Contexts
             if (options.SceneLoader == null) throw new ArgumentException("Scene loader is required.", nameof(options));
             if (options.ScenarioOptions == null) throw new ArgumentException("Scenario options are required.", nameof(options));
 
-            var callbackContext = SynchronizationContext.Current;
             var scenarioOptions = CloneRestartAwareSceneBootstrapOptions(options.ScenarioOptions);
-            var preBootstrapStageService = await EnsurePreBootstrapReadyAsync(
-                    options.PreBootstrapStageService ?? scenarioOptions.PreBootstrapStageService,
-                    options.PreBootstrapStageServiceFactory,
-                    options.OnPreBootstrapCompleted,
-                    callbackContext,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            if (preBootstrapStageService != null)
-                scenarioOptions.PreBootstrapStageService = preBootstrapStageService;
 
             return await RunAsync(
-                    configure: builder => options.ConfigureBuilder?.Invoke(builder, preBootstrapStageService),
+                    configure: builder => options.ConfigureBuilder?.Invoke(builder),
                     sceneLoader: options.SceneLoader,
                     scenario: RuntimeFlowPresets.RestartAwareSceneBootstrap(scenarioOptions),
                     guards: options.Guards,
@@ -54,101 +40,6 @@ namespace RuntimeFlow.Contexts
                     loggerFactory: options.LoggerFactory,
                     cancellationToken: cancellationToken)
                 .ConfigureAwait(false);
-        }
-
-        public static async Task<BootstrapResult> RunAsync(
-            Action<GameContextBuilder, IPreBootstrapStageService?> configure,
-            IGameSceneLoader sceneLoader,
-            IRuntimeFlowScenario scenario,
-            IPreBootstrapStageService? preBootstrapStageService = null,
-            Func<IPreBootstrapStageService>? preBootstrapStageServiceFactory = null,
-            Action? onPreBootstrapCompleted = null,
-            IEnumerable<IRuntimeFlowGuard>? guards = null,
-            Action<RuntimePipelineOptions>? configureOptions = null,
-            Microsoft.Extensions.Logging.ILoggerFactory? loggerFactory = null,
-            CancellationToken cancellationToken = default)
-        {
-            if (configure == null) throw new ArgumentNullException(nameof(configure));
-
-            var callbackContext = SynchronizationContext.Current;
-            var effectivePreBootstrapStageService = await EnsurePreBootstrapReadyAsync(
-                    preBootstrapStageService,
-                    preBootstrapStageServiceFactory,
-                    onPreBootstrapCompleted,
-                    callbackContext,
-                    cancellationToken)
-                .ConfigureAwait(false);
-
-            return await RunAsync(
-                    configure: builder => configure(builder, effectivePreBootstrapStageService),
-                    sceneLoader: sceneLoader,
-                    scenario: scenario,
-                    guards: guards,
-                    configureOptions: configureOptions,
-                    loggerFactory: loggerFactory,
-                    cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-        }
-
-        private static Task InvokeOnCapturedContextAsync(
-            Action? callback,
-            SynchronizationContext? context,
-            CancellationToken cancellationToken)
-        {
-            if (callback == null)
-                return Task.CompletedTask;
-
-            cancellationToken.ThrowIfCancellationRequested();
-            if (context == null || SynchronizationContext.Current == context)
-            {
-                callback();
-                return Task.CompletedTask;
-            }
-
-            var tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
-            using var registration = cancellationToken.Register(() => tcs.TrySetCanceled(cancellationToken));
-            context.Post(_ =>
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    tcs.TrySetCanceled(cancellationToken);
-                    return;
-                }
-
-                try
-                {
-                    callback();
-                    tcs.TrySetResult(true);
-                }
-                catch (Exception ex)
-                {
-                    tcs.TrySetException(ex);
-                }
-            }, null);
-
-            return tcs.Task;
-        }
-
-        private static async Task<IPreBootstrapStageService?> EnsurePreBootstrapReadyAsync(
-            IPreBootstrapStageService? preBootstrapStageService,
-            Func<IPreBootstrapStageService>? preBootstrapStageServiceFactory,
-            Action? onPreBootstrapCompleted,
-            SynchronizationContext? callbackContext,
-            CancellationToken cancellationToken)
-        {
-            var effectivePreBootstrapStageService = preBootstrapStageService ?? preBootstrapStageServiceFactory?.Invoke();
-            if (effectivePreBootstrapStageService == null)
-            {
-                return null;
-            }
-
-            await effectivePreBootstrapStageService.EnsureCompletedAsync(cancellationToken).ConfigureAwait(false);
-            PreBootstrapRuntimeValidator.EnsureSucceeded(
-                effectivePreBootstrapStageService,
-                "Prebootstrap must be completed before continuing runtime bootstrap.");
-            await InvokeOnCapturedContextAsync(onPreBootstrapCompleted, callbackContext, cancellationToken)
-                .ConfigureAwait(false);
-            return effectivePreBootstrapStageService;
         }
 
         public static Task<BootstrapResult> RunAsync(
@@ -239,18 +130,13 @@ namespace RuntimeFlow.Contexts
             return new RestartAwareSceneBootstrapScenarioOptions
             {
                 SceneName = source.SceneName,
-                PreBootstrapStageService = source.PreBootstrapStageService,
                 LoadingState = source.LoadingState,
                 ReplayReloadScopeType = source.ReplayReloadScopeType,
                 RunStageName = source.RunStageName,
-                PreBootstrapStageName = source.PreBootstrapStageName,
                 RunStartReasonCode = source.RunStartReasonCode,
                 ReplayRunStartReasonCode = source.ReplayRunStartReasonCode,
                 RunCompleteReasonCode = source.RunCompleteReasonCode,
-                RunFailReasonCode = source.RunFailReasonCode,
-                PreBootstrapReasonCodeResolver = source.PreBootstrapReasonCodeResolver,
-                PreBootstrapFailedReasonCodeFallback = source.PreBootstrapFailedReasonCodeFallback,
-                PreBootstrapFailedDiagnosticFallback = source.PreBootstrapFailedDiagnosticFallback
+                RunFailReasonCode = source.RunFailReasonCode
             };
         }
     }

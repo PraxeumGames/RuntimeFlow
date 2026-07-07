@@ -24,7 +24,7 @@ namespace RuntimeFlow.Contexts
 
             try
             {
-                await _builder.DisposeAllScopesAsync(cancellationToken).ConfigureAwait(false);
+                await _builder.DisposeAllScopesAsync(CancellationToken.None).ConfigureAwait(false);
             }
             catch
             {

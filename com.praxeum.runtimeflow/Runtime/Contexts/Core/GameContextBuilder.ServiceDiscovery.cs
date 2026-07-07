@@ -4,6 +4,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
 using VContainer;
+using VContainer.Unity;
 
 namespace RuntimeFlow.Contexts
 {
@@ -147,109 +148,363 @@ namespace RuntimeFlow.Contexts
                     .ToDictionary(group => group.Key, group => group.Last())
                 : new Dictionary<Type, RuntimeFlowCompiledInitializationGraph.Node>();
 
-            var candidateServiceTypes = new HashSet<Type>(
-                context.RegisteredServiceTypes.Where(InitializationGraphRules.IsExplicitDependencyType));
+            var lifecycleIndex = new LifecycleRegistrationIndex();
 
-            if (candidateServiceTypes.Count == 0)
+            var localExplicitServiceTypes = context.RegisteredServiceTypes
+                .Where(InitializationGraphRules.IsExplicitDependencyType)
+                .OrderBy(GetDeterministicTypeName, StringComparer.Ordinal)
+                .ToArray();
+
+            foreach (var serviceType in localExplicitServiceTypes)
             {
-                foreach (var discoveredType in DiscoverRegisteredAsyncServiceTypes(context))
-                {
-                    candidateServiceTypes.Add(discoveredType);
-                }
+                AddCandidateFromServiceType(
+                    context,
+                    compiledGraph,
+                    serviceType,
+                    lifecycleIndex,
+                    LifecycleRegistrationOrigin.RuntimeFlowRegistration);
+            }
+
+            foreach (var discoveredType in DiscoverRegisteredAsyncServiceTypes(context)
+                         .OrderBy(GetDeterministicTypeName, StringComparer.Ordinal))
+            {
+                AddCandidateFromServiceType(
+                    context,
+                    compiledGraph,
+                    discoveredType,
+                    lifecycleIndex,
+                    LifecycleRegistrationOrigin.RuntimeFlowRegistration);
+            }
+
+            foreach (var discoveredRegistration in DiscoverRegisteredAsyncServiceRegistrations(context)
+                         .OrderBy(candidate => GetDeterministicTypeName(candidate.ServiceType), StringComparer.Ordinal))
+            {
+                var implementationType = discoveredRegistration.Registration.ImplementationType;
+                lifecycleIndex.Add(
+                    discoveredRegistration.ServiceType,
+                    implementationType,
+                    InitializationGraphRules.ResolveConstructorDependencies(implementationType),
+                    discoveredRegistration.ResolveServiceType,
+                    discoveredRegistration.Registration,
+                    LifecycleRegistrationOrigin.VContainerRegistration);
             }
 
             foreach (var node in compiledGraph.Values)
             {
                 if (InitializationGraphRules.IsAsyncDependencyType(node.ServiceType)
-                    && context.IsRegistered(node.ServiceType))
+                    && IsLocallyRegisteredForInitialization(context, node.ServiceType))
                 {
-                    candidateServiceTypes.Add(node.ServiceType);
+                    lifecycleIndex.Add(
+                        node.ServiceType,
+                        node.ImplementationType,
+                        node.Dependencies
+                            .Where(InitializationGraphRules.IsExplicitDependencyType)
+                            .Distinct()
+                            .ToArray(),
+                        node.ServiceType,
+                        registration: null,
+                        LifecycleRegistrationOrigin.CompiledGraph);
                 }
             }
 
-            var rawBindingsByImplementation = new Dictionary<Type, (Type serviceType, Type implementationType, IReadOnlyCollection<Type> rawDependencies)>();
-            foreach (var serviceType in candidateServiceTypes.OrderBy(GetDeterministicTypeName, StringComparer.Ordinal))
+            var rawBindings = lifecycleIndex.SelectEffectiveDescriptors(context);
+            var typeToServiceType = new Dictionary<Type, Type>();
+            foreach (var binding in rawBindings)
             {
-                Type? implementationType;
-                IReadOnlyCollection<Type> rawDependencies;
+                typeToServiceType[binding.ImplementationType] = binding.ServiceType;
+                typeToServiceType[binding.ServiceType] = binding.ServiceType;
+                typeToServiceType[binding.ResolveServiceType] = binding.ServiceType;
 
-                if (compiledGraph.TryGetValue(serviceType, out var compiledNode))
+                if (binding.Registration == null)
+                    continue;
+
+                foreach (var interfaceType in binding.Registration.InterfaceTypes)
                 {
-                    implementationType = compiledNode.ImplementationType;
-                    rawDependencies = compiledNode.Dependencies
-                        .Where(InitializationGraphRules.IsExplicitDependencyType)
-                        .Distinct()
-                        .ToArray();
+                    typeToServiceType[interfaceType] = binding.ServiceType;
                 }
-                else
+            }
+
+            var initializers = new List<ServiceInitializerBinding>();
+            foreach (var binding in rawBindings)
+            {
+                var resolvedDependencies = binding.RawDependencies
+                    .Select(dep => ResolveToServiceType(dep, typeToServiceType))
+                    .Where(dep => dep != null)
+                    .Select(dep => dep!)
+                    .Distinct()
+                    .ToArray();
+
+                initializers.Add(new ServiceInitializerBinding(
+                    binding.ServiceType,
+                    binding.ImplementationType,
+                    resolvedDependencies,
+                    binding.ResolveServiceType,
+                    SelectInitializerResolveRegistration(binding)));
+            }
+
+            return initializers;
+        }
+
+        private static Registration? SelectInitializerResolveRegistration(LifecycleRegistrationDescriptor binding)
+        {
+            var registration = binding.Registration;
+            if (registration == null)
+                return null;
+
+            // When a concrete service interface is exposed by VContainer, resolve through that
+            // interface so later container overrides/decorators remain visible to RuntimeFlow
+            // initialization. Exact Registration resolution is only needed for marker-only
+            // services where resolving the marker interface would be ambiguous.
+            return registration.InterfaceTypes.Contains(binding.ResolveServiceType)
+                   && !InitializationContractCatalog.IsMarkerOnlyAsyncInitializationType(binding.ResolveServiceType)
+                   && !IsVContainerInitializableType(binding.ResolveServiceType)
+                   && !IsVContainerStartableType(binding.ResolveServiceType)
+                ? null
+                : registration;
+        }
+
+        private static void AddCandidateFromServiceType(
+            GameContext context,
+            IReadOnlyDictionary<Type, RuntimeFlowCompiledInitializationGraph.Node> compiledGraph,
+            Type serviceType,
+            LifecycleRegistrationIndex lifecycleIndex,
+            LifecycleRegistrationOrigin origin)
+        {
+            Type? implementationType;
+            IReadOnlyCollection<Type> rawDependencies;
+            var effectiveOrigin = origin;
+
+            if (compiledGraph.TryGetValue(serviceType, out var compiledNode))
+            {
+                implementationType = compiledNode.ImplementationType;
+                rawDependencies = compiledNode.Dependencies
+                    .Where(InitializationGraphRules.IsExplicitDependencyType)
+                    .Distinct()
+                    .ToArray();
+                effectiveOrigin |= LifecycleRegistrationOrigin.CompiledGraph;
+            }
+            else
+            {
+                if (!context.TryGetImplementationType(serviceType, out implementationType))
                 {
-                    if (!context.TryGetImplementationType(serviceType, out implementationType))
-                    {
-                        if (serviceType.IsInterface)
-                            continue;
+                    if (serviceType.IsInterface)
+                        return;
 
-                        implementationType = serviceType;
-                    }
-
-                    rawDependencies = InitializationGraphRules.ResolveConstructorDependencies(implementationType);
+                    implementationType = serviceType;
                 }
 
-                if (rawBindingsByImplementation.TryGetValue(implementationType, out var existingBinding))
+                rawDependencies = InitializationGraphRules.ResolveConstructorDependencies(implementationType);
+            }
+
+            lifecycleIndex.Add(
+                serviceType,
+                implementationType,
+                rawDependencies,
+                serviceType,
+                registration: null,
+                effectiveOrigin);
+        }
+
+        private static IEnumerable<InitializerRegistrationCandidate> DiscoverRegisteredAsyncServiceRegistrations(GameContext context)
+        {
+            foreach (var markerType in InitializationContractCatalog.DiscoverableAsyncInitializationMarkerTypes)
+            {
+                foreach (var registration in context.GetRegistrationsForServiceType(markerType))
                 {
-                    var mergedDependencies = existingBinding.rawDependencies
+                    var implementationType = registration.ImplementationType;
+                    if (!typeof(IAsyncInitializableService).IsAssignableFrom(implementationType))
+                        continue;
+
+                    var serviceType = SelectLifecycleServiceType(registration, implementationType);
+                    var resolveServiceType = SelectResolveServiceType(registration, serviceType);
+                    yield return new InitializerRegistrationCandidate(serviceType, resolveServiceType, registration);
+                }
+            }
+        }
+
+        private static Type SelectLifecycleServiceType(Registration registration, Type implementationType)
+        {
+            if (registration.InterfaceTypes.Contains(implementationType))
+                return implementationType;
+
+            var explicitAsyncServiceType = registration.InterfaceTypes
+                .Where(InitializationGraphRules.IsExplicitDependencyType)
+                .OrderBy(GetDeterministicTypeName, StringComparer.Ordinal)
+                .FirstOrDefault();
+            if (explicitAsyncServiceType != null)
+                return explicitAsyncServiceType;
+
+            var ordinaryServiceType = registration.InterfaceTypes
+                .Where(type => type != null)
+                .Where(type => !InitializationContractCatalog.IsMarkerOnlyAsyncInitializationType(type))
+                .Where(type => !IsVContainerInitializableType(type))
+                .Where(type => !IsVContainerStartableType(type))
+                .Where(type => type != typeof(IDisposable))
+                .Where(type => type != typeof(IAsyncDisposable))
+                .Where(type => type.IsAssignableFrom(implementationType))
+                .OrderBy(GetDeterministicTypeName, StringComparer.Ordinal)
+                .FirstOrDefault();
+            return ordinaryServiceType ?? implementationType;
+        }
+
+        private static Type SelectResolveServiceType(Registration registration, Type serviceType)
+        {
+            if (registration.InterfaceTypes.Contains(serviceType))
+                return serviceType;
+
+            return registration.InterfaceTypes
+                       .Where(type => type != null)
+                       .Where(type => !IsVContainerInitializableType(type))
+                       .Where(type => !IsVContainerStartableType(type))
+                       .Where(type => type != typeof(IDisposable))
+                       .Where(type => type != typeof(IAsyncDisposable))
+                       .OrderBy(type => InitializationContractCatalog.IsMarkerOnlyAsyncInitializationType(type) ? 1 : 0)
+                       .ThenBy(GetDeterministicTypeName, StringComparer.Ordinal)
+                       .FirstOrDefault()
+                   ?? serviceType;
+        }
+
+        private static bool IsVContainerInitializableType(Type serviceType)
+        {
+            return serviceType == typeof(IInitializable);
+        }
+
+        private static bool IsVContainerStartableType(Type serviceType)
+        {
+            return serviceType == typeof(IStartable);
+        }
+
+        [Flags]
+        private enum LifecycleRegistrationOrigin
+        {
+            None = 0,
+            RuntimeFlowRegistration = 1,
+            VContainerRegistration = 2,
+            CompiledGraph = 4
+        }
+
+        private sealed class LifecycleRegistrationIndex
+        {
+            private readonly Dictionary<Type, LifecycleRegistrationDescriptor> _descriptorsByImplementation = new();
+
+            public void Add(
+                Type serviceType,
+                Type implementationType,
+                IReadOnlyCollection<Type> rawDependencies,
+                Type? resolveServiceType,
+                Registration? registration,
+                LifecycleRegistrationOrigin origin)
+            {
+                if (_descriptorsByImplementation.TryGetValue(implementationType, out var existingDescriptor))
+                {
+                    _descriptorsByImplementation[implementationType] = Merge(existingDescriptor);
+                    return;
+                }
+
+                _descriptorsByImplementation[implementationType] = new LifecycleRegistrationDescriptor(
+                    serviceType,
+                    implementationType,
+                    rawDependencies,
+                    resolveServiceType ?? serviceType,
+                    registration,
+                    origin);
+                return;
+
+                LifecycleRegistrationDescriptor Merge(LifecycleRegistrationDescriptor existing)
+                {
+                    var mergedDependencies = existing.RawDependencies
                         .Concat(rawDependencies)
                         .Distinct()
                         .ToArray();
 
                     var preferredServiceType = IsPreferredServiceType(
                         serviceType,
-                        existingBinding.serviceType,
+                        existing.ServiceType,
                         implementationType)
                         ? serviceType
-                        : existingBinding.serviceType;
+                        : existing.ServiceType;
 
-                    rawBindingsByImplementation[implementationType] =
-                        (preferredServiceType, implementationType, mergedDependencies);
-                    continue;
-                }
-
-                rawBindingsByImplementation[implementationType] =
-                    (serviceType, implementationType, rawDependencies);
-            }
-
-            var rawBindings = rawBindingsByImplementation.Values.ToArray();
-            var typeToServiceType = new Dictionary<Type, Type>();
-            foreach (var (serviceType, implementationType, _) in rawBindings)
-            {
-                typeToServiceType[implementationType] = serviceType;
-                typeToServiceType[serviceType] = serviceType;
-            }
-
-            foreach (var candidateServiceType in candidateServiceTypes)
-            {
-                if (!context.TryGetImplementationType(candidateServiceType, out var implementationType))
-                    continue;
-
-                if (typeToServiceType.TryGetValue(implementationType, out var canonicalServiceType))
-                {
-                    typeToServiceType[candidateServiceType] = canonicalServiceType;
+                    var useNewDescriptorIdentity = preferredServiceType == serviceType;
+                    return new LifecycleRegistrationDescriptor(
+                        preferredServiceType,
+                        implementationType,
+                        mergedDependencies,
+                        useNewDescriptorIdentity ? resolveServiceType ?? serviceType : existing.ResolveServiceType,
+                        useNewDescriptorIdentity ? registration : existing.Registration,
+                        existing.Origin | origin);
                 }
             }
 
-            var initializers = new List<ServiceInitializerBinding>();
-            foreach (var (serviceType, implementationType, rawDependencies) in rawBindings)
+            public LifecycleRegistrationDescriptor[] SelectEffectiveDescriptors(GameContext context)
             {
-                var resolvedDependencies = rawDependencies
-                    .Select(dep => ResolveToServiceType(dep, typeToServiceType, candidateServiceTypes))
-                    .Where(dep => dep != null)
-                    .Select(dep => dep!)
-                    .Distinct()
+                return _descriptorsByImplementation.Values
+                    .GroupBy(binding => binding.ServiceType)
+                    .Select(group =>
+                    {
+                        var candidates = group.ToArray();
+                        if (candidates.Length == 1)
+                            return candidates[0];
+
+                        if (context.TryGetImplementationType(group.Key, out var effectiveImplementationType))
+                        {
+                            var effective = candidates
+                                .LastOrDefault(binding => binding.ImplementationType == effectiveImplementationType);
+                            if (effective != null)
+                                return effective;
+                        }
+
+                        var implementations = string.Join(
+                            ", ",
+                            candidates
+                                .Select(binding => GetDeterministicTypeName(binding.ImplementationType))
+                                .OrderBy(name => name, StringComparer.Ordinal));
+                        throw new InvalidOperationException(
+                            $"Multiple initializer registrations resolved to service type {group.Key.Name}, " +
+                            $"but RuntimeFlow could not determine the effective container registration. " +
+                            $"Implementations: {implementations}");
+                    })
                     .ToArray();
+            }
+        }
 
-                initializers.Add(new ServiceInitializerBinding(serviceType, implementationType, resolvedDependencies));
+        private sealed class LifecycleRegistrationDescriptor
+        {
+            public LifecycleRegistrationDescriptor(
+                Type serviceType,
+                Type implementationType,
+                IReadOnlyCollection<Type> rawDependencies,
+                Type resolveServiceType,
+                Registration? registration,
+                LifecycleRegistrationOrigin origin)
+            {
+                ServiceType = serviceType;
+                ImplementationType = implementationType;
+                RawDependencies = rawDependencies;
+                ResolveServiceType = resolveServiceType;
+                Registration = registration;
+                Origin = origin;
             }
 
-            return initializers;
+            public Type ServiceType { get; }
+            public Type ImplementationType { get; }
+            public IReadOnlyCollection<Type> RawDependencies { get; }
+            public Type ResolveServiceType { get; }
+            public Registration? Registration { get; }
+            public LifecycleRegistrationOrigin Origin { get; }
+        }
+
+        private sealed class InitializerRegistrationCandidate
+        {
+            public InitializerRegistrationCandidate(Type serviceType, Type resolveServiceType, Registration registration)
+            {
+                ServiceType = serviceType;
+                ResolveServiceType = resolveServiceType;
+                Registration = registration;
+            }
+
+            public Type ServiceType { get; }
+            public Type ResolveServiceType { get; }
+            public Registration Registration { get; }
         }
 
         internal static bool ShouldUseCompiledInitializationGraph(string compiledRuleVersion)
@@ -270,9 +525,15 @@ namespace RuntimeFlow.Contexts
         {
             foreach (var type in ExplicitDependencyTypeCatalog.Value)
             {
-                if (context.IsRegistered(type))
+                if (IsLocallyRegisteredForInitialization(context, type))
                     yield return type;
             }
+        }
+
+        private static bool IsLocallyRegisteredForInitialization(GameContext context, Type serviceType)
+        {
+            return context.RegisteredServiceTypes.Contains(serviceType)
+                   || context.GetRegistrationsForServiceType(serviceType).Count > 0;
         }
 
         private static Type[] BuildExplicitDependencyTypeCatalog()
@@ -306,14 +567,10 @@ namespace RuntimeFlow.Contexts
 
         private static Type? ResolveToServiceType(
             Type dep,
-            Dictionary<Type, Type> typeToServiceType,
-            HashSet<Type> candidateServiceTypes)
+            Dictionary<Type, Type> typeToServiceType)
         {
             if (typeToServiceType.TryGetValue(dep, out var mappedServiceType))
                 return mappedServiceType;
-
-            if (dep.IsInterface && candidateServiceTypes.Contains(dep))
-                return dep;
 
             if (dep.IsInterface)
                 return null;

@@ -1,11 +1,11 @@
 using System;
-using UniRx;
 
 namespace SFS.Core.GameLoading
 {
     public interface IGameRestartHandler
     {
-        IReadOnlyReactiveProperty<bool> IsApplicationRestarting { get; }
+        bool IsApplicationRestarting { get; }
+        event Action<bool> ApplicationRestartingChanged;
         void Restart(string reason, bool forceSave = true, Action? callback = null);
         void RestartAndClearSecondaryUserData(string reason, bool forceSave = true);
         void HardRestart(string reason);

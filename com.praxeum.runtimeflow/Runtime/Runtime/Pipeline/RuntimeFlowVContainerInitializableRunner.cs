@@ -39,9 +39,9 @@ namespace RuntimeFlow.Contexts
             logger.LogInformation(
                 "Initializing staged startup entry points for {Scope} scope. Stages={StageCount}",
                 scopeName,
-                RuntimeFlowStartupStageContracts.Ordered.Count);
+                InitializationContractCatalog.OrderedStartupStageContracts.Count);
 
-            foreach (var stageContract in RuntimeFlowStartupStageContracts.Ordered)
+            foreach (var stageContract in InitializationContractCatalog.OrderedStartupStageContracts)
             {
                 var stageRegistrations = initializableRegistrations
                     .Where(registration => IsStageRegistration(registration, stageContract.ServiceMarkerType))

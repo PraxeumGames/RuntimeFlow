@@ -3,7 +3,6 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RuntimeFlow.Contexts;
-using UniRx;
 using VContainer;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
 
@@ -38,9 +37,9 @@ namespace SFS.Core.GameLoading
         private readonly IGameDataCleaner _gameDataCleaner;
         private readonly IRuntimeFlowPipelineProvider _pipelineProvider;
         private readonly IRuntimePipelineStageStateProvider<string, RuntimePipelineStageSnapshot<string>> _loadingState;
-        private readonly ReactiveProperty<bool> _isApplicationRestarting = new();
         private readonly object _restartGate = new();
         private readonly IRuntimeRestartCoordinator _restartCoordinator;
+        private bool _isApplicationRestarting;
 
         [Inject]
         public RuntimeFlowGameRestartHandler(
@@ -86,7 +85,8 @@ namespace SFS.Core.GameLoading
             _logger = ResolveLogger(resolver, _logger);
         }
 
-        public IReadOnlyReactiveProperty<bool> IsApplicationRestarting => _isApplicationRestarting;
+        public bool IsApplicationRestarting => _isApplicationRestarting;
+        public event Action<bool>? ApplicationRestartingChanged;
 
         public void RestartAndClearSecondaryUserData(string reason, bool forceSave = true)
         {
@@ -145,14 +145,14 @@ namespace SFS.Core.GameLoading
                     return;
                 }
 
-                _isApplicationRestarting.Value = true;
+                SetApplicationRestarting(true);
                 _ = ObserveRestartOutcomeAsync(reason, dispatch.ExecutionTask);
             }
         }
 
         public void Dispose()
         {
-            _isApplicationRestarting.Value = false;
+            SetApplicationRestarting(false);
         }
 
         private async Task ObserveRestartOutcomeAsync(
@@ -210,8 +210,19 @@ namespace SFS.Core.GameLoading
             }
             finally
             {
-                _isApplicationRestarting.Value = false;
+                SetApplicationRestarting(false);
             }
+        }
+
+        private void SetApplicationRestarting(bool value)
+        {
+            if (_isApplicationRestarting == value)
+            {
+                return;
+            }
+
+            _isApplicationRestarting = value;
+            ApplicationRestartingChanged?.Invoke(value);
         }
 
         private void LogDuplicateRequest(string reason, RuntimeRestartDuplicateReason duplicateReason)

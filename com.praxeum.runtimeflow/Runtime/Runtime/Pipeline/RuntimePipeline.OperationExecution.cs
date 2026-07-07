@@ -19,8 +19,12 @@ namespace RuntimeFlow.Contexts
             string failMessage,
             Func<IInitializationProgressNotifier, CancellationToken, Task<T>> operation,
             IInitializationProgressNotifier? progressNotifier,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool invalidateTransitions = true)
         {
+            if (invalidateTransitions)
+                InvalidateTransitionOperations();
+
             var operationId = CreateLoadingOperationId(operationKind);
             var notifier = CreateProgressNotifier(progressNotifier, operationKind, operationId, splitPerScope);
 
@@ -81,13 +85,14 @@ namespace RuntimeFlow.Contexts
             string failMessage,
             Func<IInitializationProgressNotifier, CancellationToken, Task> operation,
             IInitializationProgressNotifier? progressNotifier,
-            CancellationToken cancellationToken)
+            CancellationToken cancellationToken,
+            bool invalidateTransitions = true)
         {
             await ExecuteScopeOperationAsync<object?>(
                 operationKind, operationCode, scopeKey, startState, splitPerScope,
                 startMessage, successMessage, cancelMessage, failMessage,
                 async (notifier, ct) => { await operation(notifier, ct).ConfigureAwait(false); return null; },
-                progressNotifier, cancellationToken).ConfigureAwait(false);
+                progressNotifier, cancellationToken, invalidateTransitions).ConfigureAwait(false);
         }
 
         private IInitializationProgressNotifier CreateProgressNotifier(

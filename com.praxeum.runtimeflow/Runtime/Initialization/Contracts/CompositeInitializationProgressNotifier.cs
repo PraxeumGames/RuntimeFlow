@@ -4,7 +4,10 @@ using System.Threading.Tasks;
 
 namespace RuntimeFlow.Contexts
 {
-    internal sealed class CompositeInitializationProgressNotifier : IInitializationProgressNotifier, IRuntimeScopeLifecycleProgressNotifier
+    internal sealed class CompositeInitializationProgressNotifier :
+        IInitializationProgressNotifier,
+        IRuntimeScopeLifecycleProgressNotifier,
+        IStartupOperationProgressNotifier
     {
         private readonly IInitializationProgressNotifier _first;
         private readonly IInitializationProgressNotifier _second;
@@ -89,6 +92,67 @@ namespace RuntimeFlow.Contexts
                 first.OnScopeDeactivationCompleted(scope);
             if (_second is IRuntimeScopeLifecycleProgressNotifier second)
                 second.OnScopeDeactivationCompleted(scope);
+        }
+
+        public void OnStartupOperationStarted(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            if (_first is IStartupOperationProgressNotifier first)
+                first.OnStartupOperationStarted(scope, phase, operationName, completedOperations, totalOperations, elapsed);
+            if (_second is IStartupOperationProgressNotifier second)
+                second.OnStartupOperationStarted(scope, phase, operationName, completedOperations, totalOperations, elapsed);
+        }
+
+        public void OnStartupOperationStep(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            string step,
+            string? detail,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            if (_first is IStartupOperationProgressNotifier first)
+                first.OnStartupOperationStep(scope, phase, operationName, step, detail, completedOperations, totalOperations, elapsed);
+            if (_second is IStartupOperationProgressNotifier second)
+                second.OnStartupOperationStep(scope, phase, operationName, step, detail, completedOperations, totalOperations, elapsed);
+        }
+
+        public void OnStartupOperationCompleted(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            if (_first is IStartupOperationProgressNotifier first)
+                first.OnStartupOperationCompleted(scope, phase, operationName, completedOperations, totalOperations, elapsed);
+            if (_second is IStartupOperationProgressNotifier second)
+                second.OnStartupOperationCompleted(scope, phase, operationName, completedOperations, totalOperations, elapsed);
+        }
+
+        public void OnStartupOperationFailed(
+            GameContextType scope,
+            string phase,
+            string operationName,
+            string? step,
+            string? detail,
+            Exception exception,
+            int completedOperations,
+            int totalOperations,
+            TimeSpan elapsed)
+        {
+            if (_first is IStartupOperationProgressNotifier first)
+                first.OnStartupOperationFailed(scope, phase, operationName, step, detail, exception, completedOperations, totalOperations, elapsed);
+            if (_second is IStartupOperationProgressNotifier second)
+                second.OnStartupOperationFailed(scope, phase, operationName, step, detail, exception, completedOperations, totalOperations, elapsed);
         }
     }
 }

@@ -1,34 +1,35 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace RuntimeFlow.Contexts
 {
     internal sealed class GameContextScopeInitializationLedger
     {
-        private readonly Dictionary<(GameContextType Scope, Type? ScopeKey), List<Type>> _scopeInitializationOrder = new();
+        private readonly Dictionary<(GameContextType Scope, Type? ScopeKey), List<ServiceInitializerBinding>> _scopeInitializationOrder = new();
 
-        public void RecordInitializedService(GameContextType scope, Type? scopeKey, Type serviceType)
+        public void RecordInitializedService(GameContextType scope, Type? scopeKey, ServiceInitializerBinding initializer)
         {
             var key = (scope, scopeKey);
             if (!_scopeInitializationOrder.TryGetValue(key, out var initOrder))
             {
-                initOrder = new List<Type>();
+                initOrder = new List<ServiceInitializerBinding>();
                 _scopeInitializationOrder[key] = initOrder;
             }
 
-            if (!initOrder.Contains(serviceType))
+            if (initOrder.All(existing => existing.ServiceType != initializer.ServiceType))
             {
-                initOrder.Add(serviceType);
+                initOrder.Add(initializer);
             }
         }
 
-        public List<Type>? GetInitializationOrder(GameContextType scope, Type? scopeKey)
+        public List<ServiceInitializerBinding>? GetInitializationOrder(GameContextType scope, Type? scopeKey)
         {
             _scopeInitializationOrder.TryGetValue((scope, scopeKey), out var initOrder);
             return initOrder;
         }
 
-        public void SetInitializationOrder(GameContextType scope, Type? scopeKey, List<Type> initializationOrder)
+        public void SetInitializationOrder(GameContextType scope, Type? scopeKey, List<ServiceInitializerBinding> initializationOrder)
         {
             if (initializationOrder == null) throw new ArgumentNullException(nameof(initializationOrder));
             _scopeInitializationOrder[(scope, scopeKey)] = initializationOrder;

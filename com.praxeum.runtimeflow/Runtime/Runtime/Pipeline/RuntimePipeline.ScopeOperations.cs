@@ -299,6 +299,7 @@ namespace RuntimeFlow.Contexts
         {
             await EvaluateGuardsAsync(guardStage, scopeKey, targetScopeType, cancellationToken).ConfigureAwait(false);
 
+            var transitionGeneration = BeginTransitionOperation();
             var transitionContext = new ScopeTransitionContext(
                 sourceScopeType,
                 sourceScopeKey,
@@ -306,7 +307,9 @@ namespace RuntimeFlow.Contexts
                 scopeKey);
 
             await _transitionHandler.OnTransitionOutAsync(transitionContext, cancellationToken).ConfigureAwait(false);
+            ThrowIfTransitionStale(transitionGeneration, cancellationToken);
             await _transitionHandler.OnTransitionProgressAsync(transitionContext, 0f, cancellationToken).ConfigureAwait(false);
+            ThrowIfTransitionStale(transitionGeneration, cancellationToken);
 
             await ExecuteScopeOperationAsync(
                 operationKind,
@@ -320,10 +323,30 @@ namespace RuntimeFlow.Contexts
                 failMessage,
                 operation,
                 progressNotifier,
-                cancellationToken).ConfigureAwait(false);
+                cancellationToken,
+                invalidateTransitions: false).ConfigureAwait(false);
 
+            ThrowIfTransitionStale(transitionGeneration, cancellationToken);
             await _transitionHandler.OnTransitionProgressAsync(transitionContext, 1f, cancellationToken).ConfigureAwait(false);
+            ThrowIfTransitionStale(transitionGeneration, cancellationToken);
             await _transitionHandler.OnTransitionInAsync(transitionContext, cancellationToken).ConfigureAwait(false);
+        }
+
+        private long BeginTransitionOperation()
+        {
+            return Interlocked.Increment(ref _transitionOperationGeneration);
+        }
+
+        private void InvalidateTransitionOperations()
+        {
+            Interlocked.Increment(ref _transitionOperationGeneration);
+        }
+
+        private void ThrowIfTransitionStale(long transitionGeneration, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (transitionGeneration != Volatile.Read(ref _transitionOperationGeneration))
+                throw new OperationCanceledException(cancellationToken);
         }
     }
 }

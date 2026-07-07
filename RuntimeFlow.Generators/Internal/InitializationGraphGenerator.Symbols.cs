@@ -57,15 +57,8 @@ namespace RuntimeFlow.Generators
 
         private static bool IsAsyncDependency(INamedTypeSymbol type, GeneratorSymbols symbols)
         {
-            if (SymbolEqualityComparer.Default.Equals(type, symbols.AsyncInitializable))
+            if (symbols.IsMarkerOnlyAsyncContract(type))
                 return false;
-            if (SymbolEqualityComparer.Default.Equals(type, symbols.GlobalMarker)
-                || SymbolEqualityComparer.Default.Equals(type, symbols.SessionMarker)
-                || SymbolEqualityComparer.Default.Equals(type, symbols.SceneMarker)
-                || SymbolEqualityComparer.Default.Equals(type, symbols.ModuleMarker))
-            {
-                return false;
-            }
 
             return type.TypeKind == TypeKind.Interface
                    && symbols.AsyncInitializable != null

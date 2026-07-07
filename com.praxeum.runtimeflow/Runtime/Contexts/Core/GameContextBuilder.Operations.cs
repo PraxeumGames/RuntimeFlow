@@ -9,12 +9,11 @@ namespace RuntimeFlow.Contexts
         public async Task<IGameContext> BuildAsync(IInitializationProgressNotifier? progressNotifier = null, CancellationToken cancellationToken = default)
         {
             FlushDeferredScopedRegistrations();
-            await CancelActiveLoadAsync().ConfigureAwait(false);
-            var generation = Interlocked.Increment(ref _runGeneration);
-            _activeLoadCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-            var notifier = progressNotifier ?? NullInitializationProgressNotifier.Instance;
-            _activeLoadTask = BuildAsyncCore(generation, notifier, _activeLoadCts.Token);
-            await _activeLoadTask.ConfigureAwait(false);
+            await ExecuteParentInvalidatingExclusiveScopeOperationAsync(
+                    progressNotifier,
+                    cancellationToken,
+                    operation => BuildAsyncCore(operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
+                .ConfigureAwait(false);
             return _globalContext ?? throw new InvalidOperationException("Global context was not created.");
         }
 
@@ -24,7 +23,11 @@ namespace RuntimeFlow.Contexts
             if (_globalContext == null)
                 throw new InvalidOperationException("Global context is not created. Call BuildAsync first.");
 
-            await ExecuteScopedOperationAsync(progressNotifier, cancellationToken, RestartSessionAsyncCore).ConfigureAwait(false);
+            await ExecuteParentInvalidatingExclusiveScopeOperationAsync(
+                    progressNotifier,
+                    cancellationToken,
+                    operation => RestartSessionAsyncCore(operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
+                .ConfigureAwait(false);
         }
 
         internal async Task LoadSceneAsync(
@@ -35,10 +38,10 @@ namespace RuntimeFlow.Contexts
             FlushDeferredScopedRegistrations();
             ValidateSceneScopeOperationPreconditions(sceneScopeKey);
 
-            await ExecuteScopedOperationAsync(
+            await ExecuteParentInvalidatingExclusiveScopeOperationAsync(
                     progressNotifier,
                     cancellationToken,
-                    (generation, notifier, token) => LoadSceneAsyncCore(sceneScopeKey, generation, notifier, token))
+                    operation => LoadSceneAsyncCore(sceneScopeKey, operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
                 .ConfigureAwait(false);
         }
 
@@ -50,10 +53,10 @@ namespace RuntimeFlow.Contexts
             FlushDeferredScopedRegistrations();
             ValidateModuleScopeOperationPreconditions(moduleScopeKey);
 
-            await ExecuteScopedOperationAsync(
+            await ExecuteExclusiveScopeOperationAsync(
                     progressNotifier,
                     cancellationToken,
-                    (generation, notifier, token) => LoadModuleAsyncCore(moduleScopeKey, generation, notifier, token))
+                    operation => LoadModuleAsyncCore(moduleScopeKey, operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
                 .ConfigureAwait(false);
         }
 
@@ -65,10 +68,10 @@ namespace RuntimeFlow.Contexts
             FlushDeferredScopedRegistrations();
             ValidateModuleScopeOperationPreconditions(moduleScopeKey);
 
-            await ExecuteScopedOperationAsync(
+            await ExecuteExclusiveScopeOperationAsync(
                     progressNotifier,
                     cancellationToken,
-                    (generation, notifier, token) => ReloadModuleAsyncCore(moduleScopeKey, generation, notifier, token))
+                    operation => ReloadModuleAsyncCore(moduleScopeKey, operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
                 .ConfigureAwait(false);
         }
     }

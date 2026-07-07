@@ -16,20 +16,7 @@ namespace RuntimeFlow.Contexts
         /// </summary>
         internal static bool IsAsyncDependencyType(Type serviceType)
         {
-            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
-            return serviceType != typeof(IGlobalInitializableService)
-                   && serviceType != typeof(ISessionInitializableService)
-                   && serviceType != typeof(ISceneInitializableService)
-                   && serviceType != typeof(IModuleInitializableService)
-                   && serviceType != typeof(IStartupStageInitializableService)
-                   && serviceType != typeof(IPreBootstrapStartupInitializableService)
-                   && serviceType != typeof(IPlatformStartupInitializableService)
-                   && serviceType != typeof(IContentStartupInitializableService)
-                   && serviceType != typeof(ISessionStartupInitializableService)
-                   && serviceType != typeof(IUiStartupInitializableService)
-                   && serviceType != typeof(IAsyncInitializableService)
-                   && serviceType.IsInterface
-                   && typeof(IAsyncInitializableService).IsAssignableFrom(serviceType);
+            return InitializationContractCatalog.IsConstructorDependencyType(serviceType);
         }
 
         /// <summary>
@@ -39,19 +26,7 @@ namespace RuntimeFlow.Contexts
         /// </summary>
         internal static bool IsExplicitDependencyType(Type serviceType)
         {
-            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
-            return serviceType != typeof(IGlobalInitializableService)
-                   && serviceType != typeof(ISessionInitializableService)
-                   && serviceType != typeof(ISceneInitializableService)
-                   && serviceType != typeof(IModuleInitializableService)
-                   && serviceType != typeof(IStartupStageInitializableService)
-                   && serviceType != typeof(IPreBootstrapStartupInitializableService)
-                   && serviceType != typeof(IPlatformStartupInitializableService)
-                   && serviceType != typeof(IContentStartupInitializableService)
-                   && serviceType != typeof(ISessionStartupInitializableService)
-                   && serviceType != typeof(IUiStartupInitializableService)
-                   && serviceType != typeof(IAsyncInitializableService)
-                   && typeof(IAsyncInitializableService).IsAssignableFrom(serviceType);
+            return InitializationContractCatalog.IsExplicitDependencyType(serviceType);
         }
 
         internal static IReadOnlyCollection<Type> ResolveConstructorDependencies(Type implementationType)

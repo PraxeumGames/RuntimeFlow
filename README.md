@@ -12,9 +12,8 @@ For package installation and Unity integration usage, start with [`com.praxeum.r
 | Path | Purpose |
 |---|---|
 | `com.praxeum.runtimeflow/` | Unity UPM package (runtime code, package metadata, analyzer payload) |
+| `RuntimeFlow.UnityTests/` | Unity test project for NUnit EditMode runtime tests against the real UPM package and VContainer |
 | `RuntimeFlow.Generators/` | Roslyn incremental generator project for initialization graph diagnostics |
-| `RuntimeFlow/` | .NET wrapper that compiles package runtime sources for test execution |
-| `RuntimeFlow.Tests/` | xUnit integration/behavior tests for scopes, flow, health, loading, and recovery |
 | `RuntimeFlow.sln` | Main solution for local build and test workflows |
 
 ## Core capabilities
@@ -66,22 +65,22 @@ Services can depend only on same-or-wider scopes. `ISceneScope` and `IModuleScop
 ```bash
 dotnet build RuntimeFlow.sln
 dotnet build RuntimeFlow.Generators
-dotnet test RuntimeFlow.Tests
+dotnet test RuntimeFlow.Generators.Tests
+scripts/run_unity_editmode_tests.sh
 ```
 
 Useful focused runs:
 
 ```bash
-dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~ScopeEventBusTests"
-dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~RuntimeScopeReloadApiTests"
+UNITY_BIN=/path/to/Unity scripts/run_unity_editmode_tests.sh
 ```
 
 ## Quality gates
 
 - `dotnet build RuntimeFlow.sln` — must succeed with zero warnings (warnings are treated as errors via `Directory.Build.props`).
-- `dotnet test RuntimeFlow.Tests --no-build` — unit + integration tests for the runtime.
 - `dotnet test RuntimeFlow.Generators.Tests --no-build` — Roslyn generator regression tests for RF0001..RF0004 diagnostics.
-- The same gates run on every push / pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml), with coverage collected via Coverlet (Cobertura) and uploaded as a workflow artifact.
+- `scripts/run_unity_editmode_tests.sh` — NUnit EditMode runtime tests using the real Unity package and real VContainer.
+- The .NET generator gates run on every push / pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Runtime lifecycle tests run through `RuntimeFlow.UnityTests`; the workflow includes a gated Unity EditMode job that is enabled by setting repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS=1` and Unity license secrets.
 
 ## License
 

@@ -18,6 +18,12 @@ public static class GeneratorTestHost
             public interface ISessionInitializableService : IAsyncInitializableService { }
             public interface ISceneInitializableService   : IAsyncInitializableService { }
             public interface IModuleInitializableService  : IAsyncInitializableService { }
+            public interface IStartupStageInitializableService : ISessionInitializableService { }
+            public interface IPreBootstrapStartupInitializableService : IStartupStageInitializableService { }
+            public interface IPlatformStartupInitializableService : IStartupStageInitializableService { }
+            public interface IContentStartupInitializableService : IStartupStageInitializableService { }
+            public interface ISessionStartupInitializableService : IStartupStageInitializableService { }
+            public interface IUiStartupInitializableService : IStartupStageInitializableService { }
         }
         """;
 

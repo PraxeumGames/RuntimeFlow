@@ -25,6 +25,7 @@ namespace RuntimeFlow.Contexts
         private readonly ILogger _logger;
         private readonly object _statusSync = new();
         private long _loadingOperationSequence;
+        private long _transitionOperationGeneration;
         private IScopeTransitionHandler _transitionHandler = NullScopeTransitionHandler.Instance;
         private IReadOnlyList<IRuntimeFlowGuard>? _guards;
         private IRuntimeFlowScenario? _flow;

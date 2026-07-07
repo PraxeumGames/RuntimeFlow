@@ -82,7 +82,9 @@ namespace RuntimeFlow.Contexts
             }
             catch (OperationCanceledException ex)
             {
-                tcs.TrySetCanceled(ex.CancellationToken);
+                // Preserve the original cancellation exception so callers can keep contextual
+                // diagnostics (for example RuntimeStartupOperationCanceledException).
+                tcs.TrySetException(ex);
             }
             catch (Exception ex)
             {

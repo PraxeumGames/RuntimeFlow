@@ -220,7 +220,10 @@ namespace RuntimeFlow.Contexts
                 where TImplementation : class
             {
                 FlushPending();
-                _pendingImplementationType = typeof(TImplementation);
+                var implType = typeof(TImplementation);
+                _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
+                    context => context.Register(implType, implType, lifetime));
+                _pendingImplementationType = implType;
                 _pendingLifetime = lifetime;
                 _hasPendingInstance = false;
                 return this;
@@ -234,6 +237,8 @@ namespace RuntimeFlow.Contexts
                     throw new InvalidOperationException(
                         $"[RFRC2003] Cannot register open generic type '{implementationType.FullName ?? implementationType.Name}'. " +
                         "Use a closed generic type or register via ConfigureContainer instead.");
+                _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
+                    context => context.Register(implementationType, implementationType, lifetime));
                 _pendingImplementationType = implementationType;
                 _pendingLifetime = lifetime;
                 _hasPendingInstance = false;
@@ -361,11 +366,6 @@ namespace RuntimeFlow.Contexts
             {
                 _hasPendingInstance = false;
                 _pendingInstance = null;
-                if (_pendingImplementationType == null) return;
-                var implType = _pendingImplementationType;
-                var lifetime = _pendingLifetime;
-                _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                    context => context.Register(implType, implType, lifetime));
                 _pendingImplementationType = null;
             }
         }

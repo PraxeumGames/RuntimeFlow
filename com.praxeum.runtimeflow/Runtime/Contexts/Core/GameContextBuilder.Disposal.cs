@@ -41,6 +41,11 @@ namespace RuntimeFlow.Contexts
                 .ConfigureAwait(false);
         }
 
+        private static CancellationToken CreateFailureCleanupCancellationToken()
+        {
+            return CancellationToken.None;
+        }
+
         private async Task DisposeScopeContextAsync(
             GameContextType scope,
             GameContext? context,
@@ -107,19 +112,14 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey = null,
             ScopeLifecycleState? transitionState = null)
         {
-            if (context == null)
-                return;
-
-            if (transitionState.HasValue)
-                SetScopeStateIfTracked(scope, transitionState.Value, scopeKey);
-
-            await ExecuteScopeActivationExitAsync(scope, context, progressNotifier, cancellationToken).ConfigureAwait(false);
-            await DisposeScopeContextAsync(
+            await _scopeTransitions.ExitActivatedScopeAsync(
                     scope,
                     context,
-                    cancellationToken,
                     scopeKey,
-                    () => SetScopeStateIfTracked(scope, ScopeLifecycleState.Disposed, scopeKey))
+                    transitionState,
+                    progressNotifier,
+                    cancellationToken,
+                    () => { })
                 .ConfigureAwait(false);
         }
 
@@ -161,9 +161,9 @@ namespace RuntimeFlow.Contexts
             _globalEventBus = null;
         }
 
-        private void RegisterInitializedServiceForScopeDisposal(GameContextType scope, Type? scopeKey, Type serviceType)
+        private void RegisterInitializedServiceForScopeDisposal(GameContextType scope, Type? scopeKey, ServiceInitializerBinding initializer)
         {
-            _scopeInitializationLedger.RecordInitializedService(scope, scopeKey, serviceType);
+            _scopeInitializationLedger.RecordInitializedService(scope, scopeKey, initializer);
         }
 
         private async Task DisposeScopeServicesAsync(
@@ -179,10 +179,10 @@ namespace RuntimeFlow.Contexts
 
             for (var i = (initOrder?.Count ?? 0) - 1; i >= 0; i--)
             {
-                var serviceType = initOrder![i];
+                var initializer = initOrder![i];
                 try
                 {
-                    var resolved = context.Resolve(serviceType);
+                    var resolved = context.Resolve(initializer);
                     if (!disposedTargets.Add(resolved))
                     {
                         continue;
@@ -211,20 +211,6 @@ namespace RuntimeFlow.Contexts
                         continue;
                     }
 
-                    if (resolved is IDisposable disposable)
-                    {
-                        await _executionScheduler.ExecuteAsync(
-                                affinity,
-                                _ =>
-                                {
-                                    disposable.Dispose();
-                                    return Task.CompletedTask;
-                                },
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                        continue;
-                    }
-
                 }
                 catch (Exception ex)
                 {
@@ -233,7 +219,7 @@ namespace RuntimeFlow.Contexts
                         _logger.LogWarning(
                             ex,
                             "Ignoring disposed service {ServiceType} during {Scope} disposal.",
-                            serviceType.Name,
+                            initializer.ServiceType.Name,
                             scope);
                         continue;
                     }

@@ -4,7 +4,10 @@ using System.Threading.Tasks;
 
 namespace RuntimeFlow.Contexts
 {
-    public sealed class NullInitializationProgressNotifier : IInitializationProgressNotifier, IRuntimeScopeLifecycleProgressNotifier
+    public sealed class NullInitializationProgressNotifier :
+        IInitializationProgressNotifier,
+        IRuntimeScopeLifecycleProgressNotifier,
+        IStartupOperationProgressNotifier
     {
         public static readonly IInitializationProgressNotifier Instance = new NullInitializationProgressNotifier();
 
@@ -19,5 +22,9 @@ namespace RuntimeFlow.Contexts
         public void OnScopeActivationCompleted(GameContextType scope, int currentStep, int totalSteps) { }
         public void OnScopeDeactivationStarted(GameContextType scope) { }
         public void OnScopeDeactivationCompleted(GameContextType scope) { }
+        public void OnStartupOperationStarted(GameContextType scope, string phase, string operationName, int completedOperations, int totalOperations, TimeSpan elapsed) { }
+        public void OnStartupOperationStep(GameContextType scope, string phase, string operationName, string step, string? detail, int completedOperations, int totalOperations, TimeSpan elapsed) { }
+        public void OnStartupOperationCompleted(GameContextType scope, string phase, string operationName, int completedOperations, int totalOperations, TimeSpan elapsed) { }
+        public void OnStartupOperationFailed(GameContextType scope, string phase, string operationName, string? step, string? detail, Exception exception, int completedOperations, int totalOperations, TimeSpan elapsed) { }
     }
 }

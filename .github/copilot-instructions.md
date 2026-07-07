@@ -7,8 +7,8 @@ RuntimeFlow is a Unity game startup orchestration framework delivered as a UPM p
 The repository has three components:
 
 - **`com.praxeum.runtimeflow/`** — The Unity package (runtime code, no `.csproj`). Uses VContainer for DI and `Microsoft.Extensions.Logging.Abstractions` for logging. Targets Unity 2021.3+.
+- **`RuntimeFlow.UnityTests/`** — Unity test project containing NUnit EditMode runtime tests against the local UPM package and the real VContainer package.
 - **`RuntimeFlow.Generators/`** — A Roslyn `IIncrementalGenerator` that builds `CompiledInitializationGraph.g.cs` at compile time, validating scope rules and detecting dependency cycles.
-- **`RuntimeFlow.Tests/`** — xUnit test suite (.NET 9.0) covering scopes, initialization, health, events, and pipeline orchestration.
 
 ## Build and test
 
@@ -19,17 +19,14 @@ dotnet build RuntimeFlow.sln
 # Build the source generator
 dotnet build RuntimeFlow.Generators
 
-# Run all tests
-dotnet test RuntimeFlow.Tests
+# Run generator tests
+dotnet test RuntimeFlow.Generators.Tests
 
-# Run a single test class
-dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~ScopeEventBusTests"
-
-# Run a single test method
-dotnet test RuntimeFlow.Tests --filter "FullyQualifiedName~ScopeEventBusTests.Publish_Local_DoesNotReachParent"
+# Run runtime tests in Unity EditMode
+scripts/run_unity_editmode_tests.sh
 ```
 
-> The test project references a `RuntimeFlow` class library (`../RuntimeFlow/RuntimeFlow.csproj`) that compiles the Unity package sources for .NET testing.
+> Runtime tests intentionally run inside Unity with NUnit and the real `jp.hadashikick.vcontainer` package. Do not reintroduce a .NET wrapper or local fake VContainer implementation for runtime tests.
 
 ## Architecture
 
@@ -125,9 +122,9 @@ VContainer resolves constructors by: `[Inject]` attribute first, then most-param
 
 ### Test patterns
 
-- Tests use `RuntimePipeline.Create(...)` to wire the full pipeline, then assert on tracked state (attempt counters, call logs, observer collections).
-- Test services live in `RuntimeFlow.Tests/Services/` and use `AttemptControlled*` naming — they accept a `Func<int, CancellationToken, Task>` to control per-attempt behavior.
-- Test scope installers live in `RuntimeFlow.Tests/Scopes/` (e.g., `TestSceneScope : ISceneScope`, `TestModuleScope : IModuleScope`) — they accept an `Action<IGameScopeRegistrationBuilder>` lambda to configure registrations dynamically.
+- Runtime tests use `RuntimePipeline.Create(...)` to wire the full pipeline, then assert on tracked state (attempt counters, call logs, observer collections).
+- Test services live in `RuntimeFlow.UnityTests/Assets/Tests/EditMode/RuntimeFlow.Tests/Services/` and use `AttemptControlled*` naming — they accept a `Func<int, CancellationToken, Task>` to control per-attempt behavior.
+- Test scope installers live in `RuntimeFlow.UnityTests/Assets/Tests/EditMode/RuntimeFlow.Tests/Scopes/` (e.g., `TestSceneScope : ISceneScope`, `TestModuleScope : IModuleScope`) — they accept an `Action<IGameScopeRegistrationBuilder>` lambda to configure registrations dynamically.
 - Session scope in tests uses `builder.DefineSessionScope()` (parameterless, built-in type) and `builder.Session()` for inline registration.
 - Test observers in `RuntimeFlow.Tests/Observers/` collect health metrics and retry events.
 - `TestDoubles/DelegateRuntimeFlowScenario` wraps a lambda as `IRuntimeFlowScenario`.

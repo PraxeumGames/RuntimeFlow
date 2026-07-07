@@ -13,7 +13,28 @@ namespace RuntimeFlow.Generators
         private const string SessionMarkerInterface = "RuntimeFlow.Contexts.ISessionInitializableService";
         private const string SceneMarkerInterface = "RuntimeFlow.Contexts.ISceneInitializableService";
         private const string ModuleMarkerInterface = "RuntimeFlow.Contexts.IModuleInitializableService";
+        private const string StartupStageMarkerInterface = "RuntimeFlow.Contexts.IStartupStageInitializableService";
+        private const string PreBootstrapStartupStageMarkerInterface = "RuntimeFlow.Contexts.IPreBootstrapStartupInitializableService";
+        private const string PlatformStartupStageMarkerInterface = "RuntimeFlow.Contexts.IPlatformStartupInitializableService";
+        private const string ContentStartupStageMarkerInterface = "RuntimeFlow.Contexts.IContentStartupInitializableService";
+        private const string SessionStartupStageMarkerInterface = "RuntimeFlow.Contexts.ISessionStartupInitializableService";
+        private const string UiStartupStageMarkerInterface = "RuntimeFlow.Contexts.IUiStartupInitializableService";
         private const string GraphRulesVersion = "compiled-constructor-v3";
+
+        private static readonly string[] MarkerOnlyAsyncContractInterfaces =
+        {
+            AsyncInitInterface,
+            GlobalMarkerInterface,
+            SessionMarkerInterface,
+            SceneMarkerInterface,
+            ModuleMarkerInterface,
+            StartupStageMarkerInterface,
+            PreBootstrapStartupStageMarkerInterface,
+            PlatformStartupStageMarkerInterface,
+            ContentStartupStageMarkerInterface,
+            SessionStartupStageMarkerInterface,
+            UiStartupStageMarkerInterface
+        };
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {

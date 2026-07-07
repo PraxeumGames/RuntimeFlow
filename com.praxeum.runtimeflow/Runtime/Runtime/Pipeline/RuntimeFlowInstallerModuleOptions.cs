@@ -23,7 +23,7 @@ namespace RuntimeFlow.Contexts
     public sealed class RuntimeFlowSessionBootstrapInstallerOptions
     {
         public RuntimeFlowSessionInstallerOptions? SessionInfrastructure { get; set; }
-        public RuntimeFlowSessionSyncEntryPointsBootstrapOptions? SessionSyncEntryPointsBootstrap { get; set; }
+        public RuntimeFlowSessionVContainerEntryPointsInstallerOptions? SessionVContainerEntryPoints { get; set; }
         public RuntimeFlowLoadingRestartInstallerOptions? LoadingAndRestartInfrastructure { get; set; }
     }
 
@@ -53,7 +53,7 @@ namespace RuntimeFlow.Contexts
     public sealed class RuntimeFlowSessionBootstrapPresetOptions
     {
         public RuntimeFlowSessionInstallerOptions SessionInfrastructure { get; } = new();
-        public RuntimeFlowSessionSyncEntryPointsBootstrapOptions SessionSyncEntryPointsBootstrap { get; } = new();
+        public RuntimeFlowSessionVContainerEntryPointsInstallerOptions SessionVContainerEntryPoints { get; } = new();
         public RuntimeFlowLoadingRestartInstallerOptions LoadingAndRestartInfrastructure { get; } = new();
 
         public RuntimeFlowSessionBootstrapPresetOptions ConfigureSessionInfrastructure(
@@ -64,11 +64,11 @@ namespace RuntimeFlow.Contexts
             return this;
         }
 
-        public RuntimeFlowSessionBootstrapPresetOptions ConfigureSessionSyncEntryPointsBootstrap(
-            Action<RuntimeFlowSessionSyncEntryPointsBootstrapOptions> configure)
+        public RuntimeFlowSessionBootstrapPresetOptions ConfigureSessionVContainerEntryPoints(
+            Action<RuntimeFlowSessionVContainerEntryPointsInstallerOptions> configure)
         {
             if (configure == null) throw new ArgumentNullException(nameof(configure));
-            configure(SessionSyncEntryPointsBootstrap);
+            configure(SessionVContainerEntryPoints);
             return this;
         }
 
@@ -85,7 +85,7 @@ namespace RuntimeFlow.Contexts
             return new RuntimeFlowSessionBootstrapInstallerOptions
             {
                 SessionInfrastructure = SessionInfrastructure,
-                SessionSyncEntryPointsBootstrap = SessionSyncEntryPointsBootstrap,
+                SessionVContainerEntryPoints = SessionVContainerEntryPoints,
                 LoadingAndRestartInfrastructure = LoadingAndRestartInfrastructure
             };
         }

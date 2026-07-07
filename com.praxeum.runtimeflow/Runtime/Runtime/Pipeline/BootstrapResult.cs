@@ -100,7 +100,7 @@ namespace RuntimeFlow.Contexts
             if (_disposed) return;
             _disposed = true;
 
-            try { CancellationTokenSource?.Cancel(); } catch (ObjectDisposedException) { }
+            CancellationTokenSource?.Cancel();
             ClearCurrentPipelineProvider();
 
             if (Pipeline != null)
@@ -132,7 +132,7 @@ namespace RuntimeFlow.Contexts
             if (_disposed) return;
             _disposed = true;
 
-            try { CancellationTokenSource?.Cancel(); } catch (ObjectDisposedException) { }
+            CancellationTokenSource?.Cancel();
             ClearCurrentPipelineProvider();
 
             if (Pipeline != null)

@@ -64,25 +64,41 @@ namespace RuntimeFlow.Contexts
             }
             catch (Exception ex)
             {
-                SetScopeStateIfTracked(scope, ScopeLifecycleState.Failed, scopeKey);
+                var isStaleGenerationCancellation = IsStaleGenerationCancellation(ex, cancellationToken);
+                SetScopeStateIfTracked(
+                    scope,
+                    isStaleGenerationCancellation ? ScopeLifecycleState.Deactivating : ScopeLifecycleState.Failed,
+                    scopeKey);
 
+                var cleanupCancellationToken = CreateFailureCleanupCancellationToken();
                 var cleanupFailures = await CaptureCleanupFailuresAsync(
-                        cancellationToken,
+                        cleanupCancellationToken,
                         async () =>
                         {
-                            await DisposeScopeContextAsync(scope, context, cancellationToken, scopeKey).ConfigureAwait(false);
+                            await DisposeScopeContextAsync(scope, context, cleanupCancellationToken, scopeKey).ConfigureAwait(false);
                             context = null;
                         })
                     .ConfigureAwait(false);
 
                 if (cleanupFailures.Count > 0)
+                {
+                    SetScopeStateIfTracked(scope, ScopeLifecycleState.Failed, scopeKey);
                     throw CreateCleanupAggregateException($"Initialize {scope} scope", ex, cleanupFailures);
+                }
+
+                if (isStaleGenerationCancellation)
+                    SetScopeStateIfTracked(scope, ScopeLifecycleState.Disposed, scopeKey);
 
                 throw;
             }
 
             SetScopeStateIfTracked(scope, skipActivation ? ScopeLifecycleState.Preloaded : ScopeLifecycleState.Active, scopeKey);
             return context;
+        }
+
+        private static bool IsStaleGenerationCancellation(Exception exception, CancellationToken cancellationToken)
+        {
+            return exception is OperationCanceledException && !cancellationToken.IsCancellationRequested;
         }
 
         private void SeedInitializedFromContext(
@@ -96,7 +112,7 @@ namespace RuntimeFlow.Contexts
             foreach (var initializer in DiscoverInitializers(gameContext))
             {
                 initializedServices.Add(initializer.ServiceType);
-                availableServices[initializer.ServiceType] = gameContext.Resolve(initializer.ServiceType);
+                availableServices[initializer.ServiceType] = gameContext.Resolve(initializer);
             }
         }
 
@@ -137,34 +153,75 @@ namespace RuntimeFlow.Contexts
             CancellationToken cancellationToken,
             Type? scopeKey = null)
         {
-            var initializers = DiscoverInitializers(context);
-
-            var lazyBindings = initializers
-                .Where(b => typeof(ILazyInitializableService).IsAssignableFrom(b.ImplementationType))
-                .ToList();
-            foreach (var lazy in lazyBindings)
-            {
-                initializers.Remove(lazy);
-                _lazyInitialization.RegisterLazyBinding(lazy.ServiceType, context, scope, scopeKey);
-            }
-
-            var totalServices = initializers.Count;
+            var startupPlan = CreateScopeStartupPlan(scope, context, initializedServices, scopeKey);
+            var totalServices = startupPlan.TotalServiceCount;
             progressNotifier.OnScopeStarted(scope, totalServices);
             if (totalServices == 0)
             {
                 return totalServices;
             }
 
-            var pending = initializers.ToDictionary(initializer => initializer.ServiceType);
+            var initOrder = new List<ServiceInitializerBinding>();
+            var completedServices = 0;
+            void RecordInitializedForDisposal(ServiceInitializerBinding initializer)
+            {
+                RegisterInitializedServiceForScopeDisposal(scope, scopeKey, initializer);
+            }
+
+            void RecordSuccessfulInitializerTasks(
+                IEnumerable<(Task task, ServiceInitializerBinding initializer)> initializerTasks)
+            {
+                foreach (var initializerTask in initializerTasks)
+                {
+                    if (initializerTask.task.Status == TaskStatus.RanToCompletion)
+                        RecordInitializedForDisposal(initializerTask.initializer);
+                }
+            }
+
+            if (startupPlan.EntryPoints != null)
+            {
+                ThrowIfStaleGeneration(generation, cancellationToken);
+                progressNotifier.OnServiceStarted(scope, startupPlan.EntryPoints.ProgressServiceType, completedServices, totalServices);
+                await ExecuteVContainerEntryPointInitializablesAsync(startupPlan.EntryPoints, cancellationToken)
+                    .ConfigureAwait(false);
+                ThrowIfStaleGeneration(generation, cancellationToken);
+                foreach (var marker in startupPlan.EntryPoints.CompletedDependencyMarkers)
+                    initializedServices.Add(marker);
+                completedServices++;
+                progressNotifier.OnServiceCompleted(scope, startupPlan.EntryPoints.ProgressServiceType, completedServices, totalServices);
+            }
+
+            if (startupPlan.GlobalBootstrapOperations.Count > 0)
+            {
+                completedServices = await ExecuteGlobalBootstrapOperationsAsync(
+                        scope,
+                        context,
+                        startupPlan.GlobalBootstrapOperations,
+                        progressNotifier,
+                        completedServices,
+                        totalServices,
+                        generation,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            }
+
+            if (startupPlan.AsyncInitializers.Count == 0)
+            {
+                _scopeInitializationLedger.SetInitializationOrder(scope, scopeKey, initOrder);
+                await StartVContainerStartablesAsync(startupPlan.EntryPoints, cancellationToken)
+                    .ConfigureAwait(false);
+                return totalServices;
+            }
+
+            var pending = startupPlan.AsyncInitializers.ToDictionary(initializer => initializer.ServiceType);
             ValidateDependencies(scope, context, pending, initializedServices);
 
-            var initOrder = new List<Type>();
-            var completedServices = 0;
             while (pending.Count > 0)
             {
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 var ready = pending.Values
-                    .Where(initializer => initializer.Dependencies.All(initializedServices.Contains))
+                    .Where(initializer => initializer.Dependencies.All(dependency =>
+                        IsDependencyReadyForCurrentScope(dependency, pending, initializedServices)))
                     .ToArray();
 
                 if (ready.Length == 0)
@@ -203,44 +260,483 @@ namespace RuntimeFlow.Contexts
 
                 var waveTask = Task.WhenAll(taskMap.Select(t => t.task));
                 var waveStallTimeout = _healthSupervisor.Options.WaveStallTimeout;
-                if (_healthSupervisor.IsEnabled && waveStallTimeout > TimeSpan.Zero && waveStallTimeout != Timeout.InfiniteTimeSpan)
+                try
                 {
-                    var completedFirst = await Task.WhenAny(waveTask, Task.Delay(waveStallTimeout, cancellationToken)).ConfigureAwait(false);
-                    if (completedFirst != waveTask)
+                    if (_healthSupervisor.IsEnabled && waveStallTimeout > TimeSpan.Zero && waveStallTimeout != Timeout.InfiniteTimeSpan)
                     {
-                        var stalledNames = taskMap
-                            .Where(t => !t.task.IsCompleted)
-                            .Select(t => t.initializer.ServiceType.Name)
-                            .ToArray();
-
-                        if (stalledNames.Length > 0)
+                        var completedFirst = await Task.WhenAny(waveTask, Task.Delay(waveStallTimeout, cancellationToken)).ConfigureAwait(false);
+                        if (completedFirst != waveTask)
                         {
-                            _logger.LogWarning(
-                                "[RuntimeFlow] Wave stall detected in scope {Scope}: {Count} service(s) haven't completed after {Timeout:F0}s: {Services}",
-                                scope, stalledNames.Length, waveStallTimeout.TotalSeconds, string.Join(", ", stalledNames));
-                        }
+                            var stalledNames = taskMap
+                                .Where(t => !t.task.IsCompleted)
+                                .Select(t => t.initializer.ServiceType.Name)
+                                .ToArray();
 
+                            if (stalledNames.Length > 0)
+                            {
+                                _logger.LogWarning(
+                                    "[RuntimeFlow] Wave stall detected in scope {Scope}: {Count} service(s) haven't completed after {Timeout:F0}s: {Services}",
+                                    scope, stalledNames.Length, waveStallTimeout.TotalSeconds, string.Join(", ", stalledNames));
+                            }
+
+                            await waveTask.ConfigureAwait(false);
+                        }
+                    }
+                    else
+                    {
                         await waveTask.ConfigureAwait(false);
                     }
                 }
-                else
+                catch
                 {
-                    await waveTask.ConfigureAwait(false);
+                    RecordSuccessfulInitializerTasks(taskMap);
+                    throw;
                 }
 
+                foreach (var initializer in ready)
+                    RecordInitializedForDisposal(initializer);
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 foreach (var initializer in ready)
                 {
                     pending.Remove(initializer.ServiceType);
                     initializedServices.Add(initializer.ServiceType);
-                    initOrder.Add(initializer.ServiceType);
+                    initOrder.Add(initializer);
                     completedServices++;
                     progressNotifier.OnServiceCompleted(scope, initializer.ServiceType, completedServices, totalServices);
                 }
             }
 
             _scopeInitializationLedger.SetInitializationOrder(scope, scopeKey, initOrder);
+            await StartVContainerStartablesAsync(startupPlan.EntryPoints, cancellationToken)
+                .ConfigureAwait(false);
             return totalServices;
+        }
+
+        private ScopeStartupPlan CreateScopeStartupPlan(
+            GameContextType scope,
+            GameContext context,
+            ISet<Type> initializedServices,
+            Type? scopeKey)
+        {
+            var initializers = DiscoverInitializers(context);
+
+            var lazyBindings = initializers
+                .Where(b => typeof(ILazyInitializableService).IsAssignableFrom(b.ImplementationType))
+                .ToList();
+            foreach (var lazy in lazyBindings)
+            {
+                initializers.Remove(lazy);
+                _lazyInitialization.RegisterLazyBinding(lazy, context, scope, scopeKey);
+            }
+
+            return new ScopeStartupPlan(
+                TryCreateVContainerEntryPointsStartupPlan(scope, context),
+                scope == GameContextType.Global
+                    ? DiscoverGlobalBootstrapOperations(context)
+                    : Array.Empty<GlobalBootstrapOperationBinding>(),
+                initializers.ToArray());
+        }
+
+        private static IReadOnlyList<GlobalBootstrapOperationBinding> DiscoverGlobalBootstrapOperations(
+            GameContext context)
+        {
+            return context
+                .GetRegistrationsForServiceType(typeof(IGlobalBootstrapOperation))
+                .Where(registration => typeof(IGlobalBootstrapOperation).IsAssignableFrom(registration.ImplementationType))
+                .GroupBy(registration => registration.ImplementationType)
+                .Select(group => new GlobalBootstrapOperationBinding(group.Key, group.First()))
+                .ToArray();
+        }
+
+        private VContainerEntryPointsStartupPlan? TryCreateVContainerEntryPointsStartupPlan(
+            GameContextType scope,
+            GameContext context)
+        {
+            var settingsRegistration = context
+                .GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettings))
+                .LastOrDefault();
+            if (settingsRegistration == null)
+                return null;
+
+            var settings = (RuntimeFlowVContainerEntryPointsSettings)context.Resolve(settingsRegistration);
+            var scopeResolver = context.Resolver;
+            var entryPointResolver = RuntimeFlowVContainerEntryPointPhaseRunner.ResolveEntryPointResolver(scope, scopeResolver);
+            return new VContainerEntryPointsStartupPlan(
+                scope,
+                ResolveScopeName(scope),
+                scopeResolver,
+                entryPointResolver,
+                settings,
+                RuntimeFlowVContainerEntryPointPhaseRunner.GetScopeLocalRegistrations<VContainer.Unity.IInitializable>(entryPointResolver, settings),
+                RuntimeFlowVContainerEntryPointPhaseRunner.GetScopeLocalRegistrations<VContainer.Unity.IStartable>(entryPointResolver, settings),
+                Array.Empty<Type>(),
+                useSessionStageOrder: scope == GameContextType.Session);
+        }
+
+        private async Task ExecuteVContainerEntryPointInitializablesAsync(
+            VContainerEntryPointsStartupPlan entryPoints,
+            CancellationToken cancellationToken)
+        {
+            if (entryPoints == null) throw new ArgumentNullException(nameof(entryPoints));
+
+            await _executionScheduler.ExecuteAsync(
+                    InitializationThreadAffinity.MainThread,
+                    token => RuntimeFlowVContainerEntryPointPhaseRunner.InitializeInitializablesAsync(
+                        entryPoints,
+                        _logger,
+                        token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        private async Task StartVContainerStartablesAsync(
+            VContainerEntryPointsStartupPlan? entryPoints,
+            CancellationToken cancellationToken)
+        {
+            if (entryPoints == null)
+                return;
+
+            await _executionScheduler.ExecuteAsync(
+                    InitializationThreadAffinity.MainThread,
+                    token => RuntimeFlowVContainerEntryPointPhaseRunner.StartStartablesAsync(
+                        entryPoints,
+                        _logger,
+                        token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        private async Task<int> ExecuteGlobalBootstrapOperationsAsync(
+            GameContextType scope,
+            GameContext context,
+            IReadOnlyList<GlobalBootstrapOperationBinding> operationBindings,
+            IInitializationProgressNotifier progressNotifier,
+            int completedServices,
+            int totalServices,
+            long generation,
+            CancellationToken cancellationToken)
+        {
+            if (scope != GameContextType.Global)
+                throw new InvalidOperationException("Global bootstrap operations can only run in the global scope.");
+
+            var operations = operationBindings
+                .Select(binding =>
+                {
+                    var operation = context.Resolve(binding.Registration) as IGlobalBootstrapOperation;
+                    if (operation == null)
+                    {
+                        throw new InvalidOperationException(
+                            $"Global bootstrap operation '{binding.ImplementationType.Name}' does not implement {nameof(IGlobalBootstrapOperation)}.");
+                    }
+
+                    return (binding, operation);
+                })
+                .OrderBy(item => item.operation.Order)
+                .ThenBy(item => NormalizeOperationName(item.operation.Name, item.binding.ImplementationType), StringComparer.Ordinal)
+                .ThenBy(item => item.binding.ImplementationType.FullName ?? item.binding.ImplementationType.Name, StringComparer.Ordinal)
+                .ToArray();
+
+            var totalOperations = operations.Length;
+            for (var index = 0; index < operations.Length; index++)
+            {
+                ThrowIfStaleGeneration(generation, cancellationToken);
+                var (binding, operation) = operations[index];
+                var operationName = NormalizeOperationName(operation.Name, binding.ImplementationType);
+                var operationContext = new StartupOperationContext(
+                    scope,
+                    RuntimeStartupOperationPhases.GlobalBootstrapOperations,
+                    operationName,
+                    operationIndex: index,
+                    totalOperations,
+                    binding.ImplementationType,
+                    progressNotifier,
+                    completedServices,
+                    totalServices);
+
+                progressNotifier.OnServiceStarted(scope, binding.ImplementationType, completedServices, totalServices);
+                operationContext.NotifyStarted();
+                try
+                {
+                    await ExecuteStartupOperationWithHealthAsync(
+                            scope,
+                            binding.ImplementationType,
+                            operation,
+                            operationContext,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+                {
+                    var startupCancellation = ex as RuntimeStartupOperationCanceledException
+                                              ?? new RuntimeStartupOperationCanceledException(
+                                                  scope,
+                                                  RuntimeStartupOperationPhases.GlobalBootstrapOperations,
+                                                  operationName,
+                                                  operationContext.LastStep,
+                                                  operationContext.LastDetail,
+                                                  ex);
+                    operationContext.NotifyFailed(startupCancellation);
+                    throw startupCancellation;
+                }
+                catch (Exception ex)
+                {
+                    var startupException = ex as RuntimeStartupOperationException
+                                           ?? new RuntimeStartupOperationException(
+                                               scope,
+                                               RuntimeStartupOperationPhases.GlobalBootstrapOperations,
+                                               operationName,
+                                               operationContext.LastStep,
+                                               operationContext.LastDetail,
+                                               ex);
+                    operationContext.NotifyFailed(startupException);
+                    _logger.LogError(
+                        startupException,
+                        "Global bootstrap operation failed. phase={Phase}, operation={Operation}, step={Step}, detail={Detail}",
+                        RuntimeStartupOperationPhases.GlobalBootstrapOperations,
+                        operationName,
+                        operationContext.LastStep ?? "<none>",
+                        operationContext.LastDetail ?? "<none>");
+                    throw startupException;
+                }
+
+                ThrowIfStaleGeneration(generation, cancellationToken);
+                completedServices++;
+                operationContext.NotifyCompleted(completedServices);
+                progressNotifier.OnServiceCompleted(scope, binding.ImplementationType, completedServices, totalServices);
+            }
+
+            return completedServices;
+        }
+
+        private async Task ExecuteStartupOperationWithHealthAsync(
+            GameContextType scope,
+            Type operationType,
+            IGlobalBootstrapOperation operation,
+            StartupOperationContext operationContext,
+            CancellationToken cancellationToken)
+        {
+            var affinity = operation is IInitializationThreadAffinityProvider affinityProvider
+                ? affinityProvider.ThreadAffinity
+                : InitializationThreadAffinity.MainThread;
+
+            var timeout = _healthSupervisor.GetServiceTimeout(scope, operationType);
+            var stopwatch = Stopwatch.StartNew();
+            using var operationCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            if (_healthSupervisor.IsEnabled && timeout != Timeout.InfiniteTimeSpan)
+            {
+                operationCts.CancelAfter(timeout);
+            }
+
+            try
+            {
+                await _executionScheduler.ExecuteAsync(
+                        affinity,
+                        async token => await operation.ExecuteAsync(operationContext, token).ConfigureAwait(false),
+                        operationCts.Token)
+                    .ConfigureAwait(false);
+
+                stopwatch.Stop();
+                _healthSupervisor.RecordServiceSuccess(scope, operationType, stopwatch.Elapsed, timeout);
+            }
+            catch (OperationCanceledException ex)
+                when (_healthSupervisor.IsEnabled
+                      && operationCts.IsCancellationRequested
+                      && !cancellationToken.IsCancellationRequested)
+            {
+                stopwatch.Stop();
+                var critical = new RuntimeHealthCriticalException(
+                    scope,
+                    operationType,
+                    timeout,
+                    stopwatch.Elapsed,
+                    ex);
+                _healthSupervisor.RecordServiceFailure(
+                    scope,
+                    operationType,
+                    stopwatch.Elapsed,
+                    timeout,
+                    critical);
+                throw new RuntimeStartupOperationException(
+                    scope,
+                    operationContext.Phase,
+                    operationContext.OperationName,
+                    operationContext.LastStep,
+                    operationContext.LastDetail,
+                    critical);
+            }
+            catch (OperationCanceledException ex)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                stopwatch.Stop();
+                throw new RuntimeStartupOperationCanceledException(
+                    scope,
+                    operationContext.Phase,
+                    operationContext.OperationName,
+                    operationContext.LastStep,
+                    operationContext.LastDetail,
+                    ex);
+            }
+            catch (RuntimeStartupOperationException)
+            {
+                stopwatch.Stop();
+                throw;
+            }
+            catch (Exception ex)
+            {
+                stopwatch.Stop();
+                _healthSupervisor.RecordServiceFailure(
+                    scope,
+                    operationType,
+                    stopwatch.Elapsed,
+                    timeout,
+                    ex);
+                throw;
+            }
+        }
+
+        private static string NormalizeOperationName(string? operationName, Type implementationType)
+        {
+            return string.IsNullOrWhiteSpace(operationName)
+                ? implementationType.Name
+                : operationName.Trim();
+        }
+
+        private static bool IsDependencyReadyForCurrentScope(
+            Type dependency,
+            IReadOnlyDictionary<Type, ServiceInitializerBinding> pending,
+            ISet<Type> initializedServices)
+        {
+            return !pending.ContainsKey(dependency) && initializedServices.Contains(dependency);
+        }
+
+        private sealed class StartupOperationContext : IStartupOperationContext
+        {
+            private readonly Type _operationType;
+            private readonly IInitializationProgressNotifier _progressNotifier;
+            private readonly int _completedServices;
+            private readonly int _totalServices;
+
+            public StartupOperationContext(
+                GameContextType scope,
+                string phase,
+                string operationName,
+                int operationIndex,
+                int totalOperations,
+                Type operationType,
+                IInitializationProgressNotifier progressNotifier,
+                int completedServices,
+                int totalServices)
+            {
+                Scope = scope;
+                Phase = phase;
+                OperationName = operationName;
+                OperationIndex = operationIndex;
+                TotalOperations = totalOperations;
+                _operationType = operationType;
+                _progressNotifier = progressNotifier;
+                _completedServices = completedServices;
+                _totalServices = totalServices;
+            }
+
+            public GameContextType Scope { get; }
+            public string Phase { get; }
+            public string OperationName { get; }
+            public int OperationIndex { get; }
+            public int TotalOperations { get; }
+            public string? LastStep { get; private set; }
+            public string? LastDetail { get; private set; }
+            private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
+
+            public void ReportStep(string step, string? detail = null)
+            {
+                LastStep = string.IsNullOrWhiteSpace(step) ? "<unknown>" : step.Trim();
+                LastDetail = string.IsNullOrWhiteSpace(detail) ? null : detail.Trim();
+                var message = FormatMessage(Phase, OperationName, LastStep, LastDetail);
+                _progressNotifier.OnServiceProgress(
+                    Scope,
+                    _operationType,
+                    0f,
+                    message,
+                    _completedServices,
+                    _totalServices);
+
+                if (_progressNotifier is IStartupOperationProgressNotifier startupNotifier)
+                {
+                    startupNotifier.OnStartupOperationStep(
+                        Scope,
+                        Phase,
+                        OperationName,
+                        LastStep,
+                        LastDetail,
+                        _completedServices,
+                        _totalServices,
+                        _stopwatch.Elapsed);
+                }
+            }
+
+            public void NotifyStarted()
+            {
+                if (_progressNotifier is IStartupOperationProgressNotifier startupNotifier)
+                {
+                    startupNotifier.OnStartupOperationStarted(
+                        Scope,
+                        Phase,
+                        OperationName,
+                        _completedServices,
+                        _totalServices,
+                        _stopwatch.Elapsed);
+                }
+            }
+
+            public void NotifyCompleted(int completedServices)
+            {
+                _stopwatch.Stop();
+                if (_progressNotifier is IStartupOperationProgressNotifier startupNotifier)
+                {
+                    startupNotifier.OnStartupOperationCompleted(
+                        Scope,
+                        Phase,
+                        OperationName,
+                        completedServices,
+                        _totalServices,
+                        _stopwatch.Elapsed);
+                }
+            }
+
+            public void NotifyFailed(Exception exception)
+            {
+                _stopwatch.Stop();
+                if (_progressNotifier is IStartupOperationProgressNotifier startupNotifier)
+                {
+                    startupNotifier.OnStartupOperationFailed(
+                        Scope,
+                        Phase,
+                        OperationName,
+                        LastStep,
+                        LastDetail,
+                        exception,
+                        _completedServices,
+                        _totalServices,
+                        _stopwatch.Elapsed);
+                }
+            }
+
+            private static string FormatMessage(
+                string phase,
+                string operationName,
+                string step,
+                string? detail)
+            {
+                var message = $"phase={phase} operation={operationName} step={step}";
+                return string.IsNullOrWhiteSpace(detail)
+                    ? message
+                    : $"{message} detail={detail.Trim()}";
+            }
+        }
+
+        private static string ResolveScopeName(GameContextType scope)
+        {
+            return scope.ToString().ToLowerInvariant();
         }
 
         private async Task ExecuteInitializerWithHealthAsync(
@@ -252,7 +748,7 @@ namespace RuntimeFlow.Contexts
             int totalServices,
             CancellationToken cancellationToken)
         {
-            var resolved = context.Resolve(initializer.ServiceType);
+            var resolved = context.Resolve(initializer);
             if (resolved is not IAsyncInitializableService asyncService)
             {
                 throw new InvalidOperationException(
