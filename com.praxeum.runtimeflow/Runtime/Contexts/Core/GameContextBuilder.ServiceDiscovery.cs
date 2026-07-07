@@ -316,7 +316,7 @@ namespace RuntimeFlow.Contexts
                         continue;
 
                     var serviceType = SelectLifecycleServiceType(registration, implementationType);
-                    var resolveServiceType = SelectResolveServiceType(registration, serviceType);
+                    var resolveServiceType = SelectResolveServiceType(registration, serviceType, implementationType);
                     yield return new InitializerRegistrationCandidate(serviceType, resolveServiceType, registration);
                 }
             }
@@ -334,21 +334,14 @@ namespace RuntimeFlow.Contexts
             if (explicitAsyncServiceType != null)
                 return explicitAsyncServiceType;
 
-            var ordinaryServiceType = registration.InterfaceTypes
-                .Where(type => type != null)
-                .Where(type => !InitializationContractCatalog.IsMarkerOnlyAsyncInitializationType(type))
-                .Where(type => !IsVContainerInitializableType(type))
-                .Where(type => !IsVContainerStartableType(type))
-                .Where(type => type != typeof(IDisposable))
-                .Where(type => type != typeof(IAsyncDisposable))
-                .Where(type => type.IsAssignableFrom(implementationType))
-                .OrderBy(GetDeterministicTypeName, StringComparer.Ordinal)
-                .FirstOrDefault();
-            return ordinaryServiceType ?? implementationType;
+            return implementationType;
         }
 
-        private static Type SelectResolveServiceType(Registration registration, Type serviceType)
+        private static Type SelectResolveServiceType(Registration registration, Type serviceType, Type implementationType)
         {
+            if (serviceType == implementationType)
+                return implementationType;
+
             if (registration.InterfaceTypes.Contains(serviceType))
                 return serviceType;
 

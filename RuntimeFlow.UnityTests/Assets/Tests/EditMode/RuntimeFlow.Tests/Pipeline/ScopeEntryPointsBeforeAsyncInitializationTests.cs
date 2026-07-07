@@ -325,6 +325,32 @@ namespace RuntimeFlow.Tests
         }
 
         [Test]
+        public async Task SessionScope_MarkerOnlyAsyncServiceWithOrdinaryInterface_DoesNotUseOrdinaryInterfaceAsInitializerKey()
+        {
+            var events = new List<string>();
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.Global().ConfigureContainer(containerBuilder =>
+                {
+                    RuntimeFlowInstallerModules.RegisterGlobalBootstrapPreset(containerBuilder);
+                });
+                builder.Session().ConfigureContainer(containerBuilder =>
+                {
+                    RuntimeFlowInstallerModules.RegisterSessionBootstrapPreset(containerBuilder);
+                    containerBuilder.RegisterInstance(events);
+                    containerBuilder.Register<MarkerOnlyAsyncResetParticipant>(Lifetime.Singleton)
+                        .AsImplementedInterfaces();
+                    containerBuilder.Register<OrdinaryResetOnlyService>(Lifetime.Singleton)
+                        .As<IOrdinaryResetParticipant>();
+                });
+            });
+
+            await pipeline.InitializeAsync();
+
+            Assert.That(events, Is.EqualTo(new[] { "marker-only:init" }));
+        }
+
+        [Test]
         public async Task SessionRestart_KeepsGlobalScopeActiveAndDoesNotRerunGlobalLifecycle()
         {
             var events = new List<string>();
@@ -668,6 +694,38 @@ namespace RuntimeFlow.Tests
             {
                 _events.Add("shared-explicit:dependent");
                 return Task.CompletedTask;
+            }
+        }
+
+        private interface IOrdinaryResetParticipant
+        {
+            void Reset();
+        }
+
+        private sealed class MarkerOnlyAsyncResetParticipant : ISessionInitializableService, IOrdinaryResetParticipant
+        {
+            private readonly List<string> _events;
+
+            public MarkerOnlyAsyncResetParticipant(List<string> events)
+            {
+                _events = events;
+            }
+
+            public Task InitializeAsync(CancellationToken cancellationToken)
+            {
+                _events.Add("marker-only:init");
+                return Task.CompletedTask;
+            }
+
+            public void Reset()
+            {
+            }
+        }
+
+        private sealed class OrdinaryResetOnlyService : IOrdinaryResetParticipant
+        {
+            public void Reset()
+            {
             }
         }
 
