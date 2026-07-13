@@ -109,11 +109,76 @@ namespace RuntimeFlow.Contexts
             if (context is not GameContext gameContext)
                 return;
 
-            foreach (var initializer in DiscoverInitializers(gameContext))
+            if (!TryResolveScopeIdentity(gameContext, out var scope, out var scopeKey))
+                return;
+
+            var initOrder = _scopeInitializationLedger.GetInitializationOrder(scope, scopeKey);
+            if (initOrder == null)
+                return;
+
+            foreach (var initializer in initOrder)
             {
                 initializedServices.Add(initializer.ServiceType);
                 availableServices[initializer.ServiceType] = gameContext.Resolve(initializer);
             }
+        }
+
+        private bool TryResolveScopeIdentity(
+            GameContext context,
+            out GameContextType scope,
+            out Type? scopeKey)
+        {
+            if (ReferenceEquals(context, _globalContext))
+            {
+                scope = GameContextType.Global;
+                scopeKey = null;
+                return true;
+            }
+
+            if (ReferenceEquals(context, _sessionContext))
+            {
+                scope = GameContextType.Session;
+                scopeKey = null;
+                return true;
+            }
+
+            if (ReferenceEquals(context, _sceneContext))
+            {
+                scope = GameContextType.Scene;
+                scopeKey = _activeSceneScopeKey;
+                return true;
+            }
+
+            if (ReferenceEquals(context, _moduleContext))
+            {
+                scope = GameContextType.Module;
+                scopeKey = _activeModuleScopeKey;
+                return true;
+            }
+
+            foreach (var kvp in _preloadedContexts)
+            {
+                if (ReferenceEquals(context, kvp.Value))
+                {
+                    scope = GameContextType.Scene;
+                    scopeKey = kvp.Key;
+                    return true;
+                }
+            }
+
+            foreach (var kvp in _additiveModuleContexts)
+            {
+                if (ReferenceEquals(context, kvp.Value))
+                {
+                    scope = GameContextType.Module;
+                    scopeKey = kvp.Key;
+                    return true;
+                }
+            }
+
+            scope = default;
+            scopeKey = null;
+            return false;
         }
 
         private static GameContext CreateContext(
@@ -352,13 +417,14 @@ namespace RuntimeFlow.Contexts
             GameContextType scope,
             GameContext context)
         {
-            var settingsRegistration = context
-                .GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettings))
-                .LastOrDefault();
-            if (settingsRegistration == null)
+            var settingsRegistrations = context
+                .GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettings));
+            if (settingsRegistrations.Count == 0)
                 return null;
 
-            var settings = (RuntimeFlowVContainerEntryPointsSettings)context.Resolve(settingsRegistration);
+            var settings = MergeVContainerEntryPointSettings(settingsRegistrations
+                .Select(registration => (RuntimeFlowVContainerEntryPointsSettings)context.Resolve(registration))
+                .ToArray(), context);
             var scopeResolver = context.Resolver;
             var entryPointResolver = RuntimeFlowVContainerEntryPointPhaseRunner.ResolveEntryPointResolver(scope, scopeResolver);
             return new VContainerEntryPointsStartupPlan(
@@ -369,8 +435,96 @@ namespace RuntimeFlow.Contexts
                 settings,
                 RuntimeFlowVContainerEntryPointPhaseRunner.GetScopeLocalRegistrations<VContainer.Unity.IInitializable>(entryPointResolver, settings),
                 RuntimeFlowVContainerEntryPointPhaseRunner.GetScopeLocalRegistrations<VContainer.Unity.IStartable>(entryPointResolver, settings),
-                Array.Empty<Type>(),
+                ResolveEntryPointCompletedDependencyMarkers(scope),
                 useSessionStageOrder: scope == GameContextType.Session);
+        }
+
+        private static RuntimeFlowVContainerEntryPointsSettings MergeVContainerEntryPointSettings(
+            IReadOnlyList<RuntimeFlowVContainerEntryPointsSettings> settings,
+            GameContext context)
+        {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            if (context == null) throw new ArgumentNullException(nameof(context));
+
+            var contributions = ResolveVContainerEntryPointSettingsContributions(context);
+
+            if (settings.Count == 0 && contributions.Length == 0)
+                return RuntimeFlowVContainerEntryPointsSettings.Default;
+
+            if (settings.Count == 1 && contributions.Length == 0)
+                return settings[0];
+
+            var excludedInitializables = settings
+                .SelectMany(item => item.ExcludedInitializableImplementationTypes)
+                .Concat(contributions.SelectMany(item => item.ExcludedInitializableImplementationTypes))
+                .Distinct()
+                .ToArray();
+            var excludedStartables = settings
+                .SelectMany(item => item.ExcludedStartableImplementationTypes)
+                .Concat(contributions.SelectMany(item => item.ExcludedStartableImplementationTypes))
+                .Distinct()
+                .ToArray();
+            var prioritizedInitializables = settings
+                .SelectMany(item => item.PrioritizedInitializableImplementationTypes)
+                .Distinct()
+                .ToArray();
+            var afterCallbacks = settings
+                .Select(item => item.AfterPrioritizedInitializablesInitialized)
+                .Where(callback => callback != null)
+                .ToArray();
+
+            return new RuntimeFlowVContainerEntryPointsSettings(
+                excludedInitializables,
+                excludedStartables,
+                prioritizedInitializables,
+                afterCallbacks.Length == 0
+                    ? null
+                    : resolver =>
+                    {
+                        foreach (var callback in afterCallbacks)
+                        {
+                            callback!(resolver);
+                        }
+                    });
+        }
+
+        private static RuntimeFlowVContainerEntryPointsSettingsContribution[] ResolveVContainerEntryPointSettingsContributions(
+            GameContext context)
+        {
+            if (context == null) throw new ArgumentNullException(nameof(context));
+
+            var contributions = new List<RuntimeFlowVContainerEntryPointsSettingsContribution>();
+            var current = context;
+            while (current != null)
+            {
+                foreach (var registration in current.GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettingsContribution)))
+                {
+                    if (current.Resolve(registration) is RuntimeFlowVContainerEntryPointsSettingsContribution contribution)
+                    {
+                        contributions.Add(contribution);
+                    }
+                }
+
+                current = current.Parent as GameContext;
+            }
+
+            return contributions
+                .Distinct()
+                .ToArray();
+        }
+
+        private static IReadOnlyCollection<Type> ResolveEntryPointCompletedDependencyMarkers(GameContextType scope)
+        {
+            if (scope == GameContextType.Session)
+            {
+                return new[]
+                {
+                    typeof(RuntimeFlowVContainerEntryPointsStartupPhase),
+                    typeof(IRuntimeFlowSessionSyncEntryPointsBootstrapService)
+                };
+            }
+
+            return new[] { typeof(RuntimeFlowVContainerEntryPointsStartupPhase) };
         }
 
         private async Task ExecuteVContainerEntryPointInitializablesAsync(

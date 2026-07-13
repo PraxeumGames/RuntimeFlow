@@ -93,6 +93,20 @@ namespace RuntimeFlow.Contexts
             return this;
         }
 
+        internal event Action<IGameContext>? SessionContextInitialized;
+
+        internal RuntimePipeline ObserveSessionContextInitialized(Action<IGameContext> callback)
+        {
+            SessionContextInitialized += callback ?? throw new ArgumentNullException(nameof(callback));
+            return this;
+        }
+
+        internal RuntimePipeline StopObservingSessionContextInitialized(Action<IGameContext> callback)
+        {
+            SessionContextInitialized -= callback ?? throw new ArgumentNullException(nameof(callback));
+            return this;
+        }
+
         public IGameContext SessionContext => _builder.GetSessionContext();
 
         public RuntimePipeline ConfigureTransitionHandler(IScopeTransitionHandler handler)

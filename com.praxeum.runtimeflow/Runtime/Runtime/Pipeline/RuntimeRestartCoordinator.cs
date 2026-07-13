@@ -62,7 +62,7 @@ namespace RuntimeFlow.Contexts
             try
             {
                 readinessGate = _readinessGateFactory();
-                if (readinessGate != null)
+                if (readinessGate != null && !request.RestartRequest.AllowBeforeReady)
                 {
                     await readinessGate
                         .WaitUntilReadyAsync(

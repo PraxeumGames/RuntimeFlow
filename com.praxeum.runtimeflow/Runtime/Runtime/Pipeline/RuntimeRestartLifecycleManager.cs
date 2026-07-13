@@ -24,6 +24,7 @@ namespace RuntimeFlow.Contexts
 
         private RuntimeRestartLifecycleSnapshot _snapshot;
         private Task? _inFlightRestartTask;
+        private Task? _latestRestartTask;
         private long _completedCount;
         private long _failedCount;
         private long _deduplicatedRequestCount;
@@ -64,6 +65,14 @@ namespace RuntimeFlow.Contexts
             return GetRestartReadiness(includeInFlightCheck: true);
         }
 
+        internal Task? GetLatestRestartTask()
+        {
+            lock (_sync)
+            {
+                return _inFlightRestartTask ?? _latestRestartTask;
+            }
+        }
+
         public Task RestartAsync(RuntimeRestartRequest request, CancellationToken cancellationToken = default)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));
@@ -80,6 +89,7 @@ namespace RuntimeFlow.Contexts
                 {
                     taskToAwait = RunRestartInternalAsync(request, cancellationToken);
                     _inFlightRestartTask = taskToAwait;
+                    _latestRestartTask = taskToAwait;
                 }
             }
 
@@ -93,7 +103,7 @@ namespace RuntimeFlow.Contexts
             {
                 UpdateSnapshot(RuntimeRestartLifecycleStage.WaitingReadiness, request.ReasonCode, request.Diagnostic);
                 var restartReadiness = GetRestartReadiness(includeInFlightCheck: false);
-                if (!restartReadiness.IsReady)
+                if (!restartReadiness.IsReady && !CanRestartBeforeReady(request))
                 {
                     throw new InvalidOperationException(
                         restartReadiness.BlockingReason
@@ -158,6 +168,23 @@ namespace RuntimeFlow.Contexts
                     _inFlightRestartTask = null;
                 }
             }
+        }
+
+        private bool CanRestartBeforeReady(RuntimeRestartRequest request)
+        {
+            if (!request.AllowBeforeReady)
+            {
+                return false;
+            }
+
+            var executionContext = _executionContextProvider?.GetExecutionContext();
+            if (executionContext?.State == RuntimeExecutionState.Initializing)
+            {
+                return true;
+            }
+
+            var runtimeStatus = _pipelineStateQuery?.GetRuntimeStatus();
+            return runtimeStatus?.State == RuntimeExecutionState.Initializing;
         }
 
         private RuntimeRestartReadiness GetRestartReadiness(bool includeInFlightCheck)

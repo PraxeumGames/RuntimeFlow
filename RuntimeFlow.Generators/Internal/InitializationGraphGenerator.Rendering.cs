@@ -32,18 +32,33 @@ namespace RuntimeFlow.Generators
             sb.AppendLine("            internal global::System.Type[] Dependencies { get; }");
             sb.AppendLine("        }");
             sb.AppendLine();
+            sb.AppendLine("        private static global::System.Type ResolveType(string assemblyName, string metadataName)");
+            sb.AppendLine("        {");
+            sb.AppendLine("            foreach (var assembly in global::System.AppDomain.CurrentDomain.GetAssemblies())");
+            sb.AppendLine("            {");
+            sb.AppendLine("                if (!string.Equals(assembly.GetName().Name, assemblyName, global::System.StringComparison.Ordinal))");
+            sb.AppendLine("                    continue;");
+            sb.AppendLine();
+            sb.AppendLine("                var type = assembly.GetType(metadataName);");
+            sb.AppendLine("                if (type != null)");
+            sb.AppendLine("                    return type;");
+            sb.AppendLine("            }");
+            sb.AppendLine();
+            sb.AppendLine("            throw new global::System.InvalidOperationException(\"RuntimeFlow generated initialization graph could not resolve type '\" + metadataName + \"' from assembly '\" + assemblyName + \"'.\");");
+            sb.AppendLine("        }");
+            sb.AppendLine();
             sb.AppendLine("        internal static readonly Node[] Nodes = new Node[]");
             sb.AppendLine("        {");
 
             foreach (var node in model.Nodes)
             {
                 var dependencies = node.Dependencies
-                    .Select(dependency => $"typeof({ToTypeOfDisplay(dependency)})")
+                    .Select(ToTypeExpression)
                     .ToArray();
 
                 sb.Append("            new Node(");
-                sb.Append($"typeof({ToTypeOfDisplay(node.ServiceType)}), ");
-                sb.Append($"typeof({ToTypeOfDisplay(node.ImplementationType)}), ");
+                sb.Append($"{ToTypeExpression(node.ServiceType)}, ");
+                sb.Append($"{ToTypeExpression(node.ImplementationType)}, ");
                 sb.Append($"global::RuntimeFlow.Contexts.GameContextType.{node.Scope}, ");
                 sb.Append($"new global::System.Type[] {{ {string.Join(", ", dependencies)} }}");
                 sb.AppendLine("),");
@@ -58,6 +73,55 @@ namespace RuntimeFlow.Generators
         private static string ToTypeOfDisplay(INamedTypeSymbol symbol)
         {
             return symbol.ToDisplayString(SymbolDisplayFormat.FullyQualifiedFormat);
+        }
+
+        private static string ToTypeExpression(INamedTypeSymbol symbol)
+        {
+            if (CanReferenceFromGeneratedSource(symbol))
+                return $"typeof({ToTypeOfDisplay(symbol)})";
+
+            return $"ResolveType(\"{EscapeString(symbol.ContainingAssembly.Identity.Name)}\", \"{EscapeString(ToMetadataName(symbol))}\")";
+        }
+
+        private static bool CanReferenceFromGeneratedSource(INamedTypeSymbol symbol)
+        {
+            for (var current = symbol; current != null; current = current.ContainingType)
+            {
+                if (!IsReferenceableAccessibility(current.DeclaredAccessibility))
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsReferenceableAccessibility(Accessibility accessibility)
+        {
+            return accessibility == Accessibility.Public
+                   || accessibility == Accessibility.Internal
+                   || accessibility == Accessibility.ProtectedOrInternal;
+        }
+
+        private static string ToMetadataName(INamedTypeSymbol symbol)
+        {
+            var containingTypes = new global::System.Collections.Generic.Stack<INamedTypeSymbol>();
+            for (var current = symbol; current != null; current = current.ContainingType)
+                containingTypes.Push(current);
+
+            var typeNames = containingTypes.Select(type => type.MetadataName);
+
+            var typeName = string.Join("+", typeNames);
+            var namespaceName = symbol.ContainingNamespace == null || symbol.ContainingNamespace.IsGlobalNamespace
+                ? string.Empty
+                : symbol.ContainingNamespace.ToDisplayString() + ".";
+
+            return namespaceName + typeName;
+        }
+
+        private static string EscapeString(string value)
+        {
+            return value
+                .Replace("\\", "\\\\")
+                .Replace("\"", "\\\"");
         }
     }
 }

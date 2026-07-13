@@ -86,6 +86,7 @@ namespace RuntimeFlow.Contexts
                 executionContextProvider: _executionContextManager,
                 pipelineStateQuery: this,
                 timestampProvider: () => DateTimeOffset.UtcNow);
+            _builder.OnSessionInitialized(context => SessionContextInitialized?.Invoke(context));
         }
     }
 }

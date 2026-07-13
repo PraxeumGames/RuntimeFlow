@@ -29,10 +29,10 @@ Or via the pinned git URL used by the RuntimeFlow Unity test project and SF2:
 https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1
 ```
 
-Install RuntimeFlow package and pin version `0.3.1`:
+Install RuntimeFlow package and pin version `0.4.0`:
 
 ```text
-https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.3.1
+https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.4.0
 ```
 
 In `Packages/manifest.json`:
@@ -41,12 +41,12 @@ In `Packages/manifest.json`:
 {
   "dependencies": {
     "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1",
-    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.3.1"
+    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.4.0"
   }
 }
 ```
 
-> `#0.3.1` pins the dependency to the RuntimeFlow `0.3.1` git tag. Publish that tag in Git before using the URL in Unity.
+> `#0.4.0` pins the dependency to the RuntimeFlow `0.4.0` git tag. Publish that tag in Git before using the URL in Unity.
 > `RuntimeFlow.Runtime.asmdef` references `Microsoft.Extensions.Logging.Abstractions.dll` as a precompiled dependency.
 
 ## Quick start
@@ -206,6 +206,14 @@ Use `IScopeTransitionHandler` to react to:
 ## Initialization graph and diagnostics
 
 RuntimeFlow validates initialization dependency graphs using constructor dependencies and `[DependsOn(typeof(...))]`.
+
+Compiled graph generation is opt-in per assembly. Add the assembly attribute once in each assembly that should emit a graph:
+
+```csharp
+[assembly: RuntimeFlow.Contexts.GenerateRuntimeFlowInitializationGraph]
+```
+
+`[DependsOn]` accepts async initialization contracts, concrete async initializer types, and RuntimeFlow's VContainer entry-point completion markers. Use `RuntimeFlowVContainerEntryPointsStartupPhase` for any scope or `IRuntimeFlowSessionSyncEntryPointsBootstrapService` when a session initializer explicitly requires the session entry-point bridge to be installed and completed.
 
 Diagnostics:
 

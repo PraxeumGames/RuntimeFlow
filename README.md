@@ -53,6 +53,8 @@ Services can depend only on same-or-wider scopes. `ISceneScope` and `IModuleScop
 
 `RuntimeFlow.Generators` defines diagnostics for initialization graph problems:
 
+Generation is opt-in per consumer assembly via `[assembly: RuntimeFlow.Contexts.GenerateRuntimeFlowInitializationGraph]`, preventing unrelated Unity assemblies from emitting duplicate graph types.
+
 | Code | Description |
 |---|---|
 | `RF0001` | Duplicate implementation for a service interface |

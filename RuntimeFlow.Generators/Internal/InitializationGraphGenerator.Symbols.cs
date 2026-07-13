@@ -65,6 +65,58 @@ namespace RuntimeFlow.Generators
                    && type.AllInterfaces.Any(i => SymbolEqualityComparer.Default.Equals(i, symbols.AsyncInitializable));
         }
 
+        private static bool IsExplicitDependency(INamedTypeSymbol type, GeneratorSymbols symbols)
+        {
+            if (IsEntryPointCompletionDependency(type))
+                return true;
+
+            if (symbols.IsMarkerOnlyAsyncContract(type))
+                return false;
+
+            if (symbols.AsyncInitializable == null)
+                return false;
+
+            return type.TypeKind switch
+            {
+                TypeKind.Interface => type.AllInterfaces.Any(i =>
+                    SymbolEqualityComparer.Default.Equals(i, symbols.AsyncInitializable)),
+                TypeKind.Class => type.AllInterfaces.Any(i =>
+                    SymbolEqualityComparer.Default.Equals(i, symbols.AsyncInitializable)),
+                _ => false
+            };
+        }
+
+        private static bool IsEntryPointCompletionDependency(INamedTypeSymbol type)
+        {
+            var metadataName = type.ToDisplayString();
+            return metadataName == EntryPointsStartupPhaseType
+                   || metadataName == SessionSyncEntryPointsBootstrapServiceType;
+        }
+
+        private static IEnumerable<INamedTypeSymbol> ResolveExplicitAttributeDependencies(
+            INamedTypeSymbol implementationType,
+            GeneratorSymbols symbols)
+        {
+            foreach (var attribute in implementationType.GetAttributes())
+            {
+                var attributeClass = attribute.AttributeClass;
+                if (attributeClass == null)
+                    continue;
+
+                if (attributeClass.ToDisplayString() != DependsOnAttribute)
+                    continue;
+
+                if (attribute.ConstructorArguments.Length != 1)
+                    continue;
+
+                if (attribute.ConstructorArguments[0].Value is not INamedTypeSymbol dependencyType)
+                    continue;
+
+                if (IsExplicitDependency(dependencyType, symbols))
+                    yield return dependencyType;
+            }
+        }
+
         private static bool TryResolveScope(INamedTypeSymbol type, GeneratorSymbols symbols, out ScopeKind scope)
         {
             var scopes = 0;

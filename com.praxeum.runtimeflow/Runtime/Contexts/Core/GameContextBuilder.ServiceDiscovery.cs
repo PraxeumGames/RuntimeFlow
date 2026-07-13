@@ -565,6 +565,9 @@ namespace RuntimeFlow.Contexts
             if (typeToServiceType.TryGetValue(dep, out var mappedServiceType))
                 return mappedServiceType;
 
+            if (InitializationGraphRules.IsEntryPointCompletionDependencyType(dep))
+                return dep;
+
             if (dep.IsInterface)
                 return null;
 

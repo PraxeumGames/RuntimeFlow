@@ -143,6 +143,37 @@ namespace RuntimeFlow.Tests
         }
 
         [Test]
+        public async Task SessionScope_DependsOnEntryPointMarker_WaitsForVContainerInitializables()
+        {
+            var dependencies = InitializationGraphRules.ResolveConstructorDependencies(
+                typeof(SessionDependsOnEntryPointMarkerService));
+            Assert.That(dependencies, Does.Contain(typeof(RuntimeFlowVContainerEntryPointsStartupPhase)));
+            Assert.That(dependencies, Does.Contain(typeof(IRuntimeFlowSessionSyncEntryPointsBootstrapService)));
+
+            var events = new List<string>();
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.Global().ConfigureContainer(containerBuilder =>
+                {
+                    RuntimeFlowInstallerModules.RegisterGlobalBootstrapPreset(containerBuilder);
+                });
+                builder.Session().ConfigureContainer(containerBuilder =>
+                {
+                    RuntimeFlowInstallerModules.RegisterSessionBootstrapPreset(containerBuilder);
+                    containerBuilder.RegisterInstance(events);
+                    containerBuilder.Register<SessionEntryPoint>(Lifetime.Singleton)
+                        .As<IInitializable>();
+                    containerBuilder.Register<SessionDependsOnEntryPointMarkerService>(Lifetime.Singleton)
+                        .AsImplementedInterfaces();
+                });
+            });
+
+            await pipeline.InitializeAsync();
+
+            Assert.That(events, Is.EqualTo(new[] { "session:init", "entrypoint-marker-dependent:async" }));
+        }
+
+        [Test]
         public async Task SessionScope_StartsVContainerStartables_OnMainThreadAfterAnyThreadAsyncServices()
         {
             var events = new List<string>();
@@ -836,6 +867,24 @@ namespace RuntimeFlow.Tests
             public Task InitializeAsync(CancellationToken cancellationToken)
             {
                 _events.Add("phase-dependent:async");
+                return Task.CompletedTask;
+            }
+        }
+
+        [DependsOn(typeof(RuntimeFlowVContainerEntryPointsStartupPhase))]
+        [DependsOn(typeof(IRuntimeFlowSessionSyncEntryPointsBootstrapService))]
+        private sealed class SessionDependsOnEntryPointMarkerService : ISessionInitializableService
+        {
+            private readonly List<string> _events;
+
+            public SessionDependsOnEntryPointMarkerService(List<string> events)
+            {
+                _events = events;
+            }
+
+            public Task InitializeAsync(CancellationToken cancellationToken)
+            {
+                _events.Add("entrypoint-marker-dependent:async");
                 return Task.CompletedTask;
             }
         }

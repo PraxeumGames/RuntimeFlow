@@ -11,8 +11,18 @@ public static class GeneratorTestHost
     /// Minimal stubs matching the real package's namespaces so the generator's symbol matching works.
     /// </summary>
     public const string CommonStubs = """
+        [assembly: RuntimeFlow.Contexts.GenerateRuntimeFlowInitializationGraph]
+
         namespace RuntimeFlow.Contexts
         {
+            public enum GameContextType
+            {
+                Global = 0,
+                Session = 1,
+                Scene = 2,
+                Module = 3
+            }
+
             public interface IAsyncInitializableService { }
             public interface IGlobalInitializableService  : IAsyncInitializableService { }
             public interface ISessionInitializableService : IAsyncInitializableService { }
@@ -24,6 +34,22 @@ public static class GeneratorTestHost
             public interface IContentStartupInitializableService : IStartupStageInitializableService { }
             public interface ISessionStartupInitializableService : IStartupStageInitializableService { }
             public interface IUiStartupInitializableService : IStartupStageInitializableService { }
+
+            [System.AttributeUsage(System.AttributeTargets.Assembly)]
+            public sealed class GenerateRuntimeFlowInitializationGraphAttribute : System.Attribute { }
+
+            [System.AttributeUsage(System.AttributeTargets.Class, AllowMultiple = true)]
+            public sealed class DependsOnAttribute : System.Attribute
+            {
+                public DependsOnAttribute(System.Type serviceType) { }
+            }
+
+            public interface IRuntimeFlowSessionSyncEntryPointsBootstrapService { }
+
+            public sealed class RuntimeFlowVContainerEntryPointsStartupPhase
+            {
+                private RuntimeFlowVContainerEntryPointsStartupPhase() { }
+            }
         }
         """;
 
@@ -34,6 +60,16 @@ public static class GeneratorTestHost
     /// </summary>
     public static (IReadOnlyList<Diagnostic> Diagnostics, IReadOnlyDictionary<string, string> GeneratedSources)
         RunGenerator(params string[] sources)
+    {
+        var (diagnostics, generatedSources, _) = RunGeneratorWithCompilationDiagnostics(sources);
+        return (diagnostics, generatedSources);
+    }
+
+    public static (
+        IReadOnlyList<Diagnostic> Diagnostics,
+        IReadOnlyDictionary<string, string> GeneratedSources,
+        IReadOnlyList<Diagnostic> OutputDiagnostics)
+        RunGeneratorWithCompilationDiagnostics(params string[] sources)
     {
         var syntaxTrees = sources
             .Select(src => CSharpSyntaxTree.ParseText(src,
@@ -50,7 +86,7 @@ public static class GeneratorTestHost
                 nullableContextOptions: NullableContextOptions.Enable));
 
         GeneratorDriver driver = CSharpGeneratorDriver.Create(new InitializationGraphGenerator());
-        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out _, out _);
+        driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out _);
 
         var runResult = driver.GetRunResult();
 
@@ -63,7 +99,7 @@ public static class GeneratorTestHost
                 tree => Path.GetFileName(tree.FilePath),
                 tree => tree.GetText().ToString());
 
-        return (rfDiagnostics, generatedSources);
+        return (rfDiagnostics, generatedSources, outputCompilation.GetDiagnostics());
     }
 
     private static IEnumerable<MetadataReference> BuildReferences()

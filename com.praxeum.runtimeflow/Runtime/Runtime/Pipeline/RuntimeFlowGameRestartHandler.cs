@@ -117,7 +117,8 @@ namespace SFS.Core.GameLoading
                     new RuntimeRestartCoordinatorRequest(
                         restartRequest: new RuntimeRestartRequest(
                             reasonCode: SessionRestartReplayingReasonCode,
-                            diagnostic: reason),
+                            diagnostic: reason,
+                            allowBeforeReady: IsRuntimeInitializing()),
                         readinessTimeout: RestartReadinessTimeout,
                         readinessPollInterval: RestartReadinessPollInterval,
                         onBeforeRestartAsync: _ =>
@@ -247,6 +248,13 @@ namespace SFS.Core.GameLoading
                     updatedAtUtc: DateTimeOffset.UtcNow,
                     blockingReasonCode: SessionRestartPipelineMissingReasonCode,
                     blockingReason: "RuntimeFlow pipeline is not available for replay restart.");
+        }
+
+        private bool IsRuntimeInitializing()
+        {
+            return _pipelineProvider.TryGetCurrent(out var pipeline)
+                   && pipeline != null
+                   && pipeline.GetRuntimeStatus().State == RuntimeExecutionState.Initializing;
         }
 
         private static string BuildTimeoutDiagnostic(string reason, RuntimeRestartExecutionResult result)

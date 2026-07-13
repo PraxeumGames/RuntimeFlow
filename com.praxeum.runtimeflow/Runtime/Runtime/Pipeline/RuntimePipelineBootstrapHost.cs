@@ -77,20 +77,29 @@ namespace RuntimeFlow.Contexts
             var result = new BootstrapResult(pipeline, rootContainer: null!, cts); // rootContainer intentionally null at bootstrap; BootstrapResult.cs (other agent) declares non-nullable
             IRuntimeFlowPipelineProvider? pipelineProvider = null;
 
+            void PublishCurrentPipeline(IGameContext sessionContext)
+            {
+                result.SessionContext = sessionContext;
+                pipelineProvider ??= TryResolvePipelineProvider(sessionContext.Resolver);
+                if (pipelineProvider == null)
+                    return;
+
+                pipelineProvider.SetCurrent(pipeline, sceneLoader);
+                result.BindPipelineProvider(pipelineProvider);
+            }
+
             try
             {
                 if (guards != null)
                     pipeline.ConfigureGuards(guards);
 
                 pipeline.ConfigureFlow(scenario);
+                pipeline.ObserveSessionContextInitialized(PublishCurrentPipeline);
                 await pipeline.RunAsync(sceneLoader, cancellationToken: cts.Token).ConfigureAwait(false);
                 result.SessionContext = pipeline.SessionContext;
-
-                pipelineProvider = TryResolvePipelineProvider(result.SessionContext?.Resolver);
-                if (pipelineProvider != null)
+                if (result.SessionContext != null)
                 {
-                    pipelineProvider.SetCurrent(pipeline, sceneLoader);
-                    result.BindPipelineProvider(pipelineProvider);
+                    PublishCurrentPipeline(result.SessionContext);
                 }
 
                 result.MarkCompleted(true);
@@ -109,6 +118,10 @@ namespace RuntimeFlow.Contexts
                 pipelineProvider?.ClearCurrent(pipeline);
                 result.MarkCompleted(false);
                 throw;
+            }
+            finally
+            {
+                pipeline.StopObservingSessionContextInitialized(PublishCurrentPipeline);
             }
         }
 

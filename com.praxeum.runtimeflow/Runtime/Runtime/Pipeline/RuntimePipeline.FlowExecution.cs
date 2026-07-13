@@ -96,6 +96,7 @@ namespace RuntimeFlow.Contexts
 
             _healthSupervisor.BeginRun();
             var runner = CreateFlowRunner(sceneLoader, progressNotifier);
+            var restartTaskAtOperationStart = _restartLifecycleManager.GetLatestRestartTask();
 
             try
             {
@@ -134,6 +135,34 @@ namespace RuntimeFlow.Contexts
                 SetStatus(RuntimeExecutionState.Degraded, operationCode: operationCode, message: cancelMessage);
                 throw;
             }
+            catch (OperationCanceledException ex)
+            {
+                if (await TryCompleteRunFlowSupersededByRestartAsync(
+                            operationKind,
+                            restartTaskAtOperationStart,
+                            operationId,
+                            operationCode,
+                            finalizingMessage,
+                            successMessage)
+                        .ConfigureAwait(false))
+                {
+                    return;
+                }
+
+                _logger.LogError(ex, "Pipeline operation canceled before a replacement restart completed");
+                PublishLoadingSnapshot(
+                    operationId,
+                    operationKind,
+                    RuntimeLoadingOperationStage.Failed,
+                    RuntimeLoadingOperationState.Failed,
+                    percent: 0d,
+                    currentStep: 0,
+                    totalSteps: 1,
+                    message: failMessage,
+                    error: ex);
+                SetStatus(RuntimeExecutionState.Failed, operationCode: operationCode, message: failMessage, error: ex);
+                throw;
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Pipeline operation failed");
@@ -150,6 +179,55 @@ namespace RuntimeFlow.Contexts
                 SetStatus(RuntimeExecutionState.Failed, operationCode: operationCode, message: failMessage, error: ex);
                 throw;
             }
+        }
+
+        private async Task<bool> TryCompleteRunFlowSupersededByRestartAsync(
+            RuntimeLoadingOperationKind operationKind,
+            Task? restartTaskAtOperationStart,
+            string operationId,
+            string operationCode,
+            string finalizingMessage,
+            string successMessage)
+        {
+            if (operationKind != RuntimeLoadingOperationKind.RunFlow)
+            {
+                return false;
+            }
+
+            var restartTask = _restartLifecycleManager.GetLatestRestartTask();
+            if (restartTask == null || ReferenceEquals(restartTask, restartTaskAtOperationStart))
+                return false;
+
+            await restartTask.ConfigureAwait(false);
+
+            var restartSnapshot = _restartLifecycleManager.Snapshot;
+            var runtimeStatus = GetRuntimeStatus();
+            if (runtimeStatus.State != RuntimeExecutionState.Ready
+                || restartSnapshot.Stage != RuntimeRestartLifecycleStage.Completed)
+            {
+                return false;
+            }
+
+            PublishLoadingSnapshot(
+                operationId,
+                operationKind,
+                RuntimeLoadingOperationStage.Finalizing,
+                RuntimeLoadingOperationState.Running,
+                percent: 100d,
+                currentStep: 1,
+                totalSteps: 1,
+                message: finalizingMessage);
+            PublishLoadingSnapshot(
+                operationId,
+                operationKind,
+                RuntimeLoadingOperationStage.Completed,
+                RuntimeLoadingOperationState.Completed,
+                percent: 100d,
+                currentStep: 1,
+                totalSteps: 1,
+                message: successMessage);
+            SetStatus(RuntimeExecutionState.Ready, operationCode: operationCode, message: successMessage);
+            return true;
         }
 
         private RuntimeFlowRunner CreateFlowRunner(

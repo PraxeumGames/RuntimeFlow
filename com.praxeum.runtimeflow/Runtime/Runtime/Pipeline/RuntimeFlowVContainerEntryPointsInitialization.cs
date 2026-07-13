@@ -1,7 +1,9 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
@@ -12,6 +14,8 @@ namespace RuntimeFlow.Contexts
 {
     internal static class RuntimeFlowVContainerEntryPointPhaseRunner
     {
+        private static readonly ConcurrentDictionary<Type, Type[]> InheritedEntryPointServiceTypesCache = new();
+
         internal static Task InitializeInitializablesAsync(
             VContainerEntryPointsStartupPlan plan,
             ILogger logger,
@@ -161,22 +165,69 @@ namespace RuntimeFlow.Contexts
             if (resolver == null) throw new ArgumentNullException(nameof(resolver));
             if (settings == null) throw new ArgumentNullException(nameof(settings));
 
-            var collectionType = typeof(IReadOnlyList<TEntryPoint>);
-            if (!resolver.TryGetRegistration(collectionType, out var registration) || registration?.Provider == null)
+            var entryPointType = typeof(TEntryPoint);
+            var registrations = new List<Registration>();
+            registrations.AddRange(GetScopeLocalRegistrationsForServiceType(resolver, entryPointType));
+
+            foreach (var inheritedServiceType in GetInheritedEntryPointServiceTypes(entryPointType))
             {
-                return Array.Empty<Registration>();
+                registrations.AddRange(GetScopeLocalRegistrationsForServiceType(resolver, inheritedServiceType)
+                    .Where(registration => registration.ImplementationType != null)
+                    .Where(registration => entryPointType.IsAssignableFrom(registration.ImplementationType)));
             }
 
-            if (registration.Provider is IEnumerable registrations)
+            return registrations
+                .Where(registration => !ShouldSkipRegistration<TEntryPoint>(registration, settings))
+                .GroupBy(registration => registration)
+                .Select(group => group.First())
+                .ToArray();
+        }
+
+        private static IEnumerable<Registration> GetScopeLocalRegistrationsForServiceType(
+            IObjectResolver resolver,
+            Type serviceType)
+        {
+            var registrations = new List<Registration>();
+            var collectionType = typeof(IReadOnlyList<>).MakeGenericType(serviceType);
+            if (resolver.TryGetRegistration(collectionType, out var collectionRegistration)
+                && collectionRegistration?.Provider is IEnumerable collectionProvider)
             {
-                return registrations
-                    .Cast<object>()
-                    .OfType<Registration>()
-                    .Where(registration => !ShouldSkipRegistration<TEntryPoint>(registration, settings))
-                    .ToArray();
+                registrations.AddRange(collectionProvider.Cast<object>().OfType<Registration>());
             }
 
-            return Array.Empty<Registration>();
+            if (resolver.TryGetRegistration(serviceType, out var directRegistration) && directRegistration != null)
+            {
+                registrations.Add(directRegistration);
+            }
+
+            return registrations;
+        }
+
+        private static Type[] GetInheritedEntryPointServiceTypes(Type entryPointType)
+        {
+            return InheritedEntryPointServiceTypesCache.GetOrAdd(
+                entryPointType,
+                static type => AppDomain.CurrentDomain.GetAssemblies()
+                    .SelectMany(GetLoadableTypes)
+                    .Where(candidate => candidate.IsInterface)
+                    .Where(candidate => candidate != type)
+                    .Where(candidate => type.IsAssignableFrom(candidate))
+                    .OrderBy(candidate => candidate.FullName ?? candidate.Name, StringComparer.Ordinal)
+                    .ToArray());
+        }
+
+        private static IEnumerable<Type> GetLoadableTypes(Assembly assembly)
+        {
+            try
+            {
+                return assembly.GetTypes();
+            }
+            catch (ReflectionTypeLoadException ex)
+            {
+                return ex.Types
+                    .Where(type => type != null)
+                    .Select(type => type!);
+            }
         }
 
         private static void InitializePrioritizedInitializables(
@@ -224,6 +275,12 @@ namespace RuntimeFlow.Contexts
 
             if (typeof(TEntryPoint) == typeof(IInitializable)
                 && settings.ExcludedInitializableImplementationTypes.Contains(implementationType))
+            {
+                return true;
+            }
+
+            if (typeof(TEntryPoint) == typeof(IStartable)
+                && settings.ExcludedStartableImplementationTypes.Contains(implementationType))
             {
                 return true;
             }

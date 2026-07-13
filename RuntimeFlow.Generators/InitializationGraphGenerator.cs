@@ -19,7 +19,12 @@ namespace RuntimeFlow.Generators
         private const string ContentStartupStageMarkerInterface = "RuntimeFlow.Contexts.IContentStartupInitializableService";
         private const string SessionStartupStageMarkerInterface = "RuntimeFlow.Contexts.ISessionStartupInitializableService";
         private const string UiStartupStageMarkerInterface = "RuntimeFlow.Contexts.IUiStartupInitializableService";
-        private const string GraphRulesVersion = "compiled-constructor-v3";
+        private const string GameContextType = "RuntimeFlow.Contexts.GameContextType";
+        private const string DependsOnAttribute = "RuntimeFlow.Contexts.DependsOnAttribute";
+        private const string GenerateGraphAttributeMetadataName = "RuntimeFlow.Contexts.GenerateRuntimeFlowInitializationGraphAttribute";
+        private const string EntryPointsStartupPhaseType = "RuntimeFlow.Contexts.RuntimeFlowVContainerEntryPointsStartupPhase";
+        private const string SessionSyncEntryPointsBootstrapServiceType = "RuntimeFlow.Contexts.IRuntimeFlowSessionSyncEntryPointsBootstrapService";
+        private const string GraphRulesVersion = "compiled-explicit-dependencies-v4";
 
         private static readonly string[] MarkerOnlyAsyncContractInterfaces =
         {
@@ -41,6 +46,9 @@ namespace RuntimeFlow.Generators
             context.RegisterSourceOutput(context.CompilationProvider, static (spc, compilation) =>
             {
                 var model = BuildModel(compilation, spc);
+                if (model == null)
+                    return;
+
                 spc.AddSource("CompiledInitializationGraph.g.cs", SourceText.From(Render(model), Encoding.UTF8));
             });
         }

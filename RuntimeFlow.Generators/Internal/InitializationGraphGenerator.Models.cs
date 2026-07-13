@@ -62,6 +62,8 @@ namespace RuntimeFlow.Generators
                 INamedTypeSymbol? sessionMarker,
                 INamedTypeSymbol? sceneMarker,
                 INamedTypeSymbol? moduleMarker,
+                INamedTypeSymbol? gameContextTypeSymbol,
+                INamedTypeSymbol? generateGraphAttribute,
                 IReadOnlyCollection<INamedTypeSymbol> markerOnlyAsyncContracts)
             {
                 AsyncInitializable = asyncInitializable;
@@ -69,6 +71,8 @@ namespace RuntimeFlow.Generators
                 SessionMarker = sessionMarker;
                 SceneMarker = sceneMarker;
                 ModuleMarker = moduleMarker;
+                GameContextTypeSymbol = gameContextTypeSymbol;
+                GenerateGraphAttribute = generateGraphAttribute;
                 MarkerOnlyAsyncContracts = markerOnlyAsyncContracts;
             }
 
@@ -77,8 +81,13 @@ namespace RuntimeFlow.Generators
             public INamedTypeSymbol? SessionMarker { get; }
             public INamedTypeSymbol? SceneMarker { get; }
             public INamedTypeSymbol? ModuleMarker { get; }
+            public INamedTypeSymbol? GameContextTypeSymbol { get; }
+            public INamedTypeSymbol? GenerateGraphAttribute { get; }
             public IReadOnlyCollection<INamedTypeSymbol> MarkerOnlyAsyncContracts { get; }
-            public bool IsValid => AsyncInitializable != null;
+            public bool IsValid =>
+                AsyncInitializable != null
+                && GameContextTypeSymbol != null
+                && GenerateGraphAttribute != null;
 
             public bool IsMarkerOnlyAsyncContract(INamedTypeSymbol type)
             {
@@ -94,6 +103,8 @@ namespace RuntimeFlow.Generators
                     compilation.GetTypeByMetadataName(SessionMarkerInterface),
                     compilation.GetTypeByMetadataName(SceneMarkerInterface),
                     compilation.GetTypeByMetadataName(ModuleMarkerInterface),
+                    compilation.GetTypeByMetadataName(GameContextType),
+                    compilation.GetTypeByMetadataName(GenerateGraphAttributeMetadataName),
                     MarkerOnlyAsyncContractInterfaces
                         .Select(compilation.GetTypeByMetadataName)
                         .Where(symbol => symbol != null)

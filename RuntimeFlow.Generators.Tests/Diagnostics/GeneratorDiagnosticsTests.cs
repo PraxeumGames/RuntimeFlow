@@ -165,6 +165,94 @@ public sealed class GeneratorDiagnosticsTests
     }
 
     [Test]
+    public void NoRuntimeFlowContracts_DoesNotEmitGraph()
+    {
+        const string source = """
+            public sealed class PlainUnityAssemblyType { }
+            """;
+
+        var (diagnostics, generatedSources, outputDiagnostics) =
+            GeneratorTestHost.RunGeneratorWithCompilationDiagnostics(source);
+
+        Assert.That(diagnostics.Any(d => d.Id.StartsWith("RF")), Is.False);
+        Assert.That(generatedSources.ContainsKey("CompiledInitializationGraph.g.cs"), Is.False);
+        Assert.That(outputDiagnostics.Any(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error), Is.False);
+    }
+
+    [Test]
+    public void RuntimeFlowContractsWithoutAssemblyOptIn_DoesNotEmitGraph()
+    {
+        const string source = """
+            namespace RuntimeFlow.Contexts
+            {
+                public enum GameContextType { Global, Session, Scene, Module }
+                public interface IAsyncInitializableService { }
+                public interface IGlobalInitializableService : IAsyncInitializableService { }
+                public interface ISessionInitializableService : IAsyncInitializableService { }
+
+                [System.AttributeUsage(System.AttributeTargets.Assembly)]
+                public sealed class GenerateRuntimeFlowInitializationGraphAttribute : System.Attribute { }
+            }
+
+            public interface IGlobalSvc : RuntimeFlow.Contexts.IGlobalInitializableService { }
+            public sealed class GlobalSvc : IGlobalSvc { }
+            """;
+
+        var (diagnostics, generatedSources, outputDiagnostics) =
+            GeneratorTestHost.RunGeneratorWithCompilationDiagnostics(source);
+
+        Assert.That(diagnostics.Any(d => d.Id.StartsWith("RF")), Is.False);
+        Assert.That(generatedSources.ContainsKey("CompiledInitializationGraph.g.cs"), Is.False);
+        Assert.That(outputDiagnostics.Any(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error), Is.False);
+    }
+
+    [Test]
+    public void MissingGameContextType_DoesNotEmitGraph()
+    {
+        const string source = """
+            namespace RuntimeFlow.Contexts
+            {
+                public interface IAsyncInitializableService { }
+                public interface IGlobalInitializableService : IAsyncInitializableService { }
+            }
+
+            public interface IGlobalSvc : RuntimeFlow.Contexts.IGlobalInitializableService { }
+            public sealed class GlobalSvc : IGlobalSvc { }
+            """;
+
+        var (diagnostics, generatedSources, outputDiagnostics) =
+            GeneratorTestHost.RunGeneratorWithCompilationDiagnostics(source);
+
+        Assert.That(diagnostics.Any(d => d.Id.StartsWith("RF")), Is.False);
+        Assert.That(generatedSources.ContainsKey("CompiledInitializationGraph.g.cs"), Is.False);
+        Assert.That(outputDiagnostics.Any(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error), Is.False);
+    }
+
+    [Test]
+    public void PrivateNestedImplementationType_GeneratedSourceCompiles()
+    {
+        const string source = """
+            using RuntimeFlow.Contexts;
+
+            public sealed class TestHost
+            {
+                public interface IHiddenSessionService : ISessionInitializableService { }
+
+                private sealed class HiddenSessionService : IHiddenSessionService { }
+            }
+            """;
+
+        var (diagnostics, generatedSources, outputDiagnostics) =
+            GeneratorTestHost.RunGeneratorWithCompilationDiagnostics(GeneratorTestHost.CommonStubs, source);
+
+        Assert.That(diagnostics.Any(d => d.Id.StartsWith("RF")), Is.False);
+
+        var content = generatedSources["CompiledInitializationGraph.g.cs"];
+        Assert.That(content, Does.Contain("ResolveType(\"GeneratorTestAssembly\", \"TestHost+HiddenSessionService\")"));
+        Assert.That(outputDiagnostics.Any(d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error), Is.False);
+    }
+
+    [Test]
     public void StageMarkerOnlyImplementations_DoNotBecomeGraphServiceContracts()
     {
         const string source = """
@@ -203,5 +291,73 @@ public sealed class GeneratorDiagnosticsTests
         Assert.That(content, Does.Contain("IMyPlatformService"));
         Assert.That(content, Does.Contain("MyPlatformService"));
         Assert.That(content, Does.Contain("GameContextType.Session"));
+    }
+
+    [Test]
+    public void DependsOnAttribute_GeneratesExplicitDependency()
+    {
+        const string source = """
+            using RuntimeFlow.Contexts;
+
+            public interface ILocalizationSetupService : ISessionInitializableService { }
+            public interface INavigatorStartupService : ISessionInitializableService { }
+
+            public class LocalizationSetupService : ILocalizationSetupService { }
+
+            [DependsOn(typeof(ILocalizationSetupService))]
+            public class NavigatorStartupService : INavigatorStartupService { }
+            """;
+
+        var (diagnostics, generatedSources) = GeneratorTestHost.RunGenerator(GeneratorTestHost.CommonStubs, source);
+
+        Assert.That(diagnostics.Any(d => d.Id.StartsWith("RF")), Is.False);
+
+        var content = generatedSources["CompiledInitializationGraph.g.cs"];
+        Assert.That(content, Does.Contain("typeof(global::ILocalizationSetupService)"));
+    }
+
+    [Test]
+    public void DependsOnAttribute_AllowsConcreteMarkerOnlyDependency()
+    {
+        const string source = """
+            using RuntimeFlow.Contexts;
+
+            public interface INavigatorStartupService : ISessionInitializableService { }
+
+            public class LocalizationSetupService : ISessionInitializableService { }
+
+            [DependsOn(typeof(LocalizationSetupService))]
+            public class NavigatorStartupService : INavigatorStartupService { }
+            """;
+
+        var (diagnostics, generatedSources) = GeneratorTestHost.RunGenerator(GeneratorTestHost.CommonStubs, source);
+
+        Assert.That(diagnostics.Any(d => d.Id.StartsWith("RF")), Is.False);
+
+        var content = generatedSources["CompiledInitializationGraph.g.cs"];
+        Assert.That(content, Does.Contain("typeof(global::LocalizationSetupService)"));
+        Assert.That(content, Does.Not.Contain("new Node(typeof(global::LocalizationSetupService)"));
+    }
+
+    [Test]
+    public void DependsOnAttribute_GeneratesEntryPointCompletionMarkerDependencies()
+    {
+        const string source = """
+            using RuntimeFlow.Contexts;
+
+            public interface INavigatorStartupService : ISessionInitializableService { }
+
+            [DependsOn(typeof(RuntimeFlowVContainerEntryPointsStartupPhase))]
+            [DependsOn(typeof(IRuntimeFlowSessionSyncEntryPointsBootstrapService))]
+            public class NavigatorStartupService : INavigatorStartupService { }
+            """;
+
+        var (diagnostics, generatedSources) = GeneratorTestHost.RunGenerator(GeneratorTestHost.CommonStubs, source);
+
+        Assert.That(diagnostics.Any(d => d.Id.StartsWith("RF")), Is.False);
+
+        var content = generatedSources["CompiledInitializationGraph.g.cs"];
+        Assert.That(content, Does.Contain("typeof(global::RuntimeFlow.Contexts.RuntimeFlowVContainerEntryPointsStartupPhase)"));
+        Assert.That(content, Does.Contain("typeof(global::RuntimeFlow.Contexts.IRuntimeFlowSessionSyncEntryPointsBootstrapService)"));
     }
 }

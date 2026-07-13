@@ -18,14 +18,19 @@ namespace RuntimeFlow.Contexts
 
     public sealed class RuntimeRestartRequest
     {
-        public RuntimeRestartRequest(string? reasonCode = null, string? diagnostic = null)
+        public RuntimeRestartRequest(
+            string? reasonCode = null,
+            string? diagnostic = null,
+            bool allowBeforeReady = false)
         {
             ReasonCode = Normalize(reasonCode);
             Diagnostic = Normalize(diagnostic);
+            AllowBeforeReady = allowBeforeReady;
         }
 
         public string? ReasonCode { get; }
         public string? Diagnostic { get; }
+        public bool AllowBeforeReady { get; }
 
         private static string? Normalize(string? value)
         {

@@ -7,7 +7,7 @@ namespace RuntimeFlow.Contexts
 {
     internal static class InitializationGraphRules
     {
-        internal const string Version = "compiled-constructor-v3";
+        internal const string Version = "compiled-explicit-dependencies-v4";
 
         /// <summary>
         /// Checks if a constructor parameter type represents an async initialization dependency.
@@ -21,12 +21,20 @@ namespace RuntimeFlow.Contexts
 
         /// <summary>
         /// Checks if a type declared via <see cref="DependsOnAttribute"/> is a valid initialization dependency.
-        /// Accepts both interfaces and concrete classes that implement <see cref="IAsyncInitializableService"/>.
+        /// Accepts both interfaces and concrete classes that implement <see cref="IAsyncInitializableService"/>,
+        /// plus RuntimeFlow-owned startup phase completion markers.
         /// This allows <c>[DependsOn(typeof(MetaClientRunner))]</c> without requiring a marker interface.
         /// </summary>
         internal static bool IsExplicitDependencyType(Type serviceType)
         {
-            return InitializationContractCatalog.IsExplicitDependencyType(serviceType);
+            return InitializationContractCatalog.IsExplicitDependencyType(serviceType)
+                   || IsEntryPointCompletionDependencyType(serviceType);
+        }
+
+        internal static bool IsEntryPointCompletionDependencyType(Type serviceType)
+        {
+            return serviceType == typeof(RuntimeFlowVContainerEntryPointsStartupPhase)
+                   || serviceType == typeof(IRuntimeFlowSessionSyncEntryPointsBootstrapService);
         }
 
         internal static IReadOnlyCollection<Type> ResolveConstructorDependencies(Type implementationType)

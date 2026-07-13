@@ -7,13 +7,14 @@ namespace RuntimeFlow.Generators
 {
     public sealed partial class InitializationGraphGenerator
     {
-        private static GenerationModel BuildModel(Compilation compilation, SourceProductionContext context)
+        private static GenerationModel? BuildModel(Compilation compilation, SourceProductionContext context)
         {
             var symbols = GeneratorSymbols.Create(compilation);
             if (!symbols.IsValid)
-            {
-                return new GenerationModel(Array.Empty<ServiceNode>());
-            }
+                return null;
+
+            if (!IsGraphGenerationEnabled(compilation, symbols))
+                return null;
 
             var nodes = new Dictionary<INamedTypeSymbol, ServiceNode>(SymbolEqualityComparer.Default);
             foreach (var implementation in EnumerateNamedTypes(compilation.Assembly.GlobalNamespace)
@@ -44,42 +45,56 @@ namespace RuntimeFlow.Generators
                 }
             }
 
+            var implementationToNode = nodes.Values
+                .GroupBy(node => node.ImplementationType, SymbolEqualityComparer.Default)
+                .ToDictionary(group => group.Key, group => group.First(), SymbolEqualityComparer.Default);
+
             foreach (var node in nodes.Values)
             {
                 var constructor = SelectConstructor(node.ImplementationType);
-                if (constructor == null)
-                    continue;
+                var dependencies = constructor == null
+                    ? Enumerable.Empty<INamedTypeSymbol>()
+                    : constructor.Parameters
+                        .Select(parameter => parameter.Type)
+                        .OfType<INamedTypeSymbol>()
+                        .Where(parameterType => IsAsyncDependency(parameterType, symbols));
 
-                foreach (var parameter in constructor.Parameters)
+                dependencies = dependencies
+                    .Concat(ResolveExplicitAttributeDependencies(node.ImplementationType, symbols))
+                    .Distinct(SymbolEqualityComparer.Default)
+                    .Cast<INamedTypeSymbol>();
+
+                foreach (var dependencyType in dependencies)
                 {
-                    if (parameter.Type is not INamedTypeSymbol parameterType)
-                        continue;
-                    if (!IsAsyncDependency(parameterType, symbols))
-                        continue;
-
-                    if (!nodes.TryGetValue(parameterType, out var dependencyNode))
+                    if (!nodes.TryGetValue(dependencyType, out var dependencyNode))
                     {
+                        if (IsEntryPointCompletionDependency(dependencyType))
+                        {
+                            node.AddDependency(dependencyType);
+                            continue;
+                        }
+
+                        if (dependencyType.TypeKind == TypeKind.Class)
+                        {
+                            if (implementationToNode.TryGetValue(dependencyType, out dependencyNode))
+                            {
+                                AddDependency(node, dependencyType, dependencyNode, context);
+                                continue;
+                            }
+
+                            node.AddDependency(dependencyType);
+                            continue;
+                        }
+
                         context.ReportDiagnostic(Diagnostic.Create(
                             Diagnostics.MissingDependency,
                             node.ServiceType.Locations.FirstOrDefault(),
                             node.ServiceType.ToDisplayString(),
-                            parameterType.ToDisplayString()));
+                            dependencyType.ToDisplayString()));
                         continue;
                     }
 
-                    if ((int)dependencyNode.Scope > (int)node.Scope)
-                    {
-                        context.ReportDiagnostic(Diagnostic.Create(
-                            Diagnostics.ScopeViolation,
-                            node.ServiceType.Locations.FirstOrDefault(),
-                            node.ServiceType.ToDisplayString(),
-                            dependencyNode.ServiceType.ToDisplayString(),
-                            dependencyNode.Scope.ToString(),
-                            node.Scope.ToString()));
-                        continue;
-                    }
-
-                    node.AddDependency(parameterType);
+                    AddDependency(node, dependencyType, dependencyNode, context);
                 }
             }
 
@@ -88,6 +103,35 @@ namespace RuntimeFlow.Generators
                 .OrderBy(node => node.Scope)
                 .ThenBy(node => node.ServiceType.ToDisplayString())
                 .ToArray());
+        }
+
+        private static bool IsGraphGenerationEnabled(Compilation compilation, GeneratorSymbols symbols)
+        {
+            return compilation.Assembly.GetAttributes()
+                .Any(attribute => SymbolEqualityComparer.Default.Equals(
+                    attribute.AttributeClass,
+                    symbols.GenerateGraphAttribute));
+        }
+
+        private static void AddDependency(
+            ServiceNode node,
+            INamedTypeSymbol dependencyType,
+            ServiceNode dependencyNode,
+            SourceProductionContext context)
+        {
+            if ((int)dependencyNode.Scope > (int)node.Scope)
+            {
+                context.ReportDiagnostic(Diagnostic.Create(
+                    Diagnostics.ScopeViolation,
+                    node.ServiceType.Locations.FirstOrDefault(),
+                    node.ServiceType.ToDisplayString(),
+                    dependencyNode.ServiceType.ToDisplayString(),
+                    dependencyNode.Scope.ToString(),
+                    node.Scope.ToString()));
+                return;
+            }
+
+            node.AddDependency(dependencyType);
         }
 
         private static void DetectCycles(

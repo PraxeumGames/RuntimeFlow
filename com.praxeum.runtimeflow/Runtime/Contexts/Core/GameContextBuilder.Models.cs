@@ -184,7 +184,11 @@ namespace RuntimeFlow.Contexts
         public Type ProgressServiceType => typeof(RuntimeFlowVContainerEntryPointsStartupPhase);
     }
 
-    internal sealed class RuntimeFlowVContainerEntryPointsStartupPhase
+    public interface IRuntimeFlowSessionSyncEntryPointsBootstrapService
+    {
+    }
+
+    public sealed class RuntimeFlowVContainerEntryPointsStartupPhase
     {
         private RuntimeFlowVContainerEntryPointsStartupPhase()
         {

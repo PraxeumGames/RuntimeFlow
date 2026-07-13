@@ -9,7 +9,7 @@ namespace RuntimeFlow.Contexts.Generated
 {
     internal static class CompiledInitializationGraph
     {
-        internal const string RuleVersion = "compiled-constructor-v3";
+        internal const string RuleVersion = "compiled-explicit-dependencies-v4";
 
         internal sealed class Node
         {

@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-13
+
+### Added
+- Added per-assembly opt-in for compiled initialization graphs through `GenerateRuntimeFlowInitializationGraphAttribute`.
+- Added source-generator and runtime support for explicit `[DependsOn]` dependencies, including concrete marker-only async initializers and VContainer entry-point completion markers.
+- Added inherited VContainer `IInitializable`/`IStartable` interface discovery and independently configurable startable exclusions.
+- Added additive entry-point settings contributions so test or child scopes can exclude production entry points without replacing preset settings.
+- Added startup-time restart support that publishes the active pipeline before session async initialization and permits controlled restart replay while the runtime is initializing.
+
+### Changed
+- Compiled graph generation now runs only for assemblies explicitly marked with `GenerateRuntimeFlowInitializationGraphAttribute`.
+- Compiled graph rendering can resolve inaccessible nested implementation types without emitting invalid direct `typeof(...)` references.
+- Session initialization state is seeded from the recorded successful initialization ledger instead of rediscovering registrations from parent scopes.
+- Restarted startup flows now wait for the replacement replay and report the original run as completed only after the restart lifecycle reaches `Completed`.
+- The packaged analyzer now targets Roslyn 4.3 for Unity compatibility.
+
+### Fixed
+- Fixed scope-local VContainer entry-point discovery dropping explicitly supplied registration lists when their registrations originated in a parent resolver.
+- Fixed VContainer entry-point completion markers being recorded but silently discarded from runtime and compiled dependency graphs.
+- Fixed direct and inherited VContainer entry-point registrations not being deduplicated consistently.
+
 ## [0.3.1] - 2026-07-07
 
 ### Fixed
