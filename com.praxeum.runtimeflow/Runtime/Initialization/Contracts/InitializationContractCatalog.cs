@@ -27,7 +27,14 @@ namespace RuntimeFlow.Contexts
 
         private static readonly Type[] MarkerOnlyAsyncInitializationTypeArray =
             DiscoverableAsyncInitializationMarkerTypeArray
-                .Concat(new[] { typeof(IAsyncInitializableService) })
+                .Concat(new[]
+                {
+                    typeof(IAsyncInitializableService),
+                    // Cross-cutting trait, never a recorded service type: a service combines it with a scope
+                    // marker and is discovered/keyed under its own specific interface. Excluding it here keeps
+                    // multiple user-interaction-gated services from colliding on this shared interface.
+                    typeof(IUserInteractionGatedInitializableService)
+                })
                 .Distinct()
                 .ToArray();
 

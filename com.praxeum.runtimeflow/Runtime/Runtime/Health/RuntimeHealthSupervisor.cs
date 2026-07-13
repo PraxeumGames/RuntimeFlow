@@ -61,6 +61,13 @@ namespace RuntimeFlow.Contexts
             if (_options.ServiceTimeoutOverrides.TryGetValue(serviceType, out var overrideTimeout))
                 return overrideTimeout;
 
+            // A service that blocks on user/player interaction (consent, migration, progress choice, a modal
+            // dialog) runs for an unbounded time by design. Exempt it from the watchdog so a slow human does
+            // not look like an unhealthy service and tear down the context mid-interaction. An explicit
+            // ServiceTimeoutOverrides entry above still wins, so a specific service can opt back into a bound.
+            if (typeof(IUserInteractionGatedInitializableService).IsAssignableFrom(serviceType))
+                return Timeout.InfiniteTimeSpan;
+
             var expected = _options.MinimumExpectedServiceDuration;
             if (_baselineStore.TryGetBaseline(_deviceProfile, scope, serviceType, out var baseline))
             {

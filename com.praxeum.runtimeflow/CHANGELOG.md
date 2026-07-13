@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-13
+
+### Added
+- Added `IUserInteractionGatedInitializableService` marker for async-init services whose `InitializeAsync`
+  legitimately blocks on user/player interaction (consent, migration, progress choice, or any modal dialog)
+  for an unbounded time. `RuntimeHealthSupervisor.GetServiceTimeout` returns an infinite timeout for any
+  service implementing it, so the pipeline is no longer torn down mid-dialog by the ~5s health watchdog. This
+  replaces per-service `ServiceTimeoutOverrides` entries for interaction-gated services. The marker is
+  marker-only, so any number of services may implement it without an initializer-discovery collision, and an
+  explicit `ServiceTimeoutOverrides` entry still takes precedence.
+
 ## [0.4.0] - 2026-07-13
 
 ### Added

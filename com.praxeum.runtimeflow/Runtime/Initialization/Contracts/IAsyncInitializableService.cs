@@ -20,6 +20,21 @@ namespace RuntimeFlow.Contexts
     /// <summary>Marker for services initialized during the module scope phase.</summary>
     public interface IModuleInitializableService : IAsyncInitializableService { }
 
+    /// <summary>
+    /// Cross-cutting trait marker for a service whose <see cref="IAsyncInitializableService.InitializeAsync"/>
+    /// legitimately blocks on user/player interaction (consent, migration, progress choice, account conflict,
+    /// or any modal dialog) for an unbounded amount of time.
+    ///
+    /// Such a service is exempt from the health watchdog: <see cref="RuntimeHealthSupervisor.GetServiceTimeout"/>
+    /// returns <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> for it, so the pipeline is not torn down
+    /// while the player is looking at the dialog. This is orthogonal to the scope markers — a service combines
+    /// this trait with its scope marker, e.g. <c>: ISessionInitializableService, IUserInteractionGatedInitializableService</c>.
+    ///
+    /// It is a marker-only type (see <see cref="InitializationContractCatalog"/>): RuntimeFlow never records a
+    /// service under this interface, so any number of services may implement it without a discovery collision.
+    /// </summary>
+    public interface IUserInteractionGatedInitializableService : IAsyncInitializableService { }
+
     /// <summary>Marker for services initialized during session startup stages.</summary>
     public interface IStartupStageInitializableService : ISessionInitializableService { }
 
