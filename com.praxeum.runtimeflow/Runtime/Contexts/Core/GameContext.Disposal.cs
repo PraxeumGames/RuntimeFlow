@@ -40,6 +40,13 @@ namespace RuntimeFlow.Contexts
         /// </summary>
         public async ValueTask DisposeAsync(CancellationToken cancellationToken = default)
         {
+            if (ExecutionScheduler == null && HasPendingAsyncDisposals())
+            {
+                throw new InvalidOperationException(
+                    "An ExecutionScheduler is required to dispose async-disposable services. " +
+                    "Create the context through GameContextBuilder or set ExecutionScheduler explicitly.");
+            }
+
             if (_disposed) return;
             _disposed = true;
 

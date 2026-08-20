@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using VContainer;
+using VContainer.Diagnostics;
 using VContainer.Internal;
 
 namespace RuntimeFlow.Contexts
@@ -43,6 +44,7 @@ namespace RuntimeFlow.Contexts
         private Registry? _registry;
         private bool _initialized;
         private bool _disposed;
+        private DiagnosticsCollector _diagnostics = new($"GameContext-{Guid.NewGuid():N}");
 
         public event Action? OnBeforeInitialize;
         public event Action? OnInitialized;
@@ -51,7 +53,8 @@ namespace RuntimeFlow.Contexts
 
         /// <summary>
         /// Scheduler used for teardown affinity. Set by the GameContextBuilder on every
-        /// context it creates; contexts built outside the builder run inline.
+        /// context it creates. Required to dispose async-disposable services; contexts
+        /// without a scheduler may only dispose synchronously-disposable services.
         /// </summary>
         internal IInitializationExecutionScheduler? ExecutionScheduler { get; set; }
 
@@ -75,12 +78,6 @@ namespace RuntimeFlow.Contexts
         public GameContext(IGameContext? parent = null)
         {
             _parent = parent;
-        }
-
-        public IGameContext CreateChildContext()
-        {
-            var child = new GameContext(this);
-            return child;
         }
 
         /// <summary>

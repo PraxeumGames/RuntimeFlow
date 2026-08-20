@@ -21,8 +21,13 @@ namespace RuntimeFlow.Contexts
         /// <summary>
         /// Real VContainer diagnostics integration: registrations are traced when the
         /// registry is built and every resolve is traced with call depth and timing.
+        /// A <c>null</c> assignment resets to a fresh collector so resolution never breaks.
         /// </summary>
-        public DiagnosticsCollector Diagnostics { get; set; } = new($"GameContext-{Guid.NewGuid():N}");
+        public DiagnosticsCollector Diagnostics
+        {
+            get => _diagnostics;
+            set => _diagnostics = value ?? new($"GameContext-{Guid.NewGuid():N}");
+        }
 
         /// <summary>
         /// Resolves a registration from this context's own graph. Registrations obtained
@@ -78,18 +83,18 @@ namespace RuntimeFlow.Contexts
         }
 
         /// <summary>
-        /// Scope creation is the builder's job in RuntimeFlow. A context is created with
-        /// <see cref="CreateChildContext"/> and activated through the pipeline.
+        /// Scope creation is the builder's job in RuntimeFlow: scopes are created and
+        /// activated by <c>GameContextBuilder</c>, not by individual contexts.
         /// </summary>
         IScopedObjectResolver IObjectResolver.CreateScope(Action<IContainerBuilder> installation)
         {
             throw new NotSupportedException(
-                "GameContext owns scope lifecycle; use GameContext.CreateChildContext() and the RuntimeFlow pipeline instead.");
+                "GameContext owns scope lifecycle; scopes are created by GameContextBuilder and activated through the RuntimeFlow pipeline.");
         }
 
         private object ResolveRegistration(Registration registration)
         {
-            return Diagnostics.TraceResolve(registration, ResolveRegistrationCore);
+            return _diagnostics.TraceResolve(registration, ResolveRegistrationCore);
         }
 
         private object ResolveRegistrationCore(Registration registration)

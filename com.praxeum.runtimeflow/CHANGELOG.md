@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Changed
+- The async lifecycle is now part of the public contract: `IGameContext` inherits
+  `IAsyncDisposable`, so consumers holding the interface can await `DisposeAsync()` instead of
+  being forced into the sync-only `Dispose()` contract.
+- Disposing async-disposable services requires an explicit scheduler: a context created outside
+  `GameContextBuilder` with no `ExecutionScheduler` throws `InvalidOperationException` from
+  `DisposeAsync` when async-disposable services are present, instead of silently falling back to
+  inline execution.
 - Reworked the DI container into a lifecycle-native container: `GameContext` is now its own
   `IObjectResolver`. Instead of wrapping a private VContainer `Container`, each context builds a
   flat VContainer `Registry` and resolves registrations directly through itself, so the context's
@@ -41,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 - Removed `RuntimePipeline.CreateFromResolver` and `ResolverBackedGameContext`: pipelines are now
   built from a global context (`Create`, `CreateFromGlobalContext`) only.
+- Removed `IGameContext.CreateChildContext`: scopes are created and owned by the RuntimeFlow
+  pipeline; direct child-context creation is no longer part of the public surface.
 - Removed the custom `RuntimeFlowInstanceProvider`/registration-builder plumbing, the
   store-level ownership/disposal bookkeeping that mirrored VContainer lifetimes, and the
   `GameContextScopeInitializationLedger`.

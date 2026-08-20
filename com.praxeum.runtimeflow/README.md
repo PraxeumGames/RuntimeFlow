@@ -140,12 +140,16 @@ Inside `IRuntimeFlowScenario.ExecuteAsync(...)`, you can:
 ### `GameContext` lifecycle
 
 `GameContext` is a lifecycle-native container: it is its own `IObjectResolver`, owns every
-instance it registers or constructs, and disposes them itself.
+instance it registers or constructs, and disposes them itself. The async lifecycle is part of the
+`IGameContext` contract (`IAsyncDisposable`), so it is reachable through the interface.
 
 - `await context.DisposeAsync()` is the native teardown: async-disposable services are disposed
   in reverse initialization order (with their declared thread affinity), then every
   registered/constructed instance in reverse order. Failures are aggregated into an
   `AggregateException`.
+- Async-disposable services require an explicit execution scheduler; a context created outside
+  `GameContextBuilder` without a scheduler throws from `DisposeAsync` when async-disposable
+  services are present instead of silently falling back to inline execution.
 - Synchronous `context.Dispose()` throws `NotSupportedException` when the context owns
   async-disposable services — their teardown must not be silently skipped. Use it only for
   contexts without asynchronous services (for example plain instance holders).

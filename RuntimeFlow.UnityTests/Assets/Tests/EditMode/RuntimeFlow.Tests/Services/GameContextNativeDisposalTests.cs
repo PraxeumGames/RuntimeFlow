@@ -81,7 +81,10 @@ namespace RuntimeFlow.Tests
         public async Task DisposeAsync_DisposesInitializedServicesInReverseOrder()
         {
             var recorder = new DisposalRecorder();
-            var context = new GameContext();
+            var context = new GameContext
+            {
+                ExecutionScheduler = InlineInitializationExecutionScheduler.Instance
+            };
             context.RegisterInstance(recorder);
             context.Register(typeof(IAsyncServiceA), typeof(AsyncServiceA));
             context.Register(typeof(IAsyncServiceB), typeof(AsyncServiceB));
@@ -108,7 +111,10 @@ namespace RuntimeFlow.Tests
         public async Task DisposeAsync_SameInstanceUnderMultipleServiceTypes_IsDisposedExactlyOnce()
         {
             var recorder = new DisposalRecorder();
-            var context = new GameContext();
+            var context = new GameContext
+            {
+                ExecutionScheduler = InlineInitializationExecutionScheduler.Instance
+            };
             context.RegisterInstance(recorder);
             context.Register(typeof(IAsyncServiceA), typeof(SharedAsyncService));
             context.Register(typeof(IAsyncServiceB), typeof(SharedAsyncService));
@@ -129,7 +135,10 @@ namespace RuntimeFlow.Tests
         public void Dispose_Sync_WhenAsyncServicesPresent_ThrowsNotSupportedException()
         {
             var recorder = new DisposalRecorder();
-            var context = new GameContext();
+            var context = new GameContext
+            {
+                ExecutionScheduler = InlineInitializationExecutionScheduler.Instance
+            };
             context.RegisterInstance(recorder);
             context.Register(typeof(IAsyncServiceA), typeof(AsyncServiceA));
             context.Initialize();
@@ -188,6 +197,62 @@ namespace RuntimeFlow.Tests
 
             await context.DisposeAsync();
 
+            Assert.That(tracked.DisposeCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task DisposeAsync_ThroughIGameContext_DisposesInReverseOrder()
+        {
+            var recorder = new DisposalRecorder();
+            var context = new GameContext
+            {
+                ExecutionScheduler = InlineInitializationExecutionScheduler.Instance
+            };
+            context.RegisterInstance(recorder);
+            context.Register(typeof(IAsyncServiceA), typeof(AsyncServiceA));
+            context.Register(typeof(IAsyncServiceB), typeof(AsyncServiceB));
+            context.Initialize();
+
+            RecordInitializer(context, typeof(IAsyncServiceA), typeof(AsyncServiceA));
+            RecordInitializer(context, typeof(IAsyncServiceB), typeof(AsyncServiceB));
+
+            context.Resolve(typeof(IAsyncServiceA));
+            context.Resolve(typeof(IAsyncServiceB));
+
+            IGameContext asInterface = context;
+            await asInterface.DisposeAsync();
+
+            Assert.That(
+                recorder.Calls,
+                Is.EqualTo(new[] { "dispose:B", "dispose:A" }),
+                "The async lifecycle must be reachable through the IGameContext contract.");
+        }
+
+        [Test]
+        public void DisposeAsync_WithoutExecutionScheduler_WhenAsyncServicesPresent_Throws()
+        {
+            var recorder = new DisposalRecorder();
+            var context = new GameContext();
+            context.RegisterInstance(recorder);
+            context.Register(typeof(IAsyncServiceA), typeof(AsyncServiceA));
+            context.Initialize();
+            RecordInitializer(context, typeof(IAsyncServiceA), typeof(AsyncServiceA));
+            context.Resolve(typeof(IAsyncServiceA));
+
+            Assert.ThrowsAsync<InvalidOperationException>(
+                async () => await context.DisposeAsync(),
+                "Disposing async-disposable services requires an explicit ExecutionScheduler; no silent fallback is allowed.");
+        }
+
+        [Test]
+        public void DisposeAsync_WithoutExecutionScheduler_WithoutAsyncServices_DoesNotThrow()
+        {
+            var tracked = new TrackingDisposable();
+            var context = new GameContext();
+            context.RegisterInstance(typeof(TrackingDisposable), tracked);
+            context.Initialize();
+
+            Assert.DoesNotThrowAsync(async () => await context.DisposeAsync());
             Assert.That(tracked.DisposeCount, Is.EqualTo(1));
         }
 

@@ -5,7 +5,7 @@ using VContainer;
 namespace RuntimeFlow.Contexts
 {
     /// <summary>Represents a scoped DI context that manages service registration, resolution, and lifecycle.</summary>
-    public interface IGameContext
+    public interface IGameContext : IAsyncDisposable
     {
         void Register<TService, TImplementation>() where TImplementation : TService;
         void Register(Type serviceType, Type implementationType);
@@ -15,7 +15,7 @@ namespace RuntimeFlow.Contexts
         void RegisterInstance(object instance, IReadOnlyCollection<Type> serviceTypes);
         void ConfigureContainer(Action<IContainerBuilder> configure);
         bool IsRegistered(Type serviceType, bool includeInterfaceTypes = true);
-        /// <summary>The underlying VContainer resolver for this context's scope.</summary>
+        /// <summary>This context is its own resolver.</summary>
         VContainer.IObjectResolver Resolver { get; }
         TService Resolve<TService>();
         object Resolve(Type serviceType);
@@ -24,6 +24,10 @@ namespace RuntimeFlow.Contexts
         event System.Action? OnBeforeDispose;
         event System.Action? OnDisposed;
         void Initialize();
+        /// <summary>
+        /// Synchronously disposes the context. Throws <see cref="NotSupportedException"/> when the context
+        /// holds initialized async-disposable services; use <see cref="IAsyncDisposable.DisposeAsync"/> instead.
+        /// </summary>
         void Dispose();
     }
 }
