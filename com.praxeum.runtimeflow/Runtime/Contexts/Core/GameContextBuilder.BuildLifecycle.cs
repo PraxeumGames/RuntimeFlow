@@ -92,7 +92,8 @@ namespace RuntimeFlow.Contexts
                         _onGlobalInitialized,
                         initialize: true,
                         availableServices,
-                        _globalEventBus);
+                        _globalEventBus,
+                        _executionScheduler);
                     var globalTotalServices = await ExecuteInitializersAsync(
                             GameContextType.Global,
                             (GameContext)globalContext,

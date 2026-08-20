@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using VContainer;
+using VContainer.Diagnostics;
 using VContainer.Internal;
 
 namespace RuntimeFlow.Contexts
@@ -14,14 +15,18 @@ namespace RuntimeFlow.Contexts
     /// </summary>
     internal sealed class RuntimeFlowContainerBuilder : ContainerBuilder
     {
-        public Registry BuildRegistry(IObjectResolver selfResolver)
+        public Registry BuildRegistry(IObjectResolver selfResolver, DiagnosticsCollector? diagnostics)
         {
             if (selfResolver == null) throw new ArgumentNullException(nameof(selfResolver));
 
             var registrations = new List<Registration>(Count + 1);
             for (var i = 0; i < Count; i++)
             {
-                registrations.Add(this[i].Build());
+                var registrationBuilder = this[i];
+                diagnostics?.TraceRegister(new RegisterInfo(registrationBuilder));
+                var registration = registrationBuilder.Build();
+                diagnostics?.TraceBuild(registrationBuilder, registration);
+                registrations.Add(registration);
             }
 
             registrations.Add(new Registration(

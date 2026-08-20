@@ -23,7 +23,6 @@ namespace RuntimeFlow.Contexts
         private readonly IInitializationExecutionScheduler _executionScheduler;
         private readonly RuntimeHealthSupervisor _healthSupervisor;
         private readonly ILogger _logger;
-        private readonly GameContextScopeInitializationLedger _scopeInitializationLedger = new();
         private readonly ScopeTransitionEngine _scopeTransitions;
         private readonly Dictionary<Type, GameContext> _preloadedContexts = new();
         private readonly Dictionary<Type, GameContext> _additiveModuleContexts = new();

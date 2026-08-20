@@ -61,7 +61,7 @@ namespace RuntimeFlow.Contexts
                     await asyncService.InitializeAsync(cancellationToken).ConfigureAwait(false);
 
                 _lazyInitialization.MarkInitialized(serviceType);
-                RegisterInitializedServiceForScopeDisposal(entry.Scope, entry.ScopeKey, entry.Initializer);
+                entry.Context.RecordInitialized(entry.Initializer);
             }
             finally
             {

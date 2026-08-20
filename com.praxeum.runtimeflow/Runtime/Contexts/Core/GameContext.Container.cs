@@ -18,7 +18,11 @@ namespace RuntimeFlow.Contexts
         /// <summary>Identity: this context is its own resolver.</summary>
         public object ApplicationOrigin => this;
 
-        public DiagnosticsCollector Diagnostics { get; set; }
+        /// <summary>
+        /// Real VContainer diagnostics integration: registrations are traced when the
+        /// registry is built and every resolve is traced with call depth and timing.
+        /// </summary>
+        public DiagnosticsCollector Diagnostics { get; set; } = new($"GameContext-{Guid.NewGuid():N}");
 
         /// <summary>
         /// Resolves a registration from this context's own graph. Registrations obtained
@@ -85,6 +89,11 @@ namespace RuntimeFlow.Contexts
 
         private object ResolveRegistration(Registration registration)
         {
+            return Diagnostics.TraceResolve(registration, ResolveRegistrationCore);
+        }
+
+        private object ResolveRegistrationCore(Registration registration)
+        {
             switch (registration.Lifetime)
             {
                 case Lifetime.Singleton:
@@ -130,13 +139,8 @@ namespace RuntimeFlow.Contexts
             if (instance is not IDisposable)
                 return;
 
-            foreach (var owned in _ownedRegisteredInstances)
-            {
-                if (ReferenceEquals(owned, instance))
-                    return;
-            }
-
-            _ownedRegisteredInstances.Add(instance);
+            if (_ownedRegisteredInstancesLookup.Add(instance))
+                _ownedRegisteredInstances.Add(instance);
         }
 
         private void TrackOwnedResolvedInstance(object instance)
@@ -144,13 +148,8 @@ namespace RuntimeFlow.Contexts
             if (instance is not IDisposable)
                 return;
 
-            foreach (var owned in _ownedResolvedInstances)
-            {
-                if (ReferenceEquals(owned, instance))
-                    return;
-            }
-
-            _ownedResolvedInstances.Add(instance);
+            if (_ownedResolvedInstancesLookup.Add(instance))
+                _ownedResolvedInstances.Add(instance);
         }
     }
 }

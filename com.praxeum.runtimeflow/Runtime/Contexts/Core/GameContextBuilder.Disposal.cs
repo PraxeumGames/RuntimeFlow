@@ -14,15 +14,7 @@ namespace RuntimeFlow.Contexts
             if (context == null)
                 return;
 
-            await _executionScheduler.ExecuteAsync(
-                    InitializationThreadAffinity.MainThread,
-                    _ =>
-                    {
-                        context.Dispose();
-                        return Task.CompletedTask;
-                    },
-                    cancellationToken)
-                .ConfigureAwait(false);
+            await context.DisposeAsync(cancellationToken).ConfigureAwait(false);
         }
 
         private async Task DisposeContextAsync(IGameContext? context, CancellationToken cancellationToken)
@@ -57,26 +49,6 @@ namespace RuntimeFlow.Contexts
                 return;
 
             List<Exception>? exceptions = null;
-
-            try
-            {
-                await DisposeScopeServicesAsync(scope, context, cancellationToken, scopeKey).ConfigureAwait(false);
-            }
-            catch (Exception ex)
-            {
-                if (IsObjectDisposedFailure(ex))
-                {
-                    _logger.LogWarning(
-                        ex,
-                        "Ignoring disposed object failure while disposing {Scope} services.",
-                        scope);
-                }
-                else
-                {
-                    exceptions ??= new List<Exception>();
-                    exceptions.Add(ex);
-                }
-            }
 
             try
             {
@@ -159,80 +131,6 @@ namespace RuntimeFlow.Contexts
 
             _globalEventBus?.Dispose();
             _globalEventBus = null;
-        }
-
-        private void RegisterInitializedServiceForScopeDisposal(GameContextType scope, Type? scopeKey, ServiceInitializerBinding initializer)
-        {
-            _scopeInitializationLedger.RecordInitializedService(scope, scopeKey, initializer);
-        }
-
-        private async Task DisposeScopeServicesAsync(
-            GameContextType scope,
-            GameContext context,
-            CancellationToken cancellationToken,
-            Type? scopeKey = null)
-        {
-            var initOrder = _scopeInitializationLedger.GetInitializationOrder(scope, scopeKey);
-
-            var exceptions = (List<Exception>?)null;
-            var disposedTargets = new HashSet<object>(ReferenceEqualityComparer.Instance);
-
-            for (var i = (initOrder?.Count ?? 0) - 1; i >= 0; i--)
-            {
-                var initializer = initOrder![i];
-                try
-                {
-                    var resolved = context.Resolve(initializer);
-                    if (!disposedTargets.Add(resolved))
-                    {
-                        continue;
-                    }
-
-                    var affinity = resolved is IInitializationThreadAffinityProvider affinityProvider
-                        ? affinityProvider.ThreadAffinity
-                        : InitializationThreadAffinity.MainThread;
-                    if (resolved is IAsyncDisposableService disposableService)
-                    {
-                        await _executionScheduler.ExecuteAsync(
-                                affinity,
-                                token => disposableService.DisposeAsync(token),
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                        continue;
-                    }
-
-                    if (resolved is IAsyncDisposable asyncDisposable)
-                    {
-                        await _executionScheduler.ExecuteAsync(
-                                affinity,
-                                _ => asyncDisposable.DisposeAsync().AsTask(),
-                                cancellationToken)
-                            .ConfigureAwait(false);
-                        continue;
-                    }
-
-                }
-                catch (Exception ex)
-                {
-                    if (IsObjectDisposedFailure(ex))
-                    {
-                        _logger.LogWarning(
-                            ex,
-                            "Ignoring disposed service {ServiceType} during {Scope} disposal.",
-                            initializer.ServiceType.Name,
-                            scope);
-                        continue;
-                    }
-
-                    exceptions ??= new List<Exception>();
-                    exceptions.Add(ex);
-                }
-            }
-
-            _scopeInitializationLedger.RemoveScope(scope, scopeKey);
-
-            if (exceptions != null)
-                throw new AggregateException(exceptions);
         }
 
         private async Task<List<Exception>> CaptureCleanupFailuresAsync(
@@ -350,21 +248,6 @@ namespace RuntimeFlow.Contexts
             return new AggregateException(
                 $"{operationName} failed and cleanup encountered additional errors.",
                 exceptions);
-        }
-
-        private sealed class ReferenceEqualityComparer : IEqualityComparer<object>
-        {
-            public static readonly ReferenceEqualityComparer Instance = new();
-
-            public new bool Equals(object? x, object? y)
-            {
-                return ReferenceEquals(x, y);
-            }
-
-            public int GetHashCode(object obj)
-            {
-                return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
-            }
         }
 
     }

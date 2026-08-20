@@ -13,19 +13,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   flat VContainer `Registry` and resolves registrations directly through itself, so the context's
   own `Dispose()` (or async teardown) is the single owner of every spawned/registered instance.
   Scopes no longer need a parallel ownership layer to mirror container disposal.
+- `GameContext` now implements `IAsyncDisposable` and owns its native teardown:
+  `await context.DisposeAsync()` disposes async services in reverse initialization order (with
+  their declared thread affinity) and then every registered/constructed instance in reverse
+  order, aggregating failures. The context records its own initialization order as the builder
+  completes each wave, so teardown no longer depends on builder-level bookkeeping. Synchronous
+  `Dispose()` throws `NotSupportedException` when async-disposable services are present rather
+  than silently skipping their teardown.
+- Removed the builder-side initialization-order ledger: seed/replay reads the live context's
+  recorded order, and scope teardown delegates entirely to `context.DisposeAsync()`.
 - Instance registrations are tracked for disposal at registration time (disposed even if never
   resolved) and resolved services are tracked only for non-instance registrations; teardown
   disposes both in reverse order, preserving the previous disposal ordering without double-disposal.
+- Ownership tracking is now O(1) with reference-equality lookups.
 - Parent fallback now walks the context chain (`TryResolve`/`Resolve` on a context resolves from
   its own registry, then the parent's), matching the old scoped-container behaviour.
 - `IObjectResolver.CreateScope` is no longer supported by `GameContext` (throws
   `NotSupportedException`); scopes are created and owned by the RuntimeFlow pipeline.
+- Wired real VContainer diagnostics: registrations are traced at registry build and every
+  resolve is traced with call depth and timing through `GameContext.Diagnostics`.
+
+### Fixed
+- Fixed disposal after a failed initialization: owned instances tracked before the failure
+  (build callbacks, decoration) are now disposed instead of leaking, because teardown is gated
+  on disposal state rather than the initialized flag.
 
 ### Removed
 - Removed `RuntimePipeline.CreateFromResolver` and `ResolverBackedGameContext`: pipelines are now
   built from a global context (`Create`, `CreateFromGlobalContext`) only.
-- Removed the custom `RuntimeFlowInstanceProvider`/registration-builder plumbing and the
-  store-level ownership/disposal bookkeeping that mirrored VContainer lifetimes.
+- Removed the custom `RuntimeFlowInstanceProvider`/registration-builder plumbing, the
+  store-level ownership/disposal bookkeeping that mirrored VContainer lifetimes, and the
+  `GameContextScopeInitializationLedger`.
 
 ### Fixed
 - Fixed `IsRegistered` constructing services during registration queries: checks now use the

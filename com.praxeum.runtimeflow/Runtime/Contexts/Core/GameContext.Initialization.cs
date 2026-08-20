@@ -24,6 +24,7 @@ namespace RuntimeFlow.Contexts
 
         private void InitializeCore()
         {
+            _disposed = false;
             OnBeforeInitialize?.Invoke();
 
             _decorationChain.ValidateRegistrations(serviceType => IsRegistered(serviceType));
@@ -37,7 +38,8 @@ namespace RuntimeFlow.Contexts
             {
                 var builder = new RuntimeFlowContainerBuilder();
                 _registrationStore.ApplyRegistrations(builder);
-                _registry = builder.BuildRegistry(this);
+                _registry = builder.BuildRegistry(this, Diagnostics);
+                Diagnostics.NotifyContainerBuilt(this);
 
                 _decorationChain.Apply(this);
             }

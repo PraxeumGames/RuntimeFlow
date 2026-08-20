@@ -49,7 +49,7 @@ namespace RuntimeFlow.Contexts
             var scopeStopwatch = Stopwatch.StartNew();
             try
             {
-                context = CreateContext(parentContext, registrations, autoServices, initializedCallback, initialize: true, availableServices, eventBus);
+                context = CreateContext(parentContext, registrations, autoServices, initializedCallback, initialize: true, availableServices, eventBus, _executionScheduler);
                 var totalServices = await ExecuteInitializersAsync(scope, context, initializedServices, progressNotifier, generation, cancellationToken, scopeKey).ConfigureAwait(false);
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 if (scope != GameContextType.Global && !skipActivation)
@@ -109,76 +109,11 @@ namespace RuntimeFlow.Contexts
             if (context is not GameContext gameContext)
                 return;
 
-            if (!TryResolveScopeIdentity(gameContext, out var scope, out var scopeKey))
-                return;
-
-            var initOrder = _scopeInitializationLedger.GetInitializationOrder(scope, scopeKey);
-            if (initOrder == null)
-                return;
-
-            foreach (var initializer in initOrder)
+            foreach (var initializer in gameContext.InitializationOrder)
             {
                 initializedServices.Add(initializer.ServiceType);
                 availableServices[initializer.ServiceType] = gameContext.Resolve(initializer);
             }
-        }
-
-        private bool TryResolveScopeIdentity(
-            GameContext context,
-            out GameContextType scope,
-            out Type? scopeKey)
-        {
-            if (ReferenceEquals(context, _globalContext))
-            {
-                scope = GameContextType.Global;
-                scopeKey = null;
-                return true;
-            }
-
-            if (ReferenceEquals(context, _sessionContext))
-            {
-                scope = GameContextType.Session;
-                scopeKey = null;
-                return true;
-            }
-
-            if (ReferenceEquals(context, _sceneContext))
-            {
-                scope = GameContextType.Scene;
-                scopeKey = _activeSceneScopeKey;
-                return true;
-            }
-
-            if (ReferenceEquals(context, _moduleContext))
-            {
-                scope = GameContextType.Module;
-                scopeKey = _activeModuleScopeKey;
-                return true;
-            }
-
-            foreach (var kvp in _preloadedContexts)
-            {
-                if (ReferenceEquals(context, kvp.Value))
-                {
-                    scope = GameContextType.Scene;
-                    scopeKey = kvp.Key;
-                    return true;
-                }
-            }
-
-            foreach (var kvp in _additiveModuleContexts)
-            {
-                if (ReferenceEquals(context, kvp.Value))
-                {
-                    scope = GameContextType.Module;
-                    scopeKey = kvp.Key;
-                    return true;
-                }
-            }
-
-            scope = default;
-            scopeKey = null;
-            return false;
         }
 
         private static GameContext CreateContext(
@@ -188,9 +123,13 @@ namespace RuntimeFlow.Contexts
             Action<IGameContext>? initializedCallback,
             bool initialize,
             IDictionary<Type, object> availableServices,
-            ScopeEventBus? eventBus = null)
+            ScopeEventBus? eventBus = null,
+            IInitializationExecutionScheduler? executionScheduler = null)
         {
-            var context = new GameContext(parent);
+            var context = new GameContext(parent)
+            {
+                ExecutionScheduler = executionScheduler
+            };
             foreach (var registration in registrations)
                 registration(context);
 
@@ -226,20 +165,14 @@ namespace RuntimeFlow.Contexts
                 return totalServices;
             }
 
-            var initOrder = new List<ServiceInitializerBinding>();
             var completedServices = 0;
-            void RecordInitializedForDisposal(ServiceInitializerBinding initializer)
-            {
-                RegisterInitializedServiceForScopeDisposal(scope, scopeKey, initializer);
-            }
-
             void RecordSuccessfulInitializerTasks(
                 IEnumerable<(Task task, ServiceInitializerBinding initializer)> initializerTasks)
             {
                 foreach (var initializerTask in initializerTasks)
                 {
                     if (initializerTask.task.Status == TaskStatus.RanToCompletion)
-                        RecordInitializedForDisposal(initializerTask.initializer);
+                        context.RecordInitialized(initializerTask.initializer);
                 }
             }
 
@@ -272,7 +205,6 @@ namespace RuntimeFlow.Contexts
 
             if (startupPlan.AsyncInitializers.Count == 0)
             {
-                _scopeInitializationLedger.SetInitializationOrder(scope, scopeKey, initOrder);
                 await StartVContainerStartablesAsync(startupPlan.EntryPoints, cancellationToken)
                     .ConfigureAwait(false);
                 return totalServices;
@@ -359,19 +291,17 @@ namespace RuntimeFlow.Contexts
                 }
 
                 foreach (var initializer in ready)
-                    RecordInitializedForDisposal(initializer);
+                    context.RecordInitialized(initializer);
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 foreach (var initializer in ready)
                 {
                     pending.Remove(initializer.ServiceType);
                     initializedServices.Add(initializer.ServiceType);
-                    initOrder.Add(initializer);
                     completedServices++;
                     progressNotifier.OnServiceCompleted(scope, initializer.ServiceType, completedServices, totalServices);
                 }
             }
 
-            _scopeInitializationLedger.SetInitializationOrder(scope, scopeKey, initOrder);
             await StartVContainerStartablesAsync(startupPlan.EntryPoints, cancellationToken)
                 .ConfigureAwait(false);
             return totalServices;

@@ -137,6 +137,21 @@ Inside `IRuntimeFlowScenario.ExecuteAsync(...)`, you can:
 - manage additive modules: `LoadAdditiveModuleAsync`, `UnloadAdditiveModuleAsync`,
 - access session services: `ResolveSessionService`, `TryResolveSessionService`.
 
+### `GameContext` lifecycle
+
+`GameContext` is a lifecycle-native container: it is its own `IObjectResolver`, owns every
+instance it registers or constructs, and disposes them itself.
+
+- `await context.DisposeAsync()` is the native teardown: async-disposable services are disposed
+  in reverse initialization order (with their declared thread affinity), then every
+  registered/constructed instance in reverse order. Failures are aggregated into an
+  `AggregateException`.
+- Synchronous `context.Dispose()` throws `NotSupportedException` when the context owns
+  async-disposable services — their teardown must not be silently skipped. Use it only for
+  contexts without asynchronous services (for example plain instance holders).
+- Scopes are created and torn down by the pipeline; `IObjectResolver.CreateScope` is not
+  supported on a `GameContext`.
+
 ### Flow presets
 
 `RuntimeFlowPresets` includes reusable scenario builders:
