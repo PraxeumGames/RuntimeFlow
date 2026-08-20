@@ -17,17 +17,15 @@ For repository-level architecture and development layout, see the root [`README.
 - Unity `2021.3+`
 - [VContainer](https://vcontainer.hadashikick.jp/) (required dependency)
 
-Install VContainer first:
-
-```bash
-openupm add jp.hadashikick.vcontainer
-```
-
-Or via the pinned git URL used by the RuntimeFlow Unity test project and SF2:
+VContainer is declared as a dependency of `com.praxeum.runtimeflow` (see `package.json`) and is
+resolved automatically by UPM. The pin uses the same fork/branch as the RuntimeFlow Unity test
+project and SF2 — do not change it without re-running the test suite:
 
 ```text
 https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1
 ```
+
+To install manually instead (not needed when resolving through UPM):
 
 Install RuntimeFlow package and pin version `0.4.0`:
 

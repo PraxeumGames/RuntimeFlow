@@ -162,6 +162,59 @@ namespace RuntimeFlow.Tests
             Assert.That(initializedService.DisposeCount, Is.EqualTo(1));
         }
 
+        [Test]
+        public async Task InstanceRegisteredDisposable_IsDisposedExactlyOnce()
+        {
+            var service = new ThrowOnSecondDisposeSessionService();
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.DefineSessionScope();
+                builder.Session().RegisterInstance<IThrowOnSecondDisposeSessionService>(service);
+            });
+
+            await pipeline.InitializeAsync();
+            await pipeline.RestartSessionAsync();
+
+            Assert.That(service.DisposeCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task InstanceRegisteredDisposable_NotResolved_IsStillDisposedByScope()
+        {
+            var service = new TrackingDisposable();
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.DefineSessionScope();
+                builder.Session().RegisterInstance<INotInitializableService>(service);
+                builder.Session().RegisterInstance<INoopSessionService>(new NoopSessionService());
+            });
+
+            await pipeline.InitializeAsync();
+            await pipeline.RestartSessionAsync();
+
+            Assert.That(service.DisposeCount, Is.EqualTo(1));
+        }
+
+        [Test]
+        public async Task Session_RegisterSameImplementation_LastLifetimeWins()
+        {
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.DefineSessionScope();
+                builder.Session().Register<ISessionServiceA, SharedSessionService>(VContainer.Lifetime.Singleton);
+                builder.Session().Register<ISessionServiceB, SharedSessionService>(VContainer.Lifetime.Transient);
+            });
+
+            await pipeline.InitializeAsync();
+
+            var a1 = pipeline.SessionContext.Resolve<ISessionServiceA>();
+            var a2 = pipeline.SessionContext.Resolve<ISessionServiceA>();
+            var b1 = pipeline.SessionContext.Resolve<ISessionServiceB>();
+
+            Assert.That(a1, Is.Not.SameAs(b1), "The last registration (Transient) must win over the earlier Singleton.");
+            Assert.That(a2, Is.Not.SameAs(a1), "Transient instances must not be shared.");
+        }
+
         // --- Service contracts ---
         private interface IDisposableSessionServiceA : ISessionInitializableService, ISessionDisposableService { }
         private interface IDisposableSessionServiceB : ISessionInitializableService, ISessionDisposableService { }
@@ -176,6 +229,10 @@ namespace RuntimeFlow.Tests
         private interface IFailingAfterDependencySessionService : ISessionInitializableService { }
         private interface IInitializedBeforeCanceledFailureSessionService : ISessionInitializableService, ISessionDisposableService { }
         private interface IFailingAfterCanceledDependencySessionService : ISessionInitializableService { }
+        private interface IThrowOnSecondDisposeSessionService : ISessionInitializableService { }
+        private interface ISessionServiceA : ISessionInitializableService { }
+        private interface ISessionServiceB : ISessionInitializableService { }
+        private interface INotInitializableService { }
 
         // --- Service implementations ---
         // C has no dependencies (initialized first)
@@ -325,6 +382,35 @@ namespace RuntimeFlow.Tests
                 _cancellationSource.Cancel();
                 throw new InvalidOperationException("session init failed after canceling caller token");
             }
+        }
+
+        private sealed class ThrowOnSecondDisposeSessionService : IThrowOnSecondDisposeSessionService, IDisposable
+        {
+            public int DisposeCount { get; private set; }
+
+            public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+            public void Dispose()
+            {
+                DisposeCount++;
+                if (DisposeCount > 1)
+                    throw new InvalidOperationException("Dispose called more than once.");
+            }
+        }
+
+        private sealed class TrackingDisposable : INotInitializableService, IDisposable
+        {
+            public int DisposeCount { get; private set; }
+
+            public void Dispose()
+            {
+                DisposeCount++;
+            }
+        }
+
+        private sealed class SharedSessionService : ISessionServiceA, ISessionServiceB
+        {
+            public Task InitializeAsync(CancellationToken cancellationToken) => Task.CompletedTask;
         }
     }
 }

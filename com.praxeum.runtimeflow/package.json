@@ -13,5 +13,7 @@
         "initialization",
         "pipeline"
     ],
-    "dependencies": {}
+    "dependencies": {
+        "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1"
+    }
 }

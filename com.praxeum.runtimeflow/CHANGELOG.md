@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Fixed `IsRegistered` constructing services during registration queries: checks now use the
+  container registration table and never instantiate the service.
+- Fixed double-disposal of scope-owned `RegisterInstance` services that were already resolved
+  through the container. Instances spawned by VContainer are now left to the container for
+  disposal, both during scope teardown and when an instance registration is replaced.
+- Fixed instance registration replacement: re-registering the same implementation type now
+  updates its lifetime (last registration wins) and disposes the replaced owned instance
+  instead of silently keeping the first registration.
+- Fixed scope teardown after a failed deactivation hook: teardown now always completes, the
+  active-scope reference is always cleared, and failures are aggregated into an
+  `AggregateException`. Cancellation-driven (superseded) transitions still surface as
+  `OperationCanceledException`.
+- Fixed `BootstrapResult.Dispose()` blocking the Unity main thread: disposal is now
+  non-blocking on the main thread (synchronous on worker threads).
+- `RegisterInstance` now validates eagerly that the exposed service types are assignable from
+  the instance type, consistent with `Register`.
+- `RestartSessionAsync` now clears active-scope references even when teardown fails, so a
+  failed restart never leaves a stale disposed session context.
+- Declared the VContainer dependency in `package.json` so UPM resolves it automatically.
+
+### Added
+- Regression tests covering registration-store lifetime/ownership semantics, resolver-backed
+  `IsRegistered`, guaranteed scope teardown, non-blocking bootstrap disposal, and session
+  restart recovery after a failed deactivation hook.
+
 ## [0.5.0] - 2026-07-13
 
 ### Added

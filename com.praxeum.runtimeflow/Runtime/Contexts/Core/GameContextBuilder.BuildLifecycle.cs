@@ -235,40 +235,63 @@ namespace RuntimeFlow.Contexts
 
             if (_moduleContext != null)
             {
-                await DisposeActivatedScopeAsync(
-                        GameContextType.Module,
-                        _moduleContext,
-                        progressNotifier,
-                        cancellationToken,
-                        _activeModuleScopeKey,
-                        ScopeLifecycleState.Reloading)
-                    .ConfigureAwait(false);
-                _moduleContext = null;
+                var disposingModuleContext = _moduleContext;
+                var moduleScopeKey = _activeModuleScopeKey;
+                try
+                {
+                    await DisposeActivatedScopeAsync(
+                            GameContextType.Module,
+                            disposingModuleContext,
+                            progressNotifier,
+                            cancellationToken,
+                            moduleScopeKey,
+                            ScopeLifecycleState.Reloading)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    _moduleContext = null;
+                }
             }
 
             if (_sceneContext != null)
             {
-                await DisposeActivatedScopeAsync(
-                        GameContextType.Scene,
-                        _sceneContext,
-                        progressNotifier,
-                        cancellationToken,
-                        _activeSceneScopeKey,
-                        ScopeLifecycleState.Reloading)
-                    .ConfigureAwait(false);
-                _sceneContext = null;
+                var disposingSceneContext = _sceneContext;
+                var sceneScopeKey = _activeSceneScopeKey;
+                try
+                {
+                    await DisposeActivatedScopeAsync(
+                            GameContextType.Scene,
+                            disposingSceneContext,
+                            progressNotifier,
+                            cancellationToken,
+                            sceneScopeKey,
+                            ScopeLifecycleState.Reloading)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    _sceneContext = null;
+                }
             }
 
             if (_sessionContext != null)
             {
-                await DisposeActivatedScopeAsync(
-                        GameContextType.Session,
-                        _sessionContext,
-                        progressNotifier,
-                        cancellationToken,
-                        transitionState: ScopeLifecycleState.Reloading)
-                    .ConfigureAwait(false);
-                _sessionContext = null;
+                var disposingSessionContext = _sessionContext;
+                try
+                {
+                    await DisposeActivatedScopeAsync(
+                            GameContextType.Session,
+                            disposingSessionContext,
+                            progressNotifier,
+                            cancellationToken,
+                            transitionState: ScopeLifecycleState.Reloading)
+                        .ConfigureAwait(false);
+                }
+                finally
+                {
+                    _sessionContext = null;
+                }
             }
 
             var (initializedServices, availableServices) = CreateSeededInitializationState(_globalContext);

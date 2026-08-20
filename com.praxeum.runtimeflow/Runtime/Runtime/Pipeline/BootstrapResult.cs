@@ -124,7 +124,9 @@ namespace RuntimeFlow.Contexts
 
         /// <summary>
         /// Synchronous disposal — used by <c>GameEntryPoint.OnDestroy</c> (cannot be async).
-        /// Pipeline disposal is best-effort synchronous wait.
+        /// On the main thread the full teardown is dispatched asynchronously to avoid blocking
+        /// the very thread that must execute the dispatched continuations (deadlock risk).
+        /// On worker threads the teardown is awaited synchronously.
         /// Prefer <see cref="DisposeAsync"/> when an async context is available.
         /// </summary>
         public void Dispose()
@@ -135,6 +137,17 @@ namespace RuntimeFlow.Contexts
             CancellationTokenSource?.Cancel();
             ClearCurrentPipelineProvider();
 
+            if (GameContext.IsOnMainThread())
+            {
+                _ = DisposeSyncCoreAsync();
+                return;
+            }
+
+            DisposeSyncCore();
+        }
+
+        private void DisposeSyncCore()
+        {
             if (Pipeline != null)
             {
                 try
@@ -147,6 +160,26 @@ namespace RuntimeFlow.Contexts
                 }
             }
 
+            DisposeRootContainerAndCts();
+        }
+
+        private async Task DisposeSyncCoreAsync()
+        {
+            try
+            {
+                if (Pipeline != null)
+                    await Pipeline.DisposeAsync();
+
+                DisposeRootContainerAndCts();
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "Error disposing pipeline.");
+            }
+        }
+
+        private void DisposeRootContainerAndCts()
+        {
             if (RootContainer is IDisposable disposable)
                 disposable.Dispose();
 

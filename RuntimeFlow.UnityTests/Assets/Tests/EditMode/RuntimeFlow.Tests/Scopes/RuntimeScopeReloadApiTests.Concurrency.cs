@@ -121,7 +121,9 @@ public sealed partial class RuntimeScopeReloadApiTests
 
         Assert.AreEqual(2, moduleService.Attempts);
         Assert.AreEqual(1, moduleService.EnterCalls);
-        Assert.AreEqual(2, moduleService.ExitCalls);
+        // The superseded reload completes its own teardown (exit + dispose), so the
+        // winning reload has no active module left to exit.
+        Assert.AreEqual(1, moduleService.ExitCalls);
         Assert.AreEqual(1, moduleService.CanceledExitCalls);
         Assert.AreEqual(RuntimeExecutionState.Ready, pipeline.GetRuntimeStatus().State);
     }
@@ -148,7 +150,9 @@ public sealed partial class RuntimeScopeReloadApiTests
 
         Assert.AreEqual(2, sessionService.Attempts);
         Assert.AreEqual(1, sessionService.EnterCalls);
-        Assert.AreEqual(2, sessionService.ExitCalls);
+        // The superseded reload completes its own teardown (exit + dispose), so the
+        // winning reload has no live session left to exit.
+        Assert.AreEqual(1, sessionService.ExitCalls);
         Assert.AreEqual(1, sessionService.CanceledExitCalls);
         Assert.AreEqual(RuntimeExecutionState.Ready, pipeline.GetRuntimeStatus().State);
     }

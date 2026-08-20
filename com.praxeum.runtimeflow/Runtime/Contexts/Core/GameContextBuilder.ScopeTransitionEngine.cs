@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Events;
@@ -217,18 +218,65 @@ namespace RuntimeFlow.Contexts
                 if (context == null)
                     return;
 
+                // Teardown must always complete: a deactivation failure must not leave the
+                // scope undisposed or the active-scope reference stale.
+                List<Exception>? failures = null;
+
                 if (transitionState.HasValue)
                     _owner.SetScopeStateIfTracked(scope, transitionState.Value, scopeKey);
-                await _owner.ExecuteScopeActivationExitAsync(scope, context, progressNotifier, cancellationToken)
-                    .ConfigureAwait(false);
-                await _owner.DisposeScopeContextAsync(
-                        scope,
-                        context,
-                        cancellationToken,
-                        scopeKey,
-                        () => _owner.SetScopeStateIfTracked(scope, ScopeLifecycleState.Disposed, scopeKey))
-                    .ConfigureAwait(false);
+
+                try
+                {
+                    await _owner.ExecuteScopeActivationExitAsync(scope, context, progressNotifier, cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    failures ??= new List<Exception>();
+                    failures.Add(ex);
+                }
+
+                // Once the deactivation hook has failed, the teardown must still run to
+                // completion: a cancelled/superseded transition must not leak the scope.
+                // Disposal is immune to the original failure, so it uses a non-cancelled
+                // cleanup token.
+                var teardownCancellationToken = failures != null
+                    ? GameContextBuilder.CreateFailureCleanupCancellationToken()
+                    : cancellationToken;
+
+                try
+                {
+                    await _owner.DisposeScopeContextAsync(
+                            scope,
+                            context,
+                            teardownCancellationToken,
+                            scopeKey,
+                            () => _owner.SetScopeStateIfTracked(scope, ScopeLifecycleState.Disposed, scopeKey))
+                        .ConfigureAwait(false);
+                }
+                catch (Exception ex)
+                {
+                    failures ??= new List<Exception>();
+                    failures.Add(ex);
+                }
+
                 clearContext();
+
+                if (failures != null)
+                {
+                    // Cancellation-driven teardown failures must surface as
+                    // OperationCanceledException so superseded transitions keep their
+                    // cancellation semantics instead of an AggregateException.
+                    var remainingFailures = FilterCancellationFailures(
+                        new AggregateException(failures),
+                        cancellationToken.IsCancellationRequested);
+                    if (remainingFailures != null)
+                        throw remainingFailures;
+
+                    var cancellation = failures.FirstOrDefault(ex => ex is OperationCanceledException)
+                        as OperationCanceledException;
+                    throw cancellation ?? new OperationCanceledException(cancellationToken);
+                }
             }
         }
     }

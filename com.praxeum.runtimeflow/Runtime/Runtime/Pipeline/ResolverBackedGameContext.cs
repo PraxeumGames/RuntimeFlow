@@ -58,15 +58,8 @@ namespace RuntimeFlow.Contexts
         public bool IsRegistered(Type serviceType, bool includeInterfaceTypes = true)
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
-            try
-            {
-                _resolver.Resolve(serviceType);
-                return true;
-            }
-            catch (VContainerException)
-            {
-                return false;
-            }
+            return _resolver.TryGetRegistration(serviceType, out var registration)
+                && (includeInterfaceTypes || registration!.ImplementationType == serviceType);
         }
 
         public TService Resolve<TService>()

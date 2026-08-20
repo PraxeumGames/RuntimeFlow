@@ -177,6 +177,15 @@ namespace RuntimeFlow.Contexts
 
             foreach (var serviceType in exposedTypes)
             {
+                if (!serviceType.IsAssignableFrom(implementationType) && serviceType != implementationType)
+                {
+                    throw new InvalidOperationException(
+                        $"Service type {serviceType.Name} is not assignable from instance type {implementationType.Name}.");
+                }
+            }
+
+            foreach (var serviceType in exposedTypes)
+            {
                 _registeredServiceTypes.Add(serviceType);
                 _implementationTypes[serviceType] = implementationType;
                 _registeredInstances[serviceType] = instance;
@@ -184,14 +193,40 @@ namespace RuntimeFlow.Contexts
 
             if (_instanceRegistrations.TryGetValue(implementationType, out var existing))
             {
-                existing.instance = instance;
-                foreach (var t in exposedTypes)
+                // Replacing a previously registered instance: release the previous one if it
+                // was owned by this scope, otherwise it would leak (it is no longer reachable
+                // through any registration). Instances that were resolved through the container
+                // are tracked by VContainer and must be left to the container for disposal.
+                if (existing.ownsLifetime
+                    && existing.instance is IDisposable replacedDisposable
+                    && !ReferenceEquals(existing.instance, instance)
+                    && !WasSpawnedByContainer(existing.instance))
                 {
-                    if (!existing.interfaces.Contains(t))
-                        existing.interfaces.Add(t);
+                    try
+                    {
+                        replacedDisposable.Dispose();
+                    }
+                    catch (Exception ex)
+                    {
+                        throw new InvalidOperationException(
+                            $"Failed to dispose replaced instance registration for '{implementationType.Name}'.",
+                            ex);
+                    }
                 }
 
-                existing.ownsLifetime &= ownsLifetime;
+                var interfaces = existing.interfaces;
+                foreach (var t in exposedTypes)
+                {
+                    if (!interfaces.Contains(t))
+                        interfaces.Add(t);
+                }
+
+                // Any registration claiming ownership keeps ownership: the instance is disposed
+                // when the scope is torn down if at least one registration declared it owned.
+                // The entry must be written back: tuples are value types and TryGetValue
+                // returns a copy, so mutating it would silently drop the replacement.
+                _instanceRegistrations[implementationType] =
+                    (instance, interfaces, existing.ownsLifetime || ownsLifetime);
             }
             else
             {
@@ -226,10 +261,22 @@ namespace RuntimeFlow.Contexts
         public void DisposeOwnedRegisteredInstances(ref List<Exception>? disposeFailures)
         {
             var disposedInstances = new List<object>();
+            var spawnedInstances = new HashSet<object>(ReferenceEqualityComparer.Instance);
+            foreach (var provider in _instanceProviders)
+            {
+                if (provider.WasSpawned)
+                    spawnedInstances.Add(provider.Instance);
+            }
 
             foreach (var (instance, _, ownsLifetime) in _instanceRegistrations.Values.Reverse())
             {
                 if (!ownsLifetime || instance is not IDisposable disposable)
+                    continue;
+
+                // Instances that were resolved through the container are tracked and disposed
+                // by the VContainer container itself; disposing them again here would be a
+                // double-dispose. Only never-resolved owned instances need manual disposal.
+                if (spawnedInstances.Contains(instance))
                     continue;
 
                 if (disposedInstances.Any(existing => ReferenceEquals(existing, instance)))
@@ -253,6 +300,17 @@ namespace RuntimeFlow.Contexts
             _instanceProviders.Clear();
         }
 
+        private bool WasSpawnedByContainer(object instance)
+        {
+            foreach (var provider in _instanceProviders)
+            {
+                if (provider.WasSpawned && ReferenceEquals(provider.Instance, instance))
+                    return true;
+            }
+
+            return false;
+        }
+
         public void ClearRegistrations()
         {
             _registrations.Clear();
@@ -267,8 +325,13 @@ namespace RuntimeFlow.Contexts
         {
             if (_typedRegistrations.TryGetValue(implementationType, out var existing))
             {
-                if (!existing.interfaces.Contains(serviceType))
-                    existing.interfaces.Add(serviceType);
+                // Last registration wins: re-registering an implementation type updates
+                // its lifetime rather than silently keeping the first one. Tuples are
+                // value types, so the entry must be written back explicitly.
+                var interfaces = existing.interfaces;
+                if (!interfaces.Contains(serviceType))
+                    interfaces.Add(serviceType);
+                _typedRegistrations[implementationType] = (lifetime, interfaces);
             }
             else
             {
@@ -280,6 +343,21 @@ namespace RuntimeFlow.Contexts
         {
             failures ??= new List<Exception>();
             failures.Add(exception);
+        }
+
+        private sealed class ReferenceEqualityComparer : IEqualityComparer<object>
+        {
+            public static readonly ReferenceEqualityComparer Instance = new();
+
+            public new bool Equals(object? x, object? y)
+            {
+                return ReferenceEquals(x, y);
+            }
+
+            public int GetHashCode(object obj)
+            {
+                return System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+            }
         }
     }
 }
