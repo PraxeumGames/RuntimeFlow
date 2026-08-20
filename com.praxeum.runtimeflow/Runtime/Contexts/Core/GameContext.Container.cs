@@ -2,6 +2,8 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using VContainer;
+using VContainer.Diagnostics;
+using VContainer.Internal;
 
 namespace RuntimeFlow.Contexts
 {
