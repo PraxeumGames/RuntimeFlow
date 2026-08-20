@@ -2,10 +2,11 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using VContainer;
+using VContainer.Internal;
 
 namespace RuntimeFlow.Contexts
 {
-    public partial class GameContext : IGameContext
+    public partial class GameContext : IGameContext, IObjectResolver
     {
         /// <summary>
         /// The main-thread SynchronizationContext captured at startup.
@@ -32,8 +33,10 @@ namespace RuntimeFlow.Contexts
         private readonly IGameContext? _parent;
         private readonly GameContextRegistrationStore _registrationStore = new();
         private readonly GameContextDecorationChain _decorationChain = new();
-        private readonly List<RuntimeFlowInstanceProvider> _instanceProviders;
-        private IObjectResolver? _container;
+        private readonly Dictionary<Registration, object> _sharedInstances = new();
+        private readonly List<object> _ownedRegisteredInstances = new();
+        private readonly List<object> _ownedResolvedInstances = new();
+        private Registry? _registry;
         private bool _initialized;
 
         public event Action? OnBeforeInitialize;
@@ -41,14 +44,20 @@ namespace RuntimeFlow.Contexts
         public event Action? OnBeforeDispose;
         public event Action? OnDisposed;
 
-        public IObjectResolver Resolver => _container ?? throw new InvalidOperationException("Context not initialized");
+        /// <summary>
+        /// This context is its own resolver: GameContext is the container. There is no
+        /// separate VContainer container behind this property.
+        /// </summary>
+        public IObjectResolver Resolver => _initialized
+            ? this
+            : throw new InvalidOperationException("Context not initialized");
+
         public IGameContext? Parent => _parent;
         internal IReadOnlyCollection<Type> RegisteredServiceTypes => _registrationStore.RegisteredServiceTypes;
 
         public GameContext(IGameContext? parent = null)
         {
             _parent = parent;
-            _instanceProviders = _registrationStore.InstanceProviders;
         }
 
         public IGameContext CreateChildContext()

@@ -1,7 +1,5 @@
 using NUnit.Framework;
 using System;
-using System.Collections;
-using System.Reflection;
 using RuntimeFlow.Contexts;
 using VContainer;
 
@@ -53,7 +51,7 @@ namespace RuntimeFlow.Tests
         }
 
         [Test]
-        public void RegisterInstance_ReleasesProviderWhenContextDisposed()
+        public void RegisterInstance_OwnedInstance_DisposedOnceByScopeAndUnresolvableAfterDispose()
         {
             var context = new GameContext();
             var instance = new TransientTestService();
@@ -61,22 +59,17 @@ namespace RuntimeFlow.Tests
             context.Initialize();
 
             var resolver = context.Resolver;
-            var providers = (IList)typeof(GameContext)
-                .GetField("_instanceProviders", BindingFlags.Instance | BindingFlags.NonPublic)!
-                .GetValue(context)!;
-            Assert.That(providers, Has.Count.EqualTo(1));
+            Assert.That(resolver, Is.SameAs(context), "The context is its own resolver.");
 
-            var provider = providers[0]!;
-            var spawnMethod = provider.GetType().GetMethod(nameof(VContainer.IInstanceProvider.SpawnInstance))!;
-
-            Assert.That(spawnMethod.Invoke(provider, new object[] { resolver }), Is.SameAs(instance));
+            Assert.That(context.Resolve<ILifetimeTestService>(), Is.SameAs(instance));
 
             context.Dispose();
 
             Assert.That(
-                () => spawnMethod.Invoke(provider, new object[] { resolver }),
-                Throws.TypeOf<TargetInvocationException>()
-                    .With.InnerException.TypeOf<ObjectDisposedException>());
+                () => context.Resolve<ILifetimeTestService>(),
+                Throws.TypeOf<InvalidOperationException>().With.Message.EqualTo("Context not initialized"));
+            Assert.That(resolver.TryResolve(typeof(ILifetimeTestService), out _), Is.False,
+                "Resolution must be impossible after the context is disposed.");
         }
     }
 }

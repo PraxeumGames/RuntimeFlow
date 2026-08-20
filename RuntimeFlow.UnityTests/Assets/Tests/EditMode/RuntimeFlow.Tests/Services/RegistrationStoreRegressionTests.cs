@@ -1,6 +1,5 @@
 using NUnit.Framework;
 using System;
-using System.Collections.Generic;
 using RuntimeFlow.Contexts;
 using VContainer;
 
@@ -29,134 +28,108 @@ namespace RuntimeFlow.Tests
         [Test]
         public void Register_SameImplementation_LastLifetimeWins()
         {
-            var store = new GameContextRegistrationStore();
-            store.Register(typeof(IServiceA), typeof(SharedImplementation), Lifetime.Singleton);
-            store.Register(typeof(IServiceB), typeof(SharedImplementation), Lifetime.Transient);
-
-            var builder = new ContainerBuilder();
-            store.ApplyRegistrations(builder);
-            var container = builder.Build();
+            var context = new GameContext();
+            context.Register(typeof(IServiceA), typeof(SharedImplementation), Lifetime.Singleton);
+            context.Register(typeof(IServiceB), typeof(SharedImplementation), Lifetime.Transient);
+            context.Initialize();
             try
             {
-                var a1 = container.Resolve(typeof(IServiceA));
-                var a2 = container.Resolve(typeof(IServiceA));
-                var b1 = container.Resolve(typeof(IServiceB));
+                var a1 = context.Resolve(typeof(IServiceA));
+                var a2 = context.Resolve(typeof(IServiceA));
+                var b1 = context.Resolve(typeof(IServiceB));
 
                 Assert.That(a1, Is.Not.SameAs(b1), "The last registration (Transient) must win over the earlier Singleton.");
                 Assert.That(a2, Is.Not.SameAs(a1), "Transient instances must not be shared.");
             }
             finally
             {
-                container.Dispose();
+                context.Dispose();
             }
         }
 
         [Test]
-        public void RegisterInstance_ReplacingOwnedInstance_DisposesPreviousInstance()
+        public void RegisterInstance_ReplacingInstance_DisposesEachOwnedInstanceExactlyOnce()
         {
             var first = new TrackingDisposable();
             var second = new TrackingDisposable();
-            var store = new GameContextRegistrationStore();
-
-            store.RegisterInstance(typeof(TrackingDisposable), first, new[] { typeof(IServiceA) }, ownsLifetime: true);
-            store.RegisterInstance(typeof(TrackingDisposable), second, new[] { typeof(IServiceB) }, ownsLifetime: true);
-
-            Assert.That(first.DisposeCount, Is.EqualTo(1), "Replaced owned instance must be disposed to avoid a leak.");
-            Assert.That(second.DisposeCount, Is.Zero);
-        }
-
-        [Test]
-        public void RegisterInstance_MixedOwnership_KeepsOwnership()
-        {
-            var instance = new TrackingDisposable();
-            var store = new GameContextRegistrationStore();
-
-            store.RegisterInstance(typeof(TrackingDisposable), instance, new[] { typeof(IServiceA) }, ownsLifetime: true);
-            store.RegisterInstance(typeof(TrackingDisposable), instance, new[] { typeof(IServiceB) }, ownsLifetime: false);
-
-            List<Exception>? failures = null;
-            store.DisposeOwnedRegisteredInstances(ref failures);
-
-            Assert.That(instance.DisposeCount, Is.EqualTo(1), "Ownership claimed by any registration must be retained.");
-            Assert.That(failures, Is.Null);
-        }
-
-        [Test]
-        public void DisposeOwnedRegisteredInstances_SkipsInstancesResolvedByContainer()
-        {
-            var instance = new TrackingDisposable();
-            var store = new GameContextRegistrationStore();
-            store.RegisterInstance(typeof(TrackingDisposable), instance, new[] { typeof(IServiceA) }, ownsLifetime: true);
-
-            var builder = new ContainerBuilder();
-            store.ApplyRegistrations(builder);
-            var container = builder.Build();
+            var context = new GameContext();
+            context.RegisterInstance(typeof(IServiceA), first);
+            context.RegisterInstance(typeof(IServiceB), second);
+            context.Initialize();
             try
             {
-                container.Resolve(typeof(IServiceA));
-
-                List<Exception>? failures = null;
-                store.DisposeOwnedRegisteredInstances(ref failures);
-
-                Assert.That(instance.DisposeCount, Is.Zero, "Resolved instances must be left to the container to avoid double-disposal.");
-
-                container.Dispose();
-
-                Assert.That(instance.DisposeCount, Is.EqualTo(1));
+                Assert.That(first.DisposeCount, Is.Zero);
+                Assert.That(second.DisposeCount, Is.Zero);
             }
             finally
             {
-                container.Dispose();
+                context.Dispose();
             }
+
+            Assert.That(first.DisposeCount, Is.EqualTo(1), "Replaced instances are owned by the scope and disposed on teardown.");
+            Assert.That(second.DisposeCount, Is.EqualTo(1));
         }
 
         [Test]
-        public void RegisterInstance_ReplacingSpawnedInstance_DoesNotDoubleDispose()
+        public void RegisterInstance_ResolvedByScope_IsDisposedExactlyOnceByScope()
         {
-            var first = new TrackingDisposable();
-            var second = new TrackingDisposable();
-            var store = new GameContextRegistrationStore();
-            store.RegisterInstance(typeof(TrackingDisposable), first, new[] { typeof(IServiceA) }, ownsLifetime: true);
-
-            var builder = new ContainerBuilder();
-            store.ApplyRegistrations(builder);
-            var container = builder.Build();
+            var instance = new TrackingDisposable();
+            var context = new GameContext();
+            context.RegisterInstance(typeof(IServiceA), instance);
+            context.Initialize();
             try
             {
-                container.Resolve(typeof(IServiceA));
-
-                store.RegisterInstance(typeof(TrackingDisposable), second, new[] { typeof(IServiceB) }, ownsLifetime: true);
-
-                Assert.That(first.DisposeCount, Is.Zero, "A container-resolved instance is tracked by the container; manual dispose would double-dispose it.");
-
-                container.Dispose();
-
-                Assert.That(first.DisposeCount, Is.EqualTo(1), "The container disposes the spawned instance exactly once.");
+                Assert.That(context.Resolve(typeof(IServiceA)), Is.SameAs(instance));
             }
             finally
             {
-                container.Dispose();
+                context.Dispose();
             }
 
-            List<Exception>? failures = null;
-            store.DisposeOwnedRegisteredInstances(ref failures);
-            Assert.That(second.DisposeCount, Is.EqualTo(1), "The replacement instance is still owned by the scope.");
-            Assert.That(failures, Is.Null);
+            Assert.That(instance.DisposeCount, Is.EqualTo(1), "The scope is the single owner; no container double-disposes resolved instances.");
         }
 
         [Test]
         public void RegisterInstance_ServiceTypeNotAssignable_ThrowsEagerly()
         {
             var instance = new TrackingDisposable();
-            var store = new GameContextRegistrationStore();
+            var context = new GameContext();
 
             Assert.That(
-                () => store.RegisterInstance(
-                    typeof(TrackingDisposable),
-                    instance,
-                    new[] { typeof(IUnrelatedService) },
-                    ownsLifetime: true),
+                () => context.RegisterInstance(typeof(IUnrelatedService), instance),
                 Throws.TypeOf<InvalidOperationException>());
+        }
+
+        [Test]
+        public void RegisterInstance_NotResolved_IsStillDisposedByScope()
+        {
+            var instance = new TrackingDisposable();
+            var context = new GameContext();
+            context.RegisterInstance(typeof(IServiceA), instance);
+            context.Initialize();
+            context.Dispose();
+
+            Assert.That(instance.DisposeCount, Is.EqualTo(1), "Ownership is decided at registration, not at first resolve.");
+        }
+
+        [Test]
+        public void TypedRegistration_ImplementationType_IsNotExposedByDefault()
+        {
+            var context = new GameContext();
+            context.Register(typeof(IServiceA), typeof(SharedImplementation));
+            context.Initialize();
+            try
+            {
+                Assert.That(context.IsRegistered(typeof(SharedImplementation)), Is.False,
+                    "Interface-only registration must not expose the implementation type.");
+                Assert.That(
+                    () => context.Resolve(typeof(SharedImplementation)),
+                    Throws.TypeOf<VContainerException>());
+            }
+            finally
+            {
+                context.Dispose();
+            }
         }
     }
 }

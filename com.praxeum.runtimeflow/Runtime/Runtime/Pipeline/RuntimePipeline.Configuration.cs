@@ -50,20 +50,6 @@ namespace RuntimeFlow.Contexts
             return CreatePipeline(builder, healthSupervisor, options, logger);
         }
 
-        public static RuntimePipeline CreateFromResolver(
-            VContainer.IObjectResolver globalResolver,
-            Action<GameContextBuilder> configure,
-            Action<RuntimePipelineOptions>? configureOptions = null,
-            ILoggerFactory? loggerFactory = null)
-        {
-            if (globalResolver == null) throw new ArgumentNullException(nameof(globalResolver));
-            return CreateFromGlobalContext(
-                new ResolverBackedGameContext(globalResolver),
-                configure,
-                configureOptions,
-                loggerFactory);
-        }
-
         private static RuntimePipeline CreatePipeline(
             GameContextBuilder builder,
             RuntimeHealthSupervisor healthSupervisor,

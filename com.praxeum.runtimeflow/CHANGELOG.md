@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Reworked the DI container into a lifecycle-native container: `GameContext` is now its own
+  `IObjectResolver`. Instead of wrapping a private VContainer `Container`, each context builds a
+  flat VContainer `Registry` and resolves registrations directly through itself, so the context's
+  own `Dispose()` (or async teardown) is the single owner of every spawned/registered instance.
+  Scopes no longer need a parallel ownership layer to mirror container disposal.
+- Instance registrations are tracked for disposal at registration time (disposed even if never
+  resolved) and resolved services are tracked only for non-instance registrations; teardown
+  disposes both in reverse order, preserving the previous disposal ordering without double-disposal.
+- Parent fallback now walks the context chain (`TryResolve`/`Resolve` on a context resolves from
+  its own registry, then the parent's), matching the old scoped-container behaviour.
+- `IObjectResolver.CreateScope` is no longer supported by `GameContext` (throws
+  `NotSupportedException`); scopes are created and owned by the RuntimeFlow pipeline.
+
+### Removed
+- Removed `RuntimePipeline.CreateFromResolver` and `ResolverBackedGameContext`: pipelines are now
+  built from a global context (`Create`, `CreateFromGlobalContext`) only.
+- Removed the custom `RuntimeFlowInstanceProvider`/registration-builder plumbing and the
+  store-level ownership/disposal bookkeeping that mirrored VContainer lifetimes.
+
 ### Fixed
 - Fixed `IsRegistered` constructing services during registration queries: checks now use the
   container registration table and never instantiate the service.

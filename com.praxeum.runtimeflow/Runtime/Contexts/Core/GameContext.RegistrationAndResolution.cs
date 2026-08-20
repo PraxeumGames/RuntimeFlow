@@ -1,6 +1,8 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
+using System.Linq;
 using VContainer;
 
 namespace RuntimeFlow.Contexts
@@ -48,7 +50,17 @@ namespace RuntimeFlow.Contexts
         public bool IsRegistered(Type serviceType, bool includeInterfaceTypes = true)
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
-            return _registrationStore.IsRegistered(serviceType, includeInterfaceTypes, _initialized, _container);
+
+            if (_registrationStore.IsRegistered(serviceType, includeInterfaceTypes))
+                return true;
+
+            if (_initialized && _registry != null && _registry.TryGet(serviceType, out var registration))
+            {
+                if (includeInterfaceTypes || registration!.ImplementationType == serviceType)
+                    return true;
+            }
+
+            return false;
         }
 
         public void RegisterInstance(Type serviceType, object instance)
@@ -86,31 +98,22 @@ namespace RuntimeFlow.Contexts
         public object Resolve(Type serviceType)
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
-            if (!_initialized || _container == null) throw new InvalidOperationException("Context not initialized");
+            if (!_initialized || _registry == null) throw new InvalidOperationException("Context not initialized");
 
-            // VContainer can instantiate Unity-bound objects during resolve. Ensure resolve happens
-            // on Unity main thread when runtime flow continues from a worker thread.
+            // The registry can instantiate Unity-bound objects during resolve. Ensure
+            // resolve happens on Unity main thread when the flow continues from a
+            // worker thread.
             return DispatchToMainThread(() => ResolveCore(serviceType), $"resolve '{serviceType.FullName}'");
         }
 
         internal object Resolve(ServiceInitializerBinding initializer)
         {
             if (initializer == null) throw new ArgumentNullException(nameof(initializer));
-            if (!_initialized || _container == null) throw new InvalidOperationException("Context not initialized");
+            if (!_initialized || _registry == null) throw new InvalidOperationException("Context not initialized");
 
             return DispatchToMainThread(
                 () => ResolveCore(initializer),
                 $"resolve '{initializer.ServiceType.FullName}'");
-        }
-
-        internal object Resolve(Registration registration)
-        {
-            if (registration == null) throw new ArgumentNullException(nameof(registration));
-            if (!_initialized || _container == null) throw new InvalidOperationException("Context not initialized");
-
-            return DispatchToMainThread(
-                () => _container!.Resolve(registration),
-                $"resolve '{registration.ImplementationType?.FullName ?? registration.ImplementationType?.Name ?? "<unknown>"}'");
         }
 
         private object ResolveCore(Type serviceType)
@@ -118,41 +121,69 @@ namespace RuntimeFlow.Contexts
             if (_decorationChain.TryGetDecoratedInstance(serviceType, out var decorated))
                 return decorated;
 
-            // Try own container first; fall back to parent only if this context doesn't have the registration
-            if (_parent != null && !IsRegistered(serviceType))
-            {
-                return _parent.Resolve(serviceType);
-            }
+            // Try the local registry first; fall back to the parent chain only for
+            // services this context does not register itself (same-or-wider rule).
+            if (_registry!.TryGet(serviceType, out var registration) && registration != null)
+                return ResolveRegistration(registration);
 
-            return _container!.Resolve(serviceType);
+            if (_parent != null)
+                return _parent.Resolve(serviceType);
+
+            throw new VContainerException(serviceType, $"No such registration of type: {serviceType}");
         }
 
         private object ResolveCore(ServiceInitializerBinding initializer)
         {
             if (initializer.Registration != null)
-                return _container!.Resolve(initializer.Registration);
+                return ResolveRegistration(initializer.Registration);
 
             return ResolveCore(initializer.ResolveServiceType);
         }
 
         internal bool TryGetImplementationType(Type serviceType, [MaybeNullWhen(false)] out Type implementationType)
         {
-            return _registrationStore.TryGetImplementationType(serviceType, _initialized, _container, out implementationType);
+            if (_registrationStore.TryGetImplementationType(serviceType, out implementationType))
+                return true;
+
+            if (_initialized && _registry != null && _registry.TryGet(serviceType, out var registration) && registration != null)
+            {
+                implementationType = registration.ImplementationType;
+                return true;
+            }
+
+            implementationType = null;
+            return false;
         }
 
         internal IReadOnlyList<Registration> GetRegistrationsForServiceType(Type serviceType)
         {
-            return _registrationStore.GetRegistrationsForServiceType(serviceType, _initialized, _container);
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+            if (_registry == null)
+                return Array.Empty<Registration>();
+
+            var registrations = new List<Registration>();
+
+            var collectionType = typeof(IReadOnlyList<>).MakeGenericType(serviceType);
+            if (_registry.TryGet(collectionType, out var collectionRegistration)
+                && collectionRegistration?.Provider is IEnumerable collectionProvider)
+            {
+                registrations.AddRange(collectionProvider.Cast<object>().OfType<Registration>());
+            }
+
+            if (_registry.TryGet(serviceType, out var registration) && registration != null)
+            {
+                registrations.Add(registration);
+            }
+
+            return registrations
+                .GroupBy(candidate => candidate.ImplementationType)
+                .Select(group => group.First())
+                .ToArray();
         }
 
         internal bool TryGetRegisteredInstance(Type serviceType, [MaybeNullWhen(false)] out object instance)
         {
             return _registrationStore.TryGetRegisteredInstance(serviceType, out instance);
-        }
-
-        internal KeyValuePair<Type, object>[] GetRegisteredInstanceEntriesSnapshot()
-        {
-            return _registrationStore.GetRegisteredInstanceEntriesSnapshot();
         }
 
         internal void RegisterInstanceEx(
@@ -161,7 +192,10 @@ namespace RuntimeFlow.Contexts
             IReadOnlyCollection<Type> serviceTypes,
             bool ownsLifetime)
         {
-            _registrationStore.RegisterInstance(implementationType, instance, serviceTypes, ownsLifetime);
+            _registrationStore.RegisterInstance(implementationType, instance, serviceTypes);
+
+            if (ownsLifetime)
+                TrackOwnedRegisteredInstance(instance);
         }
     }
 }

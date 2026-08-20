@@ -120,7 +120,7 @@ public sealed class GameStartupFlow : IRuntimeFlowScenario
 
 `RuntimePipeline` supports:
 
-- pipeline creation: `Create`, `CreateFromGlobalContext`, `CreateFromResolver`,
+- pipeline creation: `Create`, `CreateFromGlobalContext`,
 - execution: `ConfigureFlow(...).RunAsync(...)`,
 - scope operations: `LoadSceneAsync`, `LoadModuleAsync`, `PreloadSceneAsync`, `PreloadModuleAsync`,
 - additive modules: `LoadAdditiveModuleAsync`, `UnloadAdditiveModuleAsync`,

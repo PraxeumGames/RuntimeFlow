@@ -9,7 +9,7 @@ namespace RuntimeFlow.Contexts
         {
             if (_initialized) return;
 
-            // VContainer scope creation invokes build callbacks that may use Unity APIs
+            // Registry build callbacks and decoration resolution may use Unity APIs
             // (Addressables, LayerMask, etc.) which require the main thread.
             // RuntimeFlow uses ConfigureAwait(false) so this method can be called
             // from a thread pool thread. Dispatch to main thread if needed.
@@ -28,33 +28,26 @@ namespace RuntimeFlow.Contexts
 
             _decorationChain.ValidateRegistrations(serviceType => IsRegistered(serviceType));
 
-            IObjectResolver? parentResolver = null;
-
-            if (_parent is GameContext parentContext && parentContext._initialized)
-            {
-                parentResolver = parentContext._container;
-
-                // If parent has a VContainer resolver registered, use it as external scope parent
-                if (parentContext.TryGetRegisteredInstance(typeof(IObjectResolver), out var externalResolver))
-                {
-                    parentResolver = (IObjectResolver)externalResolver;
-                }
-            }
-
-            if (parentResolver != null)
-            {
-                _container = parentResolver.CreateScope(_registrationStore.ApplyRegistrations);
-            }
-            else
-            {
-                var builder = new VContainer.ContainerBuilder();
-                _registrationStore.ApplyRegistrations(builder);
-                _container = builder.Build();
-            }
-
-            _decorationChain.Apply(_container);
-
+            // The context becomes a live container before the registry is built: build
+            // callbacks (RegisterBuildCallback warmup) and decoration resolution resolve
+            // through this context and must not hit the "not initialized" guard.
             _initialized = true;
+
+            try
+            {
+                var builder = new RuntimeFlowContainerBuilder();
+                _registrationStore.ApplyRegistrations(builder);
+                _registry = builder.BuildRegistry(this);
+
+                _decorationChain.Apply(this);
+            }
+            catch
+            {
+                _initialized = false;
+                _registry = null;
+                throw;
+            }
+
             OnInitialized?.Invoke();
         }
     }

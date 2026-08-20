@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using VContainer;
 
 namespace RuntimeFlow.Contexts
 {
@@ -23,33 +22,15 @@ namespace RuntimeFlow.Contexts
 
             _decorationChain.ClearResolvedInstances();
 
-            DisposeOwnedRegisteredInstances(ref disposeFailures);
-            if (_container is IDisposable disposable)
-            {
-                try
-                {
-                    disposable.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    AddDisposeFailure(ref disposeFailures, ex);
-                }
-            }
+            // Single ownership: every instance this context registered or constructed is
+            // disposed here, in reverse order, exactly once. No container to reconcile with.
+            DisposeOwnedList(_ownedRegisteredInstances, ref disposeFailures);
+            DisposeOwnedList(_ownedResolvedInstances, ref disposeFailures);
 
-            foreach (var instanceProvider in _instanceProviders)
-            {
-                try
-                {
-                    instanceProvider.Release();
-                }
-                catch (Exception ex)
-                {
-                    AddDisposeFailure(ref disposeFailures, ex);
-                }
-            }
-
-            _registrationStore.ClearProviderInstances();
-            _container = null;
+            _registry = null;
+            _sharedInstances.Clear();
+            _ownedRegisteredInstances.Clear();
+            _ownedResolvedInstances.Clear();
             _initialized = false;
 
             _registrationStore.ClearRegistrations();
@@ -76,9 +57,22 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        private void DisposeOwnedRegisteredInstances(ref List<Exception>? disposeFailures)
+        private static void DisposeOwnedList(List<object> instances, ref List<Exception>? disposeFailures)
         {
-            _registrationStore.DisposeOwnedRegisteredInstances(ref disposeFailures);
+            for (var i = instances.Count - 1; i >= 0; i--)
+            {
+                if (instances[i] is not IDisposable disposable)
+                    continue;
+
+                try
+                {
+                    disposable.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    AddDisposeFailure(ref disposeFailures, ex);
+                }
+            }
         }
 
         private static void AddDisposeFailure(ref List<Exception>? failures, Exception exception)
