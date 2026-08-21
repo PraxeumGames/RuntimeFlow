@@ -70,14 +70,10 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey,
             bool skipActivation,
             ScopeEventBus? eventBus,
-            Action<GameContextType, ScopeLifecycleState, Type?> setState,
-            Action<long, CancellationToken> throwIfStale,
-            Func<GameContextType, GameContext?, CancellationToken, Type?, Action?, Task> disposeScope,
-            Func<CancellationToken, Func<Task>[], Task<List<Exception>>> captureCleanup,
-            Func<string, Exception, IReadOnlyCollection<Exception>, AggregateException> createAggregate,
-            Func<CancellationToken> failureCleanupToken,
-            Func<Exception, CancellationToken, bool> isStaleCancellation)
+            ScopeLifecycleDependencies deps)
         {
+            var setState = deps.SetState;
+            var throwIfStale = deps.ThrowIfStale;
             _logger.LogDebug("Building scope {Scope}", scope);
             setState(scope, ScopeLifecycleState.Loading, scopeKey);
             throwIfStale(generation, cancellationToken);
@@ -97,14 +93,14 @@ namespace RuntimeFlow.Contexts
             }
             catch (Exception ex)
             {
-                var isStale = isStaleCancellation(ex, cancellationToken);
+                var isStale = deps.IsStaleCancellation(ex, cancellationToken);
                 setState(scope, isStale ? ScopeLifecycleState.Deactivating : ScopeLifecycleState.Failed, scopeKey);
-                var cleanupToken = failureCleanupToken();
-                var cleanupFailures = await captureCleanup(cleanupToken, new Func<Task>[] { async () => { await disposeScope(scope, context, cleanupToken, scopeKey, null).ConfigureAwait(false); context = null; } }).ConfigureAwait(false);
+                var cleanupToken = deps.FailureCleanupToken();
+                var cleanupFailures = await deps.CaptureCleanup(cleanupToken, new Func<Task>[] { async () => { await deps.DisposeScope(scope, context, cleanupToken, scopeKey, null).ConfigureAwait(false); context = null; } }).ConfigureAwait(false);
                 if (cleanupFailures.Count > 0)
                 {
                     setState(scope, ScopeLifecycleState.Failed, scopeKey);
-                    throw createAggregate($"Initialize {scope} scope", ex, cleanupFailures);
+                    throw deps.CreateAggregate($"Initialize {scope} scope", ex, cleanupFailures);
                 }
                 if (isStale) setState(scope, ScopeLifecycleState.Disposed, scopeKey);
                 throw;

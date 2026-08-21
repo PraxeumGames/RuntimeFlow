@@ -16,9 +16,10 @@ namespace RuntimeFlow.Contexts
         private readonly GameContextLazyInitializationRegistry _lazy;
         private readonly IInitializationExecutionScheduler _scheduler;
         private readonly ILogger _logger;
-        private readonly GenerationGate _generationGate;
+        private readonly ScopeOperationCoordinator _coordinator;
         private readonly ScopeInitializationService _initService;
         private readonly ScopeDisposalService _disposalService;
+        private readonly ScopeLifecycleDependencies _deps;
 
         public RuntimeLifecycleOrchestrator(
             ActiveScopeState state,
@@ -27,7 +28,7 @@ namespace RuntimeFlow.Contexts
             GameContextLazyInitializationRegistry lazy,
             IInitializationExecutionScheduler scheduler,
             ILogger logger,
-            GenerationGate generationGate,
+            ScopeOperationCoordinator coordinator,
             ScopeInitializationService initService,
             ScopeDisposalService disposalService)
         {
@@ -37,9 +38,19 @@ namespace RuntimeFlow.Contexts
             _lazy = lazy ?? throw new ArgumentNullException(nameof(lazy));
             _scheduler = scheduler ?? throw new ArgumentNullException(nameof(scheduler));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
-            _generationGate = generationGate ?? throw new ArgumentNullException(nameof(generationGate));
+            _coordinator = coordinator ?? throw new ArgumentNullException(nameof(coordinator));
             _initService = initService ?? throw new ArgumentNullException(nameof(initService));
             _disposalService = disposalService ?? throw new ArgumentNullException(nameof(disposalService));
+            _deps = new ScopeLifecycleDependencies
+            {
+                SetState = (scope, state, key) => _registry.SetScopeStateIfTracked(scope, state, key),
+                ThrowIfStale = _coordinator.ThrowIfStaleGeneration,
+                DisposeScope = (scope, ctx, ct, key, onDisposed) => _disposalService.DisposeScopeContextAsync(scope, ctx, ct, key, onDisposed),
+                CaptureCleanup = CaptureCleanupFailuresAsync,
+                CreateAggregate = CreateCleanupAggregate,
+                FailureCleanupToken = CreateFailureCleanupToken,
+                IsStaleCancellation = IsStaleCancellation,
+            };
         }
 
         public async Task BuildAsyncCore(long generation, IInitializationProgressNotifier progressNotifier, CancellationToken cancellationToken)
@@ -79,13 +90,13 @@ namespace RuntimeFlow.Contexts
 
             try
             {
-                _generationGate.ThrowIfStaleGeneration(generation, cancellationToken);
+                _coordinator.ThrowIfStaleGeneration(generation, cancellationToken);
                 if (_state.OwnsGlobalContext)
                 {
                     _registry.SetScopeStateIfTracked(GameContextType.Global, ScopeLifecycleState.Loading);
                     _state.GlobalEventBus = new ScopeEventBus();
                     globalContext = CreateContext(null, _profiles.GlobalRegistrations, Array.Empty<ServiceDescriptor>(), _state.OnGlobalInitialized, true, availableServices, _state.GlobalEventBus, _scheduler);
-                    var total = await _initService.ExecuteInitializersAsync(GameContextType.Global, (GameContext)globalContext, initializedServices, progressNotifier, generation, cancellationToken, null, _generationGate.ThrowIfStaleGeneration).ConfigureAwait(false);
+                    var total = await _initService.ExecuteInitializersAsync(GameContextType.Global, (GameContext)globalContext, initializedServices, progressNotifier, generation, cancellationToken, null, _coordinator.ThrowIfStaleGeneration).ConfigureAwait(false);
                     progressNotifier.OnScopeCompleted(GameContextType.Global, total);
                     _registry.SetScopeStateIfTracked(GameContextType.Global, ScopeLifecycleState.Active);
                     _state.GlobalContext = globalContext;
@@ -97,16 +108,13 @@ namespace RuntimeFlow.Contexts
                     _registry.SetScopeStateIfTracked(GameContextType.Global, ScopeLifecycleState.Active);
                 }
 
-                _generationGate.ThrowIfStaleGeneration(generation, cancellationToken);
+                _coordinator.ThrowIfStaleGeneration(generation, cancellationToken);
                 await _scheduler.ExecuteAsync(InitializationThreadAffinity.MainThread, token => progressNotifier.OnGlobalContextReadyForSessionInitializationAsync(token), cancellationToken).ConfigureAwait(false);
-                _generationGate.ThrowIfStaleGeneration(generation, cancellationToken);
+                _coordinator.ThrowIfStaleGeneration(generation, cancellationToken);
                 _state.SessionEventBus = new ScopeEventBus(_state.GlobalEventBus);
-                sessionContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Session, (globalContext ?? _state.GlobalContext)!, _profiles.SessionRegistrations, Array.Empty<ServiceDescriptor>(), _state.OnSessionInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, null, false, _state.SessionEventBus,
-                    (s, st, k) => _registry.SetScopeStateIfTracked(s, st, k), _generationGate.ThrowIfStaleGeneration,
-                    (scope, ctx, ct, key, onDisposed) => _disposalService.DisposeScopeContextAsync(scope, ctx, ct, key, onDisposed),
-                    (ct, ops) => CaptureCleanupFailuresAsync(ct, ops), CreateCleanupAggregate, CreateFailureCleanupToken, IsStaleCancellation).ConfigureAwait(false);
+                sessionContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Session, (globalContext ?? _state.GlobalContext)!, _profiles.SessionRegistrations, Array.Empty<ServiceDescriptor>(), _state.OnSessionInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, null, false, _state.SessionEventBus, _deps).ConfigureAwait(false);
 
-                _generationGate.ThrowIfStaleGeneration(generation, cancellationToken);
+                _coordinator.ThrowIfStaleGeneration(generation, cancellationToken);
                 _state.SessionContext = sessionContext;
             }
             catch (Exception ex)
@@ -163,33 +171,24 @@ namespace RuntimeFlow.Contexts
             {
                 DisposeAndClearEventBuses(false);
                 await _scheduler.ExecuteAsync(InitializationThreadAffinity.MainThread, async token => { token.ThrowIfCancellationRequested(); await Task.Yield(); token.ThrowIfCancellationRequested(); await Task.Yield(); }, cancellationToken).ConfigureAwait(false);
-                _generationGate.ThrowIfStaleGeneration(generation, cancellationToken);
+                _coordinator.ThrowIfStaleGeneration(generation, cancellationToken);
                 await _scheduler.ExecuteAsync(InitializationThreadAffinity.MainThread, token => progressNotifier.OnSessionRestartTeardownCompletedAsync(token), cancellationToken).ConfigureAwait(false);
-                _generationGate.ThrowIfStaleGeneration(generation, cancellationToken);
+                _coordinator.ThrowIfStaleGeneration(generation, cancellationToken);
                 _state.SessionEventBus = new ScopeEventBus(_state.GlobalEventBus);
-                sessionContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Session, _state.GlobalContext!, _profiles.SessionRegistrations, Array.Empty<ServiceDescriptor>(), _state.OnSessionInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, null, false, _state.SessionEventBus,
-                    (s, st, k) => _registry.SetScopeStateIfTracked(s, st, k), _generationGate.ThrowIfStaleGeneration,
-                    (scope, ctx, ct, key, onDisposed) => _disposalService.DisposeScopeContextAsync(scope, ctx, ct, key, onDisposed),
-                    (ct, ops) => CaptureCleanupFailuresAsync(ct, ops), CreateCleanupAggregate, CreateFailureCleanupToken, IsStaleCancellation).ConfigureAwait(false);
+                sessionContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Session, _state.GlobalContext!, _profiles.SessionRegistrations, Array.Empty<ServiceDescriptor>(), _state.OnSessionInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, null, false, _state.SessionEventBus, _deps).ConfigureAwait(false);
 
                 if (_state.ActiveSceneScopeKey != null && _profiles.TryGetSceneProfile(_state.ActiveSceneScopeKey, out var sceneProfile))
                 {
                     _state.SceneEventBus = new ScopeEventBus(_state.SessionEventBus);
-                    sceneContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Scene, sessionContext, sceneProfile.Registrations, sceneProfile.Services, _state.OnSceneInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, _state.ActiveSceneScopeKey, false, _state.SceneEventBus,
-                        (s, st, k) => _registry.SetScopeStateIfTracked(s, st, k), _generationGate.ThrowIfStaleGeneration,
-                        (scope, ctx, ct, key, onDisposed) => _disposalService.DisposeScopeContextAsync(scope, ctx, ct, key, onDisposed),
-                        (ct, ops) => CaptureCleanupFailuresAsync(ct, ops), CreateCleanupAggregate, CreateFailureCleanupToken, IsStaleCancellation).ConfigureAwait(false);
+                    sceneContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Scene, sessionContext, sceneProfile.Registrations, sceneProfile.Services, _state.OnSceneInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, _state.ActiveSceneScopeKey, false, _state.SceneEventBus, _deps).ConfigureAwait(false);
                 }
                 if (_state.ActiveModuleScopeKey != null && sceneContext != null && _profiles.TryGetModuleProfile(_state.ActiveModuleScopeKey, out var moduleProfile))
                 {
                     _state.ModuleEventBus = new ScopeEventBus(_state.SceneEventBus);
-                    moduleContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Module, sceneContext, moduleProfile.Registrations, moduleProfile.Services, _state.OnModuleInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, _state.ActiveModuleScopeKey, false, _state.ModuleEventBus,
-                        (s, st, k) => _registry.SetScopeStateIfTracked(s, st, k), _generationGate.ThrowIfStaleGeneration,
-                        (scope, ctx, ct, key, onDisposed) => _disposalService.DisposeScopeContextAsync(scope, ctx, ct, key, onDisposed),
-                        (ct, ops) => CaptureCleanupFailuresAsync(ct, ops), CreateCleanupAggregate, CreateFailureCleanupToken, IsStaleCancellation).ConfigureAwait(false);
+                    moduleContext = await _initService.CreateAndInitializeScopeContextAsync(GameContextType.Module, sceneContext, moduleProfile.Registrations, moduleProfile.Services, _state.OnModuleInitialized, initializedServices, availableServices, progressNotifier, generation, cancellationToken, _state.ActiveModuleScopeKey, false, _state.ModuleEventBus, _deps).ConfigureAwait(false);
                 }
 
-                _generationGate.ThrowIfStaleGeneration(generation, cancellationToken);
+                _coordinator.ThrowIfStaleGeneration(generation, cancellationToken);
                 _state.SessionContext = sessionContext;
                 _state.SceneContext = sceneContext;
                 _state.ModuleContext = moduleContext;
@@ -212,11 +211,13 @@ namespace RuntimeFlow.Contexts
             _registry.ResetScopeStates();
         }
 
+        private const string ExternalGlobalContextErrorCode = "GBBR1001";
+
         private void ValidateExternalGlobalConfiguration()
         {
             if (_state.OwnsGlobalContext) return;
             if (_profiles.HasGlobalRegistrations)
-                throw new InvalidOperationException("GBBR1001: Global registrations are not allowed when using an external global context bridge.");
+                throw new InvalidOperationException($"{ExternalGlobalContextErrorCode}: Global registrations are not allowed when using an external global context bridge.");
         }
 
         private void DisposeAndClearEventBuses(bool includeGlobal)

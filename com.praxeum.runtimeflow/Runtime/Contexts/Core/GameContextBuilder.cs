@@ -22,8 +22,8 @@ namespace RuntimeFlow.Contexts
         private readonly ScopeDisposalService _disposalService;
         private readonly ScopeInitializationService _initService;
         private readonly RuntimeLifecycleOrchestrator _lifecycleOrchestrator;
+        private readonly ScopeLifecycleDependencies _lifecycleDeps;
         private readonly ActiveScopeState _activeState = new();
-        private readonly GenerationGate _generationGate;
 
         private Dictionary<Type, GameContext> _preloadedContexts => _activeState.PreloadedContexts;
         private Dictionary<Type, GameContext> _additiveModuleContexts => _activeState.AdditiveModuleContexts;
@@ -71,17 +71,26 @@ namespace RuntimeFlow.Contexts
             _healthSupervisor = healthSupervisor ?? RuntimeHealthSupervisor.Disabled;
             _logger = logger ?? NullLogger.Instance;
             _coordinator = new ScopeOperationCoordinator();
-            _generationGate = new GenerationGate(_coordinator);
             _activationService = new ScopeActivationService(_executionScheduler);
             _initService = new ScopeInitializationService(_activeState, _scopeRegistry, _lazyInitialization, _executionScheduler, _healthSupervisor, _logger, _activationService);
             _scopeTransitions = new ScopeTransitionEngine(this);
             _disposalService = new ScopeDisposalService(_activeState, _scopeRegistry, _executionScheduler, _logger, _coordinator, _activationService);
-            _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _generationGate, _initService, _disposalService);
+            _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _coordinator, _initService, _disposalService);
+            _lifecycleDeps = new ScopeLifecycleDependencies
+            {
+                SetState = SetScopeStateIfTracked,
+                ThrowIfStale = ThrowIfStaleGeneration,
+                DisposeScope = DisposeScopeContextAsync,
+                CaptureCleanup = CaptureCleanupFailuresAsync,
+                CreateAggregate = CreateCleanupAggregateException,
+                FailureCleanupToken = CreateFailureCleanupCancellationToken,
+                IsStaleCancellation = IsStaleGenerationCancellation,
+            };
         }
 
         internal ActiveScopeState ActiveState => _activeState;
 
-        internal GenerationGate GenerationGate => _generationGate;
+        internal ScopeOperationCoordinator Coordinator => _coordinator;
 
         internal ScopeDisposalService DisposalService => _disposalService;
 
@@ -142,10 +151,7 @@ namespace RuntimeFlow.Contexts
             ScopeEventBus? eventBus = null)
             => _initService.CreateAndInitializeScopeContextAsync(
                 scope, parentContext, registrations, autoServices, initializedCallback, initializedServices, availableServices,
-                progressNotifier, generation, cancellationToken, scopeKey, skipActivation, eventBus,
-                SetScopeStateIfTracked, ThrowIfStaleGeneration, DisposeScopeContextAsync,
-                CaptureCleanupFailuresAsync, CreateCleanupAggregateException, CreateFailureCleanupCancellationToken,
-                IsStaleGenerationCancellation);
+                progressNotifier, generation, cancellationToken, scopeKey, skipActivation, eventBus, _lifecycleDeps);
 
         internal ScopeLifecycleState GetScopeState(Type scopeType)
             => _scopeRegistry.GetScopeState(scopeType);
