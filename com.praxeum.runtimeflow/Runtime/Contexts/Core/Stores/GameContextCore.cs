@@ -346,7 +346,7 @@ namespace RuntimeFlow.Contexts
             throw new NotSupportedException("GameContext owns scope lifecycle; scopes are created by GameContextBuilder and activated through the RuntimeFlow pipeline.");
         }
 
-        private object ResolveRegistration(Registration registration) => _diagnostics.TraceResolve(registration, ResolveRegistrationCore);
+        private object ResolveRegistration(Registration registration) => Diagnostics.TraceResolve(registration, ResolveRegistrationCore);
 
         private object ResolveRegistrationCore(Registration registration)
         {
@@ -447,15 +447,13 @@ namespace RuntimeFlow.Contexts
 
         internal bool TryGetInitializedInstance(ServiceInitializerBinding initializer, out object instance)
         {
-            return _instances.TryGetInitialized(
-                initializer.Registration,
-                initializer.ResolveServiceType,
-                serviceType =>
-                {
-                    if (_registry != null && _registry.TryGet(serviceType, out var found)) return found;
-                    return null;
-                },
-                out instance);
+            var registration = initializer.Registration;
+            if (registration == null && _registry != null && _registry.TryGet(initializer.ResolveServiceType, out var found))
+                registration = found;
+            if (registration != null)
+                return _instances.TryGetShared(registration, out instance!);
+            instance = null!;
+            return false;
         }
 
         private bool HasPendingAsyncDisposals()

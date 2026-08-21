@@ -103,11 +103,31 @@ namespace RuntimeFlow.Contexts
                 ? _core.ResolveAsync(initializer.Registration, cancellationToken)
                 : _core.ResolveAsync(initializer.ResolveServiceType, cancellationToken);
         }
-        internal bool TryGetInitializedInstance(ServiceInitializerBinding initializer, out object instance) => _core.TryGetInitializedInstance(initializer, out instance);
-        internal bool TryGetInitializedByType(Type serviceType, out object instance) => _core.TryGetInitializedByType(serviceType, out instance);
-        internal bool TryGetImplementationType(Type serviceType, out Type implementationType) => _core.TryGetImplementationType(serviceType, out implementationType);
+        internal bool TryGetInitializedInstance(ServiceInitializerBinding initializer, out object instance)
+        {
+            var found = _core.TryGetInitializedInstance(initializer, out var value);
+            instance = value!;
+            return found;
+        }
+        internal bool TryGetInitializedByType(Type serviceType, out object instance)
+        {
+            var found = _core.TryGetInitializedByType(serviceType, out var value);
+            instance = value!;
+            return found;
+        }
+        internal bool TryGetImplementationType(Type serviceType, out Type implementationType)
+        {
+            var found = _core.TryGetImplementationType(serviceType, out var value);
+            implementationType = value!;
+            return found;
+        }
         internal IReadOnlyList<Registration> GetRegistrationsForServiceType(Type serviceType) => _core.GetRegistrationsForServiceType(serviceType);
-        internal bool TryGetRegisteredInstance(Type serviceType, out object instance) => _core.TryGetRegisteredInstance(serviceType, out instance);
+        internal bool TryGetRegisteredInstance(Type serviceType, out object instance)
+        {
+            var found = _core.TryGetRegisteredInstance(serviceType, out var value);
+            instance = value!;
+            return found;
+        }
         internal void RegisterInstanceEx(Type implementationType, object instance, IReadOnlyCollection<Type> serviceTypes, bool ownsLifetime) => _core.RegisterInstanceEx(implementationType, instance, serviceTypes, ownsLifetime);
         public void Initialize() => _core.Initialize();
         public object Resolve(Registration registration) => _core.Resolve(registration);

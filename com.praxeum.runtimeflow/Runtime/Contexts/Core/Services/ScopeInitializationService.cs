@@ -192,7 +192,7 @@ namespace RuntimeFlow.Contexts
                     progressNotifier.OnServiceStarted(scope, init.ServiceType, completedServices, totalServices);
 
                 var unique = DedupeByImplementationType(ready);
-                var taskMap = await RunWaveAsync(scope, context, unique, progressNotifier, completedServices, totalServices, cancellationToken).ConfigureAwait(false);
+                await RunWaveAsync(scope, context, unique, progressNotifier, completedServices, totalServices, cancellationToken).ConfigureAwait(false);
 
                 foreach (var init in ready) context.RecordInitialized(init);
                 throwIfStale(generation, cancellationToken);

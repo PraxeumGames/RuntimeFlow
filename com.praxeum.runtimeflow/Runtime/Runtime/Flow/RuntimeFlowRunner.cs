@@ -236,7 +236,9 @@ namespace RuntimeFlow.Flow
 
         public bool TryResolveSessionService<TService>(out TService? service) where TService : class
         {
-            return _builder.TryResolveFromSession(out service);
+            var found = _builder.TryResolveFromSession<TService>(out var resolved);
+            service = resolved;
+            return found;
         }
 
         public Task PreloadSceneAsync<TSceneScope>(CancellationToken cancellationToken = default)

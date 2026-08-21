@@ -138,24 +138,6 @@ namespace RuntimeFlow.Contexts
         internal void SetScopeStateIfTracked(GameContextType scope, ScopeLifecycleState state, Type? explicitScopeKey = null)
             => _scopeRegistry.SetScopeStateIfTracked(scope, state, explicitScopeKey);
 
-        internal Task<GameContext> CreateAndInitializeScopeContextAsync(
-            GameContextType scope,
-            IGameContext parentContext,
-            IReadOnlyCollection<Action<IGameContext>> registrations,
-            IReadOnlyCollection<ServiceDescriptor> autoServices,
-            Action<IGameContext>? initializedCallback,
-            ISet<Type> initializedServices,
-            IDictionary<Type, object> availableServices,
-            IInitializationProgressNotifier progressNotifier,
-            long generation,
-            CancellationToken cancellationToken,
-            Type? scopeKey,
-            bool skipActivation = false,
-            ScopeEventBus? eventBus = null)
-            => _initService.CreateAndInitializeScopeContextAsync(
-                scope, parentContext, registrations, autoServices, initializedCallback, initializedServices, availableServices,
-                progressNotifier, generation, cancellationToken, scopeKey, skipActivation, eventBus, _lifecycleDeps);
-
         internal ScopeLifecycleState GetScopeState(Type scopeType)
             => _scopeRegistry.GetScopeState(scopeType);
 

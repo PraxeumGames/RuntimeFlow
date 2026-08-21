@@ -23,20 +23,6 @@ namespace RuntimeFlow.Contexts
         public void AddShared(Registration registration, object instance)
             => _sharedInstances[registration] = instance;
 
-        public bool TryGetInitialized(Registration? registration, Type resolveServiceType, Func<Type, Registration?> findRegistration, out object instance)
-        {
-            if (registration != null && _sharedInstances.TryGetValue(registration, out instance!))
-                return true;
-            if (registration == null)
-            {
-                var found = findRegistration(resolveServiceType);
-                if (found != null && _sharedInstances.TryGetValue(found, out instance!))
-                    return true;
-            }
-            instance = null!;
-            return false;
-        }
-
         public void TrackOwned(object instance)
         {
             if (instance is not IDisposable) return;

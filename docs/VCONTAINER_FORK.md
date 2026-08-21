@@ -26,7 +26,7 @@ its public API surface:
 Because of this, **upgrading VContainer is a breaking change by default**: internal
 shapes may move between versions. Any bump must:
 
-1. Re-run `scripts/run_unity_editmode_tests.sh` locally (255 tests).
+1. Re-run `scripts/run_unity_editmode_tests.sh` locally (the full EditMode suite must pass).
 2. Verify `GameContextNativeDisposalTests`, `LifetimePassthroughTests`, and
    `RegistrationStoreRegressionTests` still pass — they pin the container semantics.
 3. Update this document and the pin in both `package.json` files.

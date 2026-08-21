@@ -45,7 +45,7 @@ namespace RuntimeFlow.Editor.Dashboard.Views
 
             _nodeListView = new ListView(_filteredNodes, 36, MakeListItem, BindListItem);
             _nodeListView.style.flexGrow = 1;
-            _nodeListView.onSelectionChange += OnNodeSelected;
+            _nodeListView.selectionChanged += OnNodeSelected;
             leftPane.Add(_nodeListView);
 
             // Right Pane (Details)

@@ -103,7 +103,16 @@ namespace RuntimeFlow.Contexts
                 if (activeLoadCts == null) return;
                 activeLoadTask = _activeLoadTask;
             }
-            activeLoadCts.Cancel();
+            // The operation may complete and dispose its CTS between our snapshot under the
+            // lock and this Cancel call; a disposed CTS means the load already finished.
+            try
+            {
+                activeLoadCts.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
             try
             {
                 await AwaitWithCancellation(activeLoadTask, cancellationToken).ConfigureAwait(false);

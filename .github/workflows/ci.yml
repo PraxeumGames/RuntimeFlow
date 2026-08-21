@@ -21,6 +21,8 @@ jobs:
   generator-build-and-test:
     name: Generator Build & Test (.NET 9)
     runs-on: ubuntu-latest
+    # Nightly runs exist for the Unity jobs; .NET gates already cover every push/PR.
+    if: ${{ github.event_name != 'schedule' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
