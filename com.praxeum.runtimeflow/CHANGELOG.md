@@ -5,6 +5,34 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-08-21
+
+### Breaking changes
+- **Namespaces now follow folder structure.** The 66 files under the runtime pipeline
+  subsystems leave the flat `RuntimeFlow.Contexts` namespace:
+  `RuntimeFlow.Pipeline`, `RuntimeFlow.Flow`, `RuntimeFlow.Health`,
+  `RuntimeFlow.Loading`, `RuntimeFlow.Status`, `RuntimeFlow.Errors`,
+  `RuntimeFlow.Transitions`. `RuntimeFlow.Contexts` remains the home of contexts, DI,
+  scopes, and initialization contracts. Consumer fix is mechanical: add the matching
+  `using` next to the existing `using RuntimeFlow.Contexts;`.
+  Generator-emitted code (`RuntimeFlow.Contexts.Generated.*`) is unchanged.
+
+### Changed
+- **`ScopePreloadService`** extracted from `GameContextBuilder` — preload/additive-module
+  cores live in a service with explicit collaborators; the builder keeps thin public
+  methods owning only generation gating.
+- **Wave scheduler flattened**: the ~6-level nested initialization loop in
+  `ScopeInitializationService` is decomposed into named phases (`CollectReadyServices`,
+  `ThrowIfDependencyCycle`, `RunWaveAsync`, ...).
+- `RuntimePipeline.ActivePipeline` intentionally kept as a public-read/internal-write
+  static: its only consumer is the Editor dashboard bridge; a registry would add API
+  surface without a second consumer.
+
+### Testing
+- PlayMode suite grown 4 → 7 tests: worker-thread Resolve constructs on the Unity main
+  thread, restart exit hooks run on the main thread, worker-initiated pipeline disposal
+  completes without deadlock.
+
 ## [0.7.0] - 2026-08-21
 
 ### Breaking changes
