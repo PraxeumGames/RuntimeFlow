@@ -83,7 +83,8 @@ namespace RuntimeFlow.Contexts
 
         public void Register<TService, TImplementation>() where TImplementation : TService => _core.Register<TService, TImplementation>();
         public void Register(Type serviceType, Type implementationType) => _core.Register(serviceType, implementationType);
-        public void Register(Type serviceType, Type implementationType, Lifetime lifetime) => _core.Register(serviceType, implementationType, lifetime);
+        public void Register(Type serviceType, Type implementationType, DiLifetime lifetime) => _core.Register(serviceType, implementationType, lifetime);
+        public void Register(Type serviceType, Type implementationType, Lifetime lifetime) => _core.Register(serviceType, implementationType, DiLifetimeMapper.FromVContainer(lifetime));
         public void ConfigureContainer(Action<IContainerBuilder> configure) => _core.ConfigureContainer(configure);
         public void Decorate(Type serviceType, Type decoratorType) => _core.Decorate(serviceType, decoratorType);
         public bool IsRegistered(Type serviceType, bool includeInterfaceTypes = true) => _core.IsRegistered(serviceType, includeInterfaceTypes);

@@ -45,6 +45,9 @@ namespace RuntimeFlow.Contexts
             set => _diagnostics = value;
         }
 
+        public void Register(Type serviceType, Type implementationType, DiLifetime lifetime)
+            => _registrationStore.Register(serviceType, implementationType, DiLifetimeMapper.ToVContainer(lifetime));
+
         private static DiagnosticsCollector CreateDiagnosticsCollector()
         {
             var id = System.Threading.Interlocked.Increment(ref _contextInstanceCounter);
@@ -76,22 +79,25 @@ namespace RuntimeFlow.Contexts
         {
             var serviceType = typeof(TService);
             var implType = typeof(TImplementation);
-            _registrationStore.Register(serviceType, implType, Lifetime.Singleton);
+            _registrationStore.Register(serviceType, implType, DiLifetimeMapper.ToVContainer(DiLifetime.Singleton));
         }
 
         public void Register(Type serviceType, Type implementationType)
         {
-            Register(serviceType, implementationType, Lifetime.Singleton);
+            Register(serviceType, implementationType, DiLifetime.Singleton);
         }
 
-        public void Register(Type serviceType, Type implementationType, Lifetime lifetime)
+        public void Register(Type serviceType, Type implementationType, DiLifetime lifetime)
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
             if (implementationType == null) throw new ArgumentNullException(nameof(implementationType));
             if (!serviceType.IsAssignableFrom(implementationType) && serviceType != implementationType)
                 throw new InvalidOperationException($"Service type {serviceType.Name} is not assignable from {implementationType.Name}.");
-            _registrationStore.Register(serviceType, implementationType, lifetime);
+            _registrationStore.Register(serviceType, implementationType, DiLifetimeMapper.ToVContainer(lifetime));
         }
+
+        public void Register(Type serviceType, Type implementationType, Lifetime lifetime)
+            => Register(serviceType, implementationType, DiLifetimeMapper.FromVContainer(lifetime));
 
         public void ConfigureContainer(Action<IContainerBuilder> configure)
         {

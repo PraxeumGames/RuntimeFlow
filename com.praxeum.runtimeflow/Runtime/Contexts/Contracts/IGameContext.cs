@@ -9,7 +9,7 @@ namespace RuntimeFlow.Contexts
     {
         void Register<TService, TImplementation>() where TImplementation : TService;
         void Register(Type serviceType, Type implementationType);
-        void Register(Type serviceType, Type implementationType, Lifetime lifetime);
+        void Register(Type serviceType, Type implementationType, DiLifetime lifetime);
         void RegisterInstance<TService>(TService instance);
         void RegisterInstance(Type serviceType, object instance);
         void RegisterInstance(object instance, IReadOnlyCollection<Type> serviceTypes);
