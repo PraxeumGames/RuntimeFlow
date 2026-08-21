@@ -18,7 +18,7 @@ namespace RuntimeFlow.Contexts
         private readonly ILogger _logger;
         private readonly ScopeOperationCoordinator _coordinator;
         private readonly ScopeActivationService _activationService;
-        private readonly ScopeTransitionEngine _scopeTransitions;
+        private readonly ScopeTransitionService _scopeTransitions;
         private readonly ScopeDisposalService _disposalService;
         private readonly ScopeInitializationService _initService;
         private readonly RuntimeLifecycleOrchestrator _lifecycleOrchestrator;
@@ -73,19 +73,19 @@ namespace RuntimeFlow.Contexts
             _coordinator = new ScopeOperationCoordinator();
             _activationService = new ScopeActivationService(_executionScheduler);
             _initService = new ScopeInitializationService(_activeState, _scopeRegistry, _lazyInitialization, _executionScheduler, _healthSupervisor, _logger, _activationService);
-            _scopeTransitions = new ScopeTransitionEngine(this);
             _disposalService = new ScopeDisposalService(_activeState, _scopeRegistry, _executionScheduler, _logger, _coordinator, _activationService);
-            _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _coordinator, _initService, _disposalService);
             _lifecycleDeps = new ScopeLifecycleDependencies
             {
                 SetState = SetScopeStateIfTracked,
                 ThrowIfStale = ThrowIfStaleGeneration,
-                DisposeScope = DisposeScopeContextAsync,
-                CaptureCleanup = CaptureCleanupFailuresAsync,
-                CreateAggregate = CreateCleanupAggregateException,
+                DisposeScope = (scope, ctx, ct, key, onDisposed) => _disposalService.DisposeScopeContextAsync(scope, ctx, ct, key, onDisposed),
+                CaptureCleanup = ScopeCleanupFailures.CaptureCleanupFailuresAsync,
+                CreateAggregate = ScopeCleanupFailures.CreateCleanupAggregate,
                 FailureCleanupToken = CreateFailureCleanupCancellationToken,
                 IsStaleCancellation = IsStaleGenerationCancellation,
             };
+            _scopeTransitions = new ScopeTransitionService(_activeState, _scopeRegistry, _coordinator, _activationService, _initService, _disposalService, _lifecycleDeps);
+            _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _coordinator, _initService, _disposalService);
         }
 
         internal ActiveScopeState ActiveState => _activeState;

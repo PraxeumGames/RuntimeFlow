@@ -46,8 +46,8 @@ namespace RuntimeFlow.Contexts
                 SetState = (scope, state, key) => _registry.SetScopeStateIfTracked(scope, state, key),
                 ThrowIfStale = _coordinator.ThrowIfStaleGeneration,
                 DisposeScope = (scope, ctx, ct, key, onDisposed) => _disposalService.DisposeScopeContextAsync(scope, ctx, ct, key, onDisposed),
-                CaptureCleanup = CaptureCleanupFailuresAsync,
-                CreateAggregate = CreateCleanupAggregate,
+                CaptureCleanup = ScopeCleanupFailures.CaptureCleanupFailuresAsync,
+                CreateAggregate = ScopeCleanupFailures.CreateCleanupAggregate,
                 FailureCleanupToken = CreateFailureCleanupToken,
                 IsStaleCancellation = IsStaleCancellation,
             };
@@ -120,7 +120,7 @@ namespace RuntimeFlow.Contexts
             catch (Exception ex)
             {
                 var ct2 = CreateFailureCleanupToken();
-                var failures = await CaptureCleanupFailuresAsync(ct2,
+                var failures = await ScopeCleanupFailures.CaptureCleanupFailuresAsync(ct2,
                     async () => { await _disposalService.DisposeScopeContextAsync(GameContextType.Session, sessionContext, ct2).ConfigureAwait(false); sessionContext = null; },
                     async () =>
                     {
@@ -130,7 +130,7 @@ namespace RuntimeFlow.Contexts
                         else if (globalContext != null) await DisposeExternalGlobalAsync(globalContext, ct2).ConfigureAwait(false);
                         globalContext = null;
                     }).ConfigureAwait(false);
-                if (failures.Count > 0) throw CreateCleanupAggregate("BuildAsync", ex, failures);
+                if (failures.Count > 0) throw ScopeCleanupFailures.CreateCleanupAggregate("BuildAsync", ex, failures);
                 throw;
             }
         }
@@ -196,11 +196,11 @@ namespace RuntimeFlow.Contexts
             catch (Exception ex)
             {
                 var ct2 = CreateFailureCleanupToken();
-                var failures = await CaptureCleanupFailuresAsync(ct2,
+                var failures = await ScopeCleanupFailures.CaptureCleanupFailuresAsync(ct2,
                     async () => { await _disposalService.DisposeScopeContextAsync(GameContextType.Module, moduleContext, ct2, _state.ActiveModuleScopeKey).ConfigureAwait(false); moduleContext = null; },
                     async () => { await _disposalService.DisposeScopeContextAsync(GameContextType.Scene, sceneContext, ct2, _state.ActiveSceneScopeKey).ConfigureAwait(false); sceneContext = null; },
                     async () => { await _disposalService.DisposeScopeContextAsync(GameContextType.Session, sessionContext, ct2).ConfigureAwait(false); sessionContext = null; }).ConfigureAwait(false);
-                if (failures.Count > 0) throw CreateCleanupAggregate("RestartSession", ex, failures);
+                if (failures.Count > 0) throw ScopeCleanupFailures.CreateCleanupAggregate("RestartSession", ex, failures);
                 throw;
             }
         }
@@ -239,26 +239,5 @@ namespace RuntimeFlow.Contexts
 
         private static bool IsStaleCancellation(Exception ex, CancellationToken ct) => ex is OperationCanceledException && !ct.IsCancellationRequested;
         private static CancellationToken CreateFailureCleanupToken() => CancellationToken.None;
-        private static AggregateException CreateCleanupAggregate(string op, Exception ex, IReadOnlyCollection<Exception> failures)
-        {
-            var list = new List<Exception>(failures.Count + 1) { ex };
-            foreach (var f in failures) if (f is AggregateException agg) list.AddRange(agg.Flatten().InnerExceptions); else list.Add(f);
-            return new AggregateException($"{op} failed and cleanup encountered additional errors.", list);
-        }
-        private static async Task<List<Exception>> CaptureCleanupFailuresAsync(CancellationToken ct, params Func<Task>[] ops)
-        {
-            var failures = new List<Exception>();
-            foreach (var op in ops)
-            {
-                if (op == null) continue;
-                try { await op().ConfigureAwait(false); }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-                catch (AggregateException agg) { var f = FilterCancellationFailures(agg, ct.IsCancellationRequested); if (f != null) failures.Add(f); }
-                catch (Exception ex) { if (ct.IsCancellationRequested && ScopeCleanupFailures.IsCancellationFailure(ex)) continue; failures.Add(ex); }
-            }
-            return failures;
-        }
-        private static Exception? FilterCancellationFailures(Exception ex, bool requested)
-            => ScopeCleanupFailures.FilterCancellationFailures(ex, requested);
     }
 }

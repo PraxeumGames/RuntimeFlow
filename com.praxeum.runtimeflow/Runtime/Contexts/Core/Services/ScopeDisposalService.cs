@@ -180,7 +180,7 @@ namespace RuntimeFlow.Contexts
             return _executionScheduler.ExecuteAsync(InitializationThreadAffinity.MainThread, _ => { context.Dispose(); return Task.CompletedTask; }, cancellationToken);
         }
 
-        private async Task DisposeOwnedGlobalContextAsync(IGameContext? context, CancellationToken cancellationToken)
+        public async Task DisposeOwnedGlobalContextAsync(IGameContext? context, CancellationToken cancellationToken)
         {
             if (context == null) return;
             if (context is GameContext gameContext)
@@ -236,11 +236,6 @@ namespace RuntimeFlow.Contexts
             => ScopeCleanupFailures.FilterCancellationFailures(exception, cancellationRequested);
 
         private static bool IsObjectDisposedFailure(Exception exception)
-        {
-            if (exception is ObjectDisposedException) return true;
-            if (exception is AggregateException agg) { var f = agg.Flatten().InnerExceptions; return f.Count > 0 && f.All(IsObjectDisposedFailure); }
-            if (exception.InnerException != null && IsObjectDisposedFailure(exception.InnerException)) return true;
-            return exception.Message?.IndexOf("Cannot access a disposed object.", StringComparison.Ordinal) >= 0;
-        }
+            => ScopeCleanupFailures.IsObjectDisposedFailure(exception);
     }
 }
