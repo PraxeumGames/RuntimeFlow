@@ -23,6 +23,7 @@ namespace RuntimeFlow.Contexts
         private readonly ScopeDisposalService _disposalService;
         private readonly ScopeLoadingService _loadingService;
         private readonly ScopeInitializationService _initService;
+        private readonly RuntimeLifecycleOrchestrator _lifecycleOrchestrator;
         private readonly ActiveScopeState _activeState = new();
         private readonly GenerationGate _generationGate;
 
@@ -90,6 +91,7 @@ namespace RuntimeFlow.Contexts
             _disposalService = new ScopeDisposalService(_activeState, _scopeRegistry, _executionScheduler, _logger, _coordinator, _activationService);
             _loadingService = new ScopeLoadingService(_activeState, _scopeProfiles, _coordinator, _scopeTransitionService, _scopeTransitions);
             _initService = new ScopeInitializationService(_activeState, _scopeRegistry, _lazyInitialization, _executionScheduler, _healthSupervisor, _logger, _activationService);
+            _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _generationGate, _initService, _disposalService);
         }
 
         internal ActiveScopeState ActiveState => _activeState;
@@ -103,6 +105,8 @@ namespace RuntimeFlow.Contexts
         internal ScopeLoadingService LoadingService => _loadingService;
 
         internal ScopeInitializationService InitializationService => _initService;
+
+        internal RuntimeLifecycleOrchestrator LifecycleOrchestrator => _lifecycleOrchestrator;
 
         internal Task ExecuteOnMainThreadAsync(Func<CancellationToken, Task> operation, CancellationToken cancellationToken = default)
         {

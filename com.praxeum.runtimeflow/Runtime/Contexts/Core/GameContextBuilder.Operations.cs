@@ -12,7 +12,7 @@ namespace RuntimeFlow.Contexts
             await ExecuteParentInvalidatingExclusiveScopeOperationAsync(
                     progressNotifier,
                     cancellationToken,
-                    operation => BuildAsyncCore(operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
+                    operation => _lifecycleOrchestrator.BuildAsyncCore(operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
                 .ConfigureAwait(false);
             return _globalContext ?? throw new InvalidOperationException("Global context was not created.");
         }
@@ -26,7 +26,7 @@ namespace RuntimeFlow.Contexts
             await ExecuteParentInvalidatingExclusiveScopeOperationAsync(
                     progressNotifier,
                     cancellationToken,
-                    operation => RestartSessionAsyncCore(operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
+                    operation => _lifecycleOrchestrator.RestartSessionAsyncCore(operation.Generation, operation.ProgressNotifier, operation.CancellationToken))
                 .ConfigureAwait(false);
         }
 
