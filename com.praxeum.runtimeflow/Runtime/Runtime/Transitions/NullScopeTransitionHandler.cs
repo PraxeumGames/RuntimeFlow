@@ -1,7 +1,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Transitions
 {
     public sealed class NullScopeTransitionHandler : IScopeTransitionHandler
     {

@@ -1,6 +1,6 @@
 using System;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Errors
 {
     /// <summary>Base exception for all RuntimeFlow framework errors.</summary>
     public class RuntimeFlowException : Exception

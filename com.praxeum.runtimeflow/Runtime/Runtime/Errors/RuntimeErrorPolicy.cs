@@ -1,8 +1,9 @@
 using System;
 using VContainer;
 using System.Threading;
+using RuntimeFlow.Health;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Errors
 {
     public enum RuntimeErrorKind
     {

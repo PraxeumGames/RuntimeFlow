@@ -1,7 +1,9 @@
 using System;
 using System.Threading;
+using RuntimeFlow.Flow;
+using RuntimeFlow.Status;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     internal sealed class PipelineStatusService
     {

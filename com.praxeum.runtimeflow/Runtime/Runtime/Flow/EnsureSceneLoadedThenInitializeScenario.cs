@@ -2,7 +2,7 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     internal sealed class EnsureSceneLoadedThenInitializeScenario : IRuntimeFlowScenario
     {

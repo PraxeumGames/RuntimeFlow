@@ -9,6 +9,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using RuntimeFlow.Contexts;
 using VContainer;
 using VContainer.Unity;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Tests
 {

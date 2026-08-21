@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public sealed class RuntimeFlowLoadingRestartInstallerOptions
     {

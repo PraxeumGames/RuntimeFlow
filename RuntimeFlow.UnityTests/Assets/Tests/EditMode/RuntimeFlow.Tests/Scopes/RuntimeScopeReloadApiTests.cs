@@ -5,6 +5,8 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Loading;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Tests
 {

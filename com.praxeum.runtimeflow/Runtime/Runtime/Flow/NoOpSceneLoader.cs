@@ -2,7 +2,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     /// <summary>
     /// Scene loader that records load requests without performing real scene operations.

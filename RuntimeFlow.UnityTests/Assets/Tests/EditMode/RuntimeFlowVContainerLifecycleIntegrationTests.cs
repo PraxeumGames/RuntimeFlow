@@ -10,6 +10,7 @@ using RuntimeFlow.Contexts;
 using UnityEngine.TestTools;
 using VContainer;
 using VContainer.Unity;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.UnityIntegrationTests
 {

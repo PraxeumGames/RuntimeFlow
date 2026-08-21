@@ -1,8 +1,9 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Transitions
 {
     public sealed class ScopeTransitionContext
     {

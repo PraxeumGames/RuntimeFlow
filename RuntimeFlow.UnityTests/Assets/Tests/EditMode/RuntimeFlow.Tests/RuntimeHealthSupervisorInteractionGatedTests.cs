@@ -2,6 +2,8 @@ using System;
 using System.Threading;
 using NUnit.Framework;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Health;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Tests
 {

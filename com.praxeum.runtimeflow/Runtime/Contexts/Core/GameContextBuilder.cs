@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using RuntimeFlow.Events;
+using RuntimeFlow.Health;
 
 namespace RuntimeFlow.Contexts
 {

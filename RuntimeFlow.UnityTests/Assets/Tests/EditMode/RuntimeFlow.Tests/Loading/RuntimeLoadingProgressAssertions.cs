@@ -2,6 +2,7 @@ using NUnit.Framework;
 using System;
 using System.Collections.Generic;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Loading;
 
 namespace RuntimeFlow.Tests
 {

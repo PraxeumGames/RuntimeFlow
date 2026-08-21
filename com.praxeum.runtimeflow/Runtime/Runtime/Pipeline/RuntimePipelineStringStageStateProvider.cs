@@ -2,7 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public sealed class RuntimePipelineStringStageStateProviderOptions
     {

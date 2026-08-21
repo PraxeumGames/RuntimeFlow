@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using System;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Loading;
 
 namespace RuntimeFlow.Tests
 {

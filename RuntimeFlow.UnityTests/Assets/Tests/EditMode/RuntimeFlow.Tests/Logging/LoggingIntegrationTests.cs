@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
 using Microsoft.Extensions.Logging;
 using VContainer;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Tests
 {

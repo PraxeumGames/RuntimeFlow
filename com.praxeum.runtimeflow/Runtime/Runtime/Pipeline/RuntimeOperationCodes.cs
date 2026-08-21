@@ -1,4 +1,4 @@
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public static class RuntimeOperationCodes
     {

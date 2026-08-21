@@ -1,8 +1,9 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using RuntimeFlow.Status;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public static class RuntimePipelineStateReasonCodes
     {

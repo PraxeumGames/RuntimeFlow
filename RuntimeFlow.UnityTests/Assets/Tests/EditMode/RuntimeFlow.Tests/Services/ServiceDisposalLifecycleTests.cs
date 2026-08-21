@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Pipeline;
+using RuntimeFlow.Status;
 
 namespace RuntimeFlow.Tests
 {

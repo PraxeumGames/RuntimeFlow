@@ -3,6 +3,8 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Flow;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Tests
 {

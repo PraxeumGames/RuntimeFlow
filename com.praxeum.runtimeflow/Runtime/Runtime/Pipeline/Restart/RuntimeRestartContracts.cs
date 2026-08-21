@@ -1,6 +1,6 @@
 using System;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public interface IGameRestartHandler
     {

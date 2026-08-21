@@ -1,7 +1,7 @@
 using System;
 using VContainer;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public static partial class RuntimeFlowInstallerModules
     {

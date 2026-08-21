@@ -1,7 +1,8 @@
 using System;
 using System.Collections.Generic;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Health
 {
     public sealed class InMemoryRuntimeHealthBaselineStore : IRuntimeHealthBaselineStore
     {

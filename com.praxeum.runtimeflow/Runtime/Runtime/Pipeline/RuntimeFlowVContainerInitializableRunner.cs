@@ -5,8 +5,9 @@ using System.Threading;
 using Microsoft.Extensions.Logging;
 using VContainer;
 using VContainer.Unity;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     internal static class RuntimeFlowVContainerInitializableRunner
     {

@@ -1,6 +1,7 @@
 using NUnit.Framework;
 using System.Collections.Concurrent;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Errors;
 
 namespace RuntimeFlow.Tests
 {

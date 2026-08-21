@@ -1,7 +1,7 @@
 using System.Threading;
 using System.Threading.Tasks;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     /// <summary>Defines the top-level runtime flow that orchestrates scene transitions and game startup.</summary>
     public interface IRuntimeFlowScenario

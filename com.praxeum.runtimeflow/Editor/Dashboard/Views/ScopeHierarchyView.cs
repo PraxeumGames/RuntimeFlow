@@ -6,6 +6,7 @@ using RuntimeFlow.Editor.Dashboard.Adapters;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.UIElements;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Editor.Dashboard.Views
 {

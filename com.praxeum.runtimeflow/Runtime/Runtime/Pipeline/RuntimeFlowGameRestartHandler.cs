@@ -4,8 +4,9 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using VContainer;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
+using RuntimeFlow.Status;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public sealed class RuntimeFlowGameRestartHandler : IGameRestartHandler, IDisposable
     {

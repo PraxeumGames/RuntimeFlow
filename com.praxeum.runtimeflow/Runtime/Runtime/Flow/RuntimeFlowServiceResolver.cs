@@ -1,8 +1,9 @@
 using UnityEngine;
 using VContainer;
 using VContainer.Unity;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     public static class RuntimeFlowServiceResolver
     {

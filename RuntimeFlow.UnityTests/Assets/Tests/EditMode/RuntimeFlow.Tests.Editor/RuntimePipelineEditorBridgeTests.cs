@@ -3,6 +3,7 @@ using System;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
 using RuntimeFlow.Editor.Dashboard.Adapters;
+using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Tests.Editor
 {

@@ -2,8 +2,10 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using RuntimeFlow.Flow;
+using RuntimeFlow.Status;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     /// <summary>
     /// Composable readiness gate for runtime restart/replay orchestration.

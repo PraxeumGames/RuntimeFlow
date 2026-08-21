@@ -2,8 +2,9 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine.SceneManagement;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     internal static class RuntimeFlowSceneUtilities
     {

@@ -1,8 +1,9 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using RuntimeFlow.Loading;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     /// <summary>Loads Unity scenes asynchronously in single or additive mode.</summary>
     public interface IGameSceneLoader

@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Errors;
 
 namespace RuntimeFlow.Tests
 {

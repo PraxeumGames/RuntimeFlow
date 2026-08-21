@@ -2,6 +2,7 @@ using NUnit.Framework;
 using System.Collections.Concurrent;
 using System.Threading;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Health;
 
 namespace RuntimeFlow.Tests
 {

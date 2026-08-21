@@ -1,7 +1,8 @@
 using System;
 using System.Threading;
+using RuntimeFlow.Status;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     public enum RuntimeExecutionPhase
     {

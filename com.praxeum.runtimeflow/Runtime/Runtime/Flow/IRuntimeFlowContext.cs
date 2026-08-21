@@ -1,8 +1,9 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     /// <summary>Provides scope and scene management operations available to a runtime flow scenario.</summary>
     public interface IRuntimeFlowContext

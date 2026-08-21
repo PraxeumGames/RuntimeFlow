@@ -1,6 +1,6 @@
 using System;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Status
 {
     public enum RuntimeExecutionState
     {

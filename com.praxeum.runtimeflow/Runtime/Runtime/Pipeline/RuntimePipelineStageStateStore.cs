@@ -1,7 +1,7 @@
 using System;
 using System.Collections.Generic;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     /// <summary>
     /// Thread-safe generic stage state store for pipeline-like orchestrations.

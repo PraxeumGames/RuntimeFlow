@@ -7,7 +7,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using VContainer;
 using VContainer.Unity;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public static class RuntimeFlowPrioritizedInitializableResolver
     {

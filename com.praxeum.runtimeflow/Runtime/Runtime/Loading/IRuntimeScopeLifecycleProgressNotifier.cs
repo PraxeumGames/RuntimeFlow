@@ -1,4 +1,5 @@
-namespace RuntimeFlow.Contexts
+using RuntimeFlow.Contexts;
+namespace RuntimeFlow.Loading
 {
     internal interface IRuntimeScopeLifecycleProgressNotifier
     {

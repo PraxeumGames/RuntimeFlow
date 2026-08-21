@@ -4,7 +4,7 @@ using System.Linq;
 using VContainer;
 using VContainer.Unity;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     public sealed class RuntimeFlowVContainerEntryPointsInstallerOptions
     {

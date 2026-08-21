@@ -1,8 +1,9 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using RuntimeFlow.Loading;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Flow
 {
     public static class SceneLoaderProgressBridge
     {

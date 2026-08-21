@@ -1,6 +1,6 @@
 using System;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Pipeline
 {
     /// <summary>
     /// Pre-built configuration presets for common RuntimePipeline scenarios.

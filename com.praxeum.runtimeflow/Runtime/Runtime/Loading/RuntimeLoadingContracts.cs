@@ -1,6 +1,7 @@
 using System;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Loading
 {
     public enum RuntimeLoadingOperationKind
     {

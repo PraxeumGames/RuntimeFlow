@@ -1,8 +1,9 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Collections.Generic;
+using RuntimeFlow.Contexts;
 
-namespace RuntimeFlow.Contexts
+namespace RuntimeFlow.Health
 {
     public enum RuntimeHealthStatus
     {
