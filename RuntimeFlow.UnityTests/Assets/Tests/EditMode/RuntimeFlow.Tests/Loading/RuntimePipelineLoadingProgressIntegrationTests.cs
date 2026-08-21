@@ -20,7 +20,7 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(Lifetime.Singleton)
+                    builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(DiLifetime.Singleton)
                         .As<IFlowSceneService>()
                         .AsSelf()));
                     builder.Module(new FlowModuleScope(m => m.RegisterInstance<IFlowModuleService>(moduleService)));
@@ -78,7 +78,7 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
-                    builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(Lifetime.Singleton)
+                    builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(DiLifetime.Singleton)
                         .As<IFlowSceneService>()
                         .AsSelf()));
                     builder.Module(new FlowModuleScope(m => m.RegisterInstance<IHeavyFlowModuleStageA>(heavyService)
@@ -117,7 +117,7 @@ public sealed class RuntimePipelineLoadingProgressIntegrationTests
         var pipeline = RuntimePipeline.Create(
             builder =>
             {
-                builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(Lifetime.Singleton)
+                builder.Scene(new FlowSceneScope(s => s.Register<FlowSceneService>(DiLifetime.Singleton)
                     .As<IFlowSceneService>()
                     .AsSelf()));
                 builder.Module(new FlowModuleScope(m => m.RegisterInstance<IActivatingFlowModuleService>(moduleService)));

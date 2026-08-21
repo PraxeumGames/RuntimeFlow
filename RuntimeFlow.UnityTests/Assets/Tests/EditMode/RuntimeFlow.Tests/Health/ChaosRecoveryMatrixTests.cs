@@ -290,7 +290,7 @@ public sealed class ChaosRecoveryMatrixTests
             {
                 builder.DefineSessionScope();
                 builder.Session()
-                    .Register<HeadlessSessionBootstrapService>(Lifetime.Singleton)
+                    .Register<HeadlessSessionBootstrapService>(DiLifetime.Singleton)
                     .As<IHeadlessSessionBootstrapService>()
                     .AsSelf();
             })

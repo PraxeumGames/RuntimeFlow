@@ -29,8 +29,8 @@ namespace RuntimeFlow.Tests
         public void Register_SameImplementation_LastLifetimeWins()
         {
             var context = new GameContext();
-            context.Register(typeof(IServiceA), typeof(SharedImplementation), Lifetime.Singleton);
-            context.Register(typeof(IServiceB), typeof(SharedImplementation), Lifetime.Transient);
+            context.Register(typeof(IServiceA), typeof(SharedImplementation), DiLifetime.Singleton);
+            context.Register(typeof(IServiceB), typeof(SharedImplementation), DiLifetime.Transient);
             context.Initialize();
             try
             {

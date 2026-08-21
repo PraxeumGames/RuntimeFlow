@@ -71,7 +71,6 @@ namespace RuntimeFlow.Contexts
         }
 
         private void SetStatus(RuntimeExecutionState state, string? operationCode = null, string? message = null, Exception? error = null) => _statusService.SetStatus(state, operationCode, message, error);
-        private void SetStatusUnsafe(RuntimeExecutionState state, string? operationCode = null, string? message = null, Exception? error = null) => _statusService.SetStatus(state, operationCode, message, error);
         public RuntimeStatus GetRuntimeStatus() => _statusService.GetStatus();
         public IRuntimeExecutionContext GetExecutionContext() => _statusService.GetExecutionContext();
     }

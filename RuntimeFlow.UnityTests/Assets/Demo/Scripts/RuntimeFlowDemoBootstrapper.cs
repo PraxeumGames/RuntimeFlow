@@ -3,7 +3,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
 using UnityEngine;
-using VContainer;
 
 namespace RuntimeFlow.Demo
 {
@@ -51,16 +50,16 @@ namespace RuntimeFlow.Demo
                         // Global Scope
                         builder.DefineGlobalScope();
                         builder.Global()
-                            .Register<IAppConfigService, AppConfigService>(Lifetime.Singleton)
-                            .Register<IAnalyticsService, AnalyticsService>(Lifetime.Singleton);
+                            .Register<IAppConfigService, AppConfigService>(DiLifetime.Singleton)
+                            .Register<IAnalyticsService, AnalyticsService>(DiLifetime.Singleton);
 
                         // Session Scope
                         builder.DefineSessionScope();
                         builder.Session()
-                            .Register<IAuthService, AuthService>(Lifetime.Singleton)
-                            .Register<IUserProfileService, UserProfileService>(Lifetime.Singleton)
-                            .Register<IInventoryStateService, InventoryStateService>(Lifetime.Singleton)
-                            .Register<IQuestService, QuestService>(Lifetime.Singleton);
+                            .Register<IAuthService, AuthService>(DiLifetime.Singleton)
+                            .Register<IUserProfileService, UserProfileService>(DiLifetime.Singleton)
+                            .Register<IInventoryStateService, InventoryStateService>(DiLifetime.Singleton)
+                            .Register<IQuestService, QuestService>(DiLifetime.Singleton);
 
                         // Scopes
                         builder.Scene<GameplaySceneScope>();

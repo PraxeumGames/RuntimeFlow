@@ -1,5 +1,4 @@
 using RuntimeFlow.Contexts;
-using VContainer;
 
 namespace RuntimeFlow.Demo
 {
@@ -7,8 +6,8 @@ namespace RuntimeFlow.Demo
     {
         public void Configure(IGameScopeRegistrationBuilder builder)
         {
-            builder.Register<IWorldGenerationService, WorldGenerationService>(Lifetime.Singleton);
-            builder.Register<IPlayerSpawnService, PlayerSpawnService>(Lifetime.Singleton);
+            builder.Register<IWorldGenerationService, WorldGenerationService>(DiLifetime.Singleton);
+            builder.Register<IPlayerSpawnService, PlayerSpawnService>(DiLifetime.Singleton);
         }
     }
 
@@ -16,7 +15,7 @@ namespace RuntimeFlow.Demo
     {
         public void Configure(IGameScopeRegistrationBuilder builder)
         {
-            builder.Register<IHudService, HudService>(Lifetime.Singleton);
+            builder.Register<IHudService, HudService>(DiLifetime.Singleton);
         }
     }
 
@@ -24,7 +23,7 @@ namespace RuntimeFlow.Demo
     {
         public void Configure(IGameScopeRegistrationBuilder builder)
         {
-            builder.Register<IInventoryViewService, InventoryViewService>(Lifetime.Singleton);
+            builder.Register<IInventoryViewService, InventoryViewService>(DiLifetime.Singleton);
         }
     }
 
@@ -32,7 +31,7 @@ namespace RuntimeFlow.Demo
     {
         public void Configure(IGameScopeRegistrationBuilder builder)
         {
-            builder.Register<IMinimapService, MinimapService>(Lifetime.Singleton);
+            builder.Register<IMinimapService, MinimapService>(DiLifetime.Singleton);
         }
     }
 }

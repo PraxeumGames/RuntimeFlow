@@ -13,7 +13,8 @@
       "Shell(rm /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ContextTeardownService.cs /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ContextTeardownService.cs.meta /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ScopeTransitionCoordinator.cs /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ScopeTransitionCoordinator.cs.meta 2>&1; echo \"removed dead code\")",
       "Shell(grep:*)",
       "Shell(cp:*)",
-      "Shell(/Applications/Unity/Hub/Editor/2022.3.62f2/Unity.app/Contents/MacOS/Unity:*)"
+      "Shell(/Applications/Unity/Hub/Editor/2022.3.62f2/Unity.app/Contents/MacOS/Unity:*)",
+      "Shell(wc:*)"
     ],
     "deny": [],
     "defaultMode": "default"

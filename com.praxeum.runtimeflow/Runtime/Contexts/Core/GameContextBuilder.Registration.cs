@@ -201,7 +201,7 @@ namespace RuntimeFlow.Contexts
                 var serviceType = typeof(TInterface);
                 var implType = typeof(TImplementation);
                 _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                    context => context.Register(serviceType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
+                    context => context.Register(serviceType, implType, lifetime));
                 return this;
             }
 
@@ -211,7 +211,7 @@ namespace RuntimeFlow.Contexts
                 FlushPending();
                 var implType = typeof(TImplementation);
                 _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                    context => context.Register(implType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
+                    context => context.Register(implType, implType, lifetime));
                 _pendingImplementationType = implType;
                 _pendingLifetime = lifetime;
                 _hasPendingInstance = false;
@@ -227,7 +227,7 @@ namespace RuntimeFlow.Contexts
                         $"[RFRC2003] Cannot register open generic type '{implementationType.FullName ?? implementationType.Name}'. " +
                         "Use a closed generic type or register via ConfigureContainer instead.");
                 _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                    context => context.Register(implementationType, implementationType, DiLifetimeMapper.ToVContainer(lifetime)));
+                    context => context.Register(implementationType, implementationType, lifetime));
                 _pendingImplementationType = implementationType;
                 _pendingLifetime = lifetime;
                 _hasPendingInstance = false;
@@ -251,7 +251,7 @@ namespace RuntimeFlow.Contexts
                     var lifetime = _pendingLifetime;
                     var serviceType = typeof(TInterface);
                     _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                        context => context.Register(serviceType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
+                        context => context.Register(serviceType, implType, lifetime));
                 }
                 return this;
             }
@@ -272,7 +272,7 @@ namespace RuntimeFlow.Contexts
                     var implType = _pendingImplementationType!;
                     var lifetime = _pendingLifetime;
                     _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                        context => context.Register(interfaceType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
+                        context => context.Register(interfaceType, implType, lifetime));
                 }
                 return this;
             }
@@ -293,7 +293,7 @@ namespace RuntimeFlow.Contexts
                     var implType = _pendingImplementationType!;
                     var lifetime = _pendingLifetime;
                     _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                        context => context.Register(implType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
+                        context => context.Register(implType, implType, lifetime));
                 }
                 return this;
             }

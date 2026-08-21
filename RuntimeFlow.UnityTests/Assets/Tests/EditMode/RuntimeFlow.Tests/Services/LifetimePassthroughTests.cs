@@ -15,7 +15,7 @@ namespace RuntimeFlow.Tests
         public void Register_WithTransientLifetime_ResolvesDifferentInstances()
         {
             var context = new GameContext();
-            context.Register(typeof(ILifetimeTestService), typeof(TransientTestService), Lifetime.Transient);
+            context.Register(typeof(ILifetimeTestService), typeof(TransientTestService), DiLifetime.Transient);
             context.Initialize();
 
             var first = context.Resolve<ILifetimeTestService>();
@@ -28,7 +28,7 @@ namespace RuntimeFlow.Tests
         public void Register_WithSingletonLifetime_ResolvesSameInstance()
         {
             var context = new GameContext();
-            context.Register(typeof(ILifetimeTestService), typeof(TransientTestService), Lifetime.Singleton);
+            context.Register(typeof(ILifetimeTestService), typeof(TransientTestService), DiLifetime.Singleton);
             context.Initialize();
 
             var first = context.Resolve<ILifetimeTestService>();

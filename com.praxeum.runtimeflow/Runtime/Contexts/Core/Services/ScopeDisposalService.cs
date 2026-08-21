@@ -150,6 +150,9 @@ namespace RuntimeFlow.Contexts
                 throw new AggregateException(failures);
         }
 
+        public Task DisposeActivatedScopeAsync(GameContextType scope, GameContext? context, Type? scopeKey, ScopeLifecycleState? transitionState, CancellationToken cancellationToken, Action? clearContext = null)
+            => ExitActivatedScopeAsync(scope, context, scopeKey, transitionState, NullInitializationProgressNotifier.Instance, cancellationToken, clearContext ?? (() => { }));
+
         public async Task DisposeScopeContextAsync(GameContextType scope, GameContext? context, CancellationToken cancellationToken, Type? scopeKey = null, Action? onDisposed = null)
         {
             if (context == null) return;
@@ -165,10 +168,10 @@ namespace RuntimeFlow.Contexts
             if (exceptions != null) throw new AggregateException(exceptions);
         }
 
-        private Task DisposeContextAsync(GameContext? context, CancellationToken cancellationToken)
+        private async Task DisposeContextAsync(GameContext? context, CancellationToken cancellationToken)
         {
-            if (context == null) return Task.CompletedTask;
-            return context.DisposeAsync(cancellationToken);
+            if (context == null) return;
+            await context.DisposeAsync(cancellationToken).ConfigureAwait(false);
         }
 
         private Task DisposeContextAsync(IGameContext? context, CancellationToken cancellationToken)
@@ -190,13 +193,7 @@ namespace RuntimeFlow.Contexts
         }
 
         private void DisposeAndClearEventBuses(bool includeGlobal)
-        {
-            _activeState.ModuleEventBus?.Dispose(); _activeState.ModuleEventBus = null;
-            _activeState.SceneEventBus?.Dispose(); _activeState.SceneEventBus = null;
-            _activeState.SessionEventBus?.Dispose(); _activeState.SessionEventBus = null;
-            if (!includeGlobal) return;
-            _activeState.GlobalEventBus?.Dispose(); _activeState.GlobalEventBus = null;
-        }
+            => ScopeCleanupFailures.DisposeAndClearEventBuses(_activeState, includeGlobal);
 
         private async Task ExitActivatedScopeAsync(GameContextType scope, GameContext? context, Type? scopeKey, ScopeLifecycleState? transitionState, IInitializationProgressNotifier progressNotifier, CancellationToken cancellationToken, Action clearContext)
         {
@@ -236,19 +233,7 @@ namespace RuntimeFlow.Contexts
         }
 
         private static Exception? FilterCancellationFailures(Exception exception, bool cancellationRequested)
-        {
-            if (!cancellationRequested) return exception;
-            if (exception is not AggregateException agg) return IsCancellationFailure(exception) ? null : exception;
-            var nonCancellation = agg.Flatten().InnerExceptions.Where(inner => !IsCancellationFailure(inner)).ToArray();
-            return nonCancellation.Length == 0 ? null : new AggregateException(nonCancellation);
-        }
-
-        private static bool IsCancellationFailure(Exception exception)
-        {
-            if (exception is OperationCanceledException) return true;
-            if (exception is AggregateException agg) { var f = agg.Flatten().InnerExceptions; return f.Count > 0 && f.All(IsCancellationFailure); }
-            return false;
-        }
+            => ScopeCleanupFailures.FilterCancellationFailures(exception, cancellationRequested);
 
         private static bool IsObjectDisposedFailure(Exception exception)
         {

@@ -315,7 +315,7 @@ public sealed class ScopePreloadingTests
             builder.Module(new ModuleB(m =>
             {
                 m.RegisterInstance(activation);
-                m.Register<BlockingActivationModuleService>(Lifetime.Transient)
+                m.Register<BlockingActivationModuleService>(DiLifetime.Transient)
                     .As<IBlockingActivationModuleService>();
             }));
         });

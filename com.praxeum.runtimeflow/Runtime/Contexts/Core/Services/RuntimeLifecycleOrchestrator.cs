@@ -52,18 +52,15 @@ namespace RuntimeFlow.Contexts
 
             if (_state.ModuleContext != null)
             {
-                await _disposalService.DisposeScopeContextAsync(GameContextType.Module, _state.ModuleContext, cancellationToken, _state.ActiveModuleScopeKey, () => _registry.SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, _state.ActiveModuleScopeKey)).ConfigureAwait(false);
-                _state.ModuleContext = null;
+                await _disposalService.DisposeActivatedScopeAsync(GameContextType.Module, _state.ModuleContext, _state.ActiveModuleScopeKey, ScopeLifecycleState.Deactivating, cancellationToken, () => _state.ModuleContext = null).ConfigureAwait(false);
             }
             if (_state.SceneContext != null)
             {
-                await _disposalService.DisposeScopeContextAsync(GameContextType.Scene, _state.SceneContext, cancellationToken, _state.ActiveSceneScopeKey, () => _registry.SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Disposed, _state.ActiveSceneScopeKey)).ConfigureAwait(false);
-                _state.SceneContext = null;
+                await _disposalService.DisposeActivatedScopeAsync(GameContextType.Scene, _state.SceneContext, _state.ActiveSceneScopeKey, ScopeLifecycleState.Deactivating, cancellationToken, () => _state.SceneContext = null).ConfigureAwait(false);
             }
             if (_state.SessionContext != null)
             {
-                await _disposalService.DisposeScopeContextAsync(GameContextType.Session, _state.SessionContext, cancellationToken, null, () => _registry.SetScopeStateIfTracked(GameContextType.Session, ScopeLifecycleState.Disposed)).ConfigureAwait(false);
-                _state.SessionContext = null;
+                await _disposalService.DisposeActivatedScopeAsync(GameContextType.Session, _state.SessionContext, null, ScopeLifecycleState.Deactivating, cancellationToken, () => _state.SessionContext = null).ConfigureAwait(false);
             }
             if (_state.OwnsGlobalContext)
             {
@@ -141,22 +138,19 @@ namespace RuntimeFlow.Contexts
 
             if (_state.ModuleContext != null)
             {
-                var ctx = _state.ModuleContext;
                 var key = _state.ActiveModuleScopeKey;
-                try { await _disposalService.DisposeScopeContextAsync(GameContextType.Module, ctx, cancellationToken, key, () => _registry.SetScopeStateIfTracked(GameContextType.Module, ScopeLifecycleState.Disposed, key)).ConfigureAwait(false); }
+                try { await _disposalService.DisposeActivatedScopeAsync(GameContextType.Module, _state.ModuleContext, key, ScopeLifecycleState.Deactivating, cancellationToken).ConfigureAwait(false); }
                 finally { _state.ModuleContext = null; }
             }
             if (_state.SceneContext != null)
             {
-                var ctx = _state.SceneContext;
                 var key = _state.ActiveSceneScopeKey;
-                try { await _disposalService.DisposeScopeContextAsync(GameContextType.Scene, ctx, cancellationToken, key, () => _registry.SetScopeStateIfTracked(GameContextType.Scene, ScopeLifecycleState.Disposed, key)).ConfigureAwait(false); }
+                try { await _disposalService.DisposeActivatedScopeAsync(GameContextType.Scene, _state.SceneContext, key, ScopeLifecycleState.Deactivating, cancellationToken).ConfigureAwait(false); }
                 finally { _state.SceneContext = null; }
             }
             if (_state.SessionContext != null)
             {
-                var ctx = _state.SessionContext;
-                try { await _disposalService.DisposeScopeContextAsync(GameContextType.Session, ctx, cancellationToken, null, () => _registry.SetScopeStateIfTracked(GameContextType.Session, ScopeLifecycleState.Disposed)).ConfigureAwait(false); }
+                try { await _disposalService.DisposeActivatedScopeAsync(GameContextType.Session, _state.SessionContext, null, ScopeLifecycleState.Deactivating, cancellationToken).ConfigureAwait(false); }
                 finally { _state.SessionContext = null; }
             }
 
@@ -226,13 +220,7 @@ namespace RuntimeFlow.Contexts
         }
 
         private void DisposeAndClearEventBuses(bool includeGlobal)
-        {
-            _state.ModuleEventBus?.Dispose(); _state.ModuleEventBus = null;
-            _state.SceneEventBus?.Dispose(); _state.SceneEventBus = null;
-            _state.SessionEventBus?.Dispose(); _state.SessionEventBus = null;
-            if (!includeGlobal) return;
-            _state.GlobalEventBus?.Dispose(); _state.GlobalEventBus = null;
-        }
+            => ScopeCleanupFailures.DisposeAndClearEventBuses(_state, includeGlobal);
 
         private static GameContext CreateContext(IGameContext? parent, IReadOnlyCollection<Action<IGameContext>> regs, IReadOnlyCollection<ServiceDescriptor> auto, Action<IGameContext>? cb, bool init, IDictionary<Type, object> avail, ScopeEventBus? bus, IInitializationExecutionScheduler scheduler)
         {
@@ -265,22 +253,11 @@ namespace RuntimeFlow.Contexts
                 try { await op().ConfigureAwait(false); }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
                 catch (AggregateException agg) { var f = FilterCancellationFailures(agg, ct.IsCancellationRequested); if (f != null) failures.Add(f); }
-                catch (Exception ex) { if (ct.IsCancellationRequested && IsCancellationFailure(ex)) continue; failures.Add(ex); }
+                catch (Exception ex) { if (ct.IsCancellationRequested && ScopeCleanupFailures.IsCancellationFailure(ex)) continue; failures.Add(ex); }
             }
             return failures;
         }
         private static Exception? FilterCancellationFailures(Exception ex, bool requested)
-        {
-            if (!requested) return ex;
-            if (ex is not AggregateException agg) return IsCancellationFailure(ex) ? null : ex;
-            var non = agg.Flatten().InnerExceptions.Where(i => !IsCancellationFailure(i)).ToArray();
-            return non.Length == 0 ? null : new AggregateException(non);
-        }
-        private static bool IsCancellationFailure(Exception ex)
-        {
-            if (ex is OperationCanceledException) return true;
-            if (ex is AggregateException agg) { var f = agg.Flatten().InnerExceptions; return f.Count > 0 && f.All(IsCancellationFailure); }
-            return false;
-        }
+            => ScopeCleanupFailures.FilterCancellationFailures(ex, requested);
     }
 }

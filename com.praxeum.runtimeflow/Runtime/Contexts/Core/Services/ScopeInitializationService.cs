@@ -70,7 +70,7 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey,
             bool skipActivation,
             ScopeEventBus? eventBus,
-            Func<GameContextType, ScopeLifecycleState, Type?, Action> setState,
+            Action<GameContextType, ScopeLifecycleState, Type?> setState,
             Action<long, CancellationToken> throwIfStale,
             Func<GameContextType, GameContext?, CancellationToken, Type?, Action?, Task> disposeScope,
             Func<CancellationToken, Func<Task>[], Task<List<Exception>>> captureCleanup,
@@ -85,7 +85,7 @@ namespace RuntimeFlow.Contexts
             var sw = Stopwatch.StartNew();
             try
             {
-                context = CreateContext(parentContext, registrations, autoServices, initializedCallback, true, availableServices, eventBus);
+                context = CreateContext(parentContext, registrations, autoServices, initializedCallback, true, availableServices, eventBus, _scheduler);
                 var totalServices = await ExecuteInitializersAsync(scope, context, initializedServices, progressNotifier, generation, cancellationToken, scopeKey, throwIfStale).ConfigureAwait(false);
                 throwIfStale(generation, cancellationToken);
                 if (scope != GameContextType.Global && !skipActivation)
@@ -135,17 +135,6 @@ namespace RuntimeFlow.Contexts
             if (initialize) context.Initialize();
             return context;
         }
-
-        private static GameContext CreateContextStatic(
-            IGameContext? parent,
-            IReadOnlyCollection<Action<IGameContext>> registrations,
-            IReadOnlyCollection<ServiceDescriptor> autoServices,
-            Action<IGameContext>? initializedCallback,
-            bool initialize,
-            IDictionary<Type, object> availableServices,
-            ScopeEventBus? eventBus,
-            IInitializationExecutionScheduler? scheduler)
-            => CreateContext(parent, registrations, autoServices, initializedCallback, initialize, availableServices, eventBus, scheduler);
 
         public async Task<int> ExecuteInitializersAsync(
             GameContextType scope,

@@ -116,22 +116,7 @@ namespace RuntimeFlow.Contexts
         }
 
         private void DisposeAndClearEventBuses(bool includeGlobal)
-        {
-            _moduleEventBus?.Dispose();
-            _moduleEventBus = null;
-
-            _sceneEventBus?.Dispose();
-            _sceneEventBus = null;
-
-            _sessionEventBus?.Dispose();
-            _sessionEventBus = null;
-
-            if (!includeGlobal)
-                return;
-
-            _globalEventBus?.Dispose();
-            _globalEventBus = null;
-        }
+            => ScopeCleanupFailures.DisposeAndClearEventBuses(_activeState, includeGlobal);
 
         private async Task<List<Exception>> CaptureCleanupFailuresAsync(
             CancellationToken cancellationToken,
@@ -160,7 +145,7 @@ namespace RuntimeFlow.Contexts
                 }
                 catch (Exception cleanupException)
                 {
-                    if (cancellationToken.IsCancellationRequested && IsCancellationFailure(cleanupException))
+                    if (cancellationToken.IsCancellationRequested && ScopeCleanupFailures.IsCancellationFailure(cleanupException))
                         continue;
 
                     failures.Add(cleanupException);
@@ -171,37 +156,7 @@ namespace RuntimeFlow.Contexts
         }
 
         private static Exception? FilterCancellationFailures(Exception exception, bool cancellationRequested)
-        {
-            if (!cancellationRequested)
-                return exception;
-
-            if (exception is not AggregateException aggregateException)
-                return IsCancellationFailure(exception) ? null : exception;
-
-            var nonCancellationFailures = aggregateException
-                .Flatten()
-                .InnerExceptions
-                .Where(inner => !IsCancellationFailure(inner))
-                .ToArray();
-
-            return nonCancellationFailures.Length == 0
-                ? null
-                : new AggregateException(nonCancellationFailures);
-        }
-
-        private static bool IsCancellationFailure(Exception exception)
-        {
-            if (exception is OperationCanceledException)
-                return true;
-
-            if (exception is AggregateException aggregateException)
-            {
-                var flattened = aggregateException.Flatten().InnerExceptions;
-                return flattened.Count > 0 && flattened.All(IsCancellationFailure);
-            }
-
-            return false;
-        }
+            => ScopeCleanupFailures.FilterCancellationFailures(exception, cancellationRequested);
 
         private static bool IsObjectDisposedFailure(Exception exception)
         {

@@ -162,8 +162,8 @@ namespace RuntimeFlow.Tests.PlayMode
             {
                 builder.DefineSessionScope();
                 builder.Session().RegisterInstance<List<string>>(calls);
-                builder.Session().Register<IAsyncSessionServiceB, AsyncSessionServiceB>(VContainer.Lifetime.Singleton);
-                builder.Session().Register<IAsyncSessionServiceA, AsyncSessionServiceA>(VContainer.Lifetime.Singleton);
+                builder.Session().Register<IAsyncSessionServiceB, AsyncSessionServiceB>(DiLifetime.Singleton);
+                builder.Session().Register<IAsyncSessionServiceA, AsyncSessionServiceA>(DiLifetime.Singleton);
             });
 
             await pipeline.InitializeAsync();

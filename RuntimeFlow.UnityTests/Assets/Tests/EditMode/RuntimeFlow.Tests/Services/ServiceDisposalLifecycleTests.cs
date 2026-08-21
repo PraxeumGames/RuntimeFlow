@@ -201,8 +201,8 @@ namespace RuntimeFlow.Tests
             var pipeline = RuntimePipeline.Create(builder =>
             {
                 builder.DefineSessionScope();
-                builder.Session().Register<ISessionServiceA, SharedSessionService>(VContainer.Lifetime.Singleton);
-                builder.Session().Register<ISessionServiceB, SharedSessionService>(VContainer.Lifetime.Transient);
+                builder.Session().Register<ISessionServiceA, SharedSessionService>(DiLifetime.Singleton);
+                builder.Session().Register<ISessionServiceB, SharedSessionService>(DiLifetime.Transient);
             });
 
             await pipeline.InitializeAsync();

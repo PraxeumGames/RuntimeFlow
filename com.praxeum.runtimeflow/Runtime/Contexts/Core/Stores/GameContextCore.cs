@@ -45,9 +45,6 @@ namespace RuntimeFlow.Contexts
             set => _diagnostics = value;
         }
 
-        public void Register(Type serviceType, Type implementationType, DiLifetime lifetime)
-            => _registrationStore.Register(serviceType, implementationType, DiLifetimeMapper.ToVContainer(lifetime));
-
         private static DiagnosticsCollector CreateDiagnosticsCollector()
         {
             var id = System.Threading.Interlocked.Increment(ref _contextInstanceCounter);
@@ -95,9 +92,6 @@ namespace RuntimeFlow.Contexts
                 throw new InvalidOperationException($"Service type {serviceType.Name} is not assignable from {implementationType.Name}.");
             _registrationStore.Register(serviceType, implementationType, DiLifetimeMapper.ToVContainer(lifetime));
         }
-
-        public void Register(Type serviceType, Type implementationType, Lifetime lifetime)
-            => Register(serviceType, implementationType, DiLifetimeMapper.FromVContainer(lifetime));
 
         public void ConfigureContainer(Action<IContainerBuilder> configure)
         {

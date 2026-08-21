@@ -59,7 +59,7 @@ namespace RuntimeFlow.Tests
         public void Decorate_WrapsService_ResolveReturnsDecorator()
         {
             var context = new GameContext();
-            context.Register(typeof(IDecorableService), typeof(RealDecorableService), Lifetime.Singleton);
+            context.Register(typeof(IDecorableService), typeof(RealDecorableService), DiLifetime.Singleton);
             context.Decorate(typeof(IDecorableService), typeof(LoggingDecorator));
             context.Initialize();
 
@@ -73,7 +73,7 @@ namespace RuntimeFlow.Tests
         public void Decorate_ChainedDecorators_AppliedInOrder()
         {
             var context = new GameContext();
-            context.Register(typeof(IDecorableService), typeof(RealDecorableService), Lifetime.Singleton);
+            context.Register(typeof(IDecorableService), typeof(RealDecorableService), DiLifetime.Singleton);
             context.Decorate(typeof(IDecorableService), typeof(LoggingDecorator));
             context.Decorate(typeof(IDecorableService), typeof(CachingDecorator));
             context.Initialize();
@@ -88,8 +88,8 @@ namespace RuntimeFlow.Tests
         public void Decorate_DecoratorWithOtherDependencies_Resolved()
         {
             var context = new GameContext();
-            context.Register(typeof(IDecorableService), typeof(RealDecorableService), Lifetime.Singleton);
-            context.Register(typeof(IExtraDependency), typeof(ExtraDependency), Lifetime.Singleton);
+            context.Register(typeof(IDecorableService), typeof(RealDecorableService), DiLifetime.Singleton);
+            context.Register(typeof(IExtraDependency), typeof(ExtraDependency), DiLifetime.Singleton);
             context.Decorate(typeof(IDecorableService), typeof(DecoratorWithDeps));
             context.Initialize();
 

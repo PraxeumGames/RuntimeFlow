@@ -19,9 +19,7 @@ namespace RuntimeFlow.Contexts
         private readonly ScopeOperationCoordinator _coordinator;
         private readonly ScopeActivationService _activationService;
         private readonly ScopeTransitionEngine _scopeTransitions;
-        private readonly ScopeTransitionService _scopeTransitionService;
         private readonly ScopeDisposalService _disposalService;
-        private readonly ScopeLoadingService _loadingService;
         private readonly ScopeInitializationService _initService;
         private readonly RuntimeLifecycleOrchestrator _lifecycleOrchestrator;
         private readonly ActiveScopeState _activeState = new();
@@ -77,20 +75,7 @@ namespace RuntimeFlow.Contexts
             _activationService = new ScopeActivationService(_executionScheduler);
             _initService = new ScopeInitializationService(_activeState, _scopeRegistry, _lazyInitialization, _executionScheduler, _healthSupervisor, _logger, _activationService);
             _scopeTransitions = new ScopeTransitionEngine(this);
-            _scopeTransitionService = new ScopeTransitionService(
-                _activeState,
-                _activationService,
-                (scope, parent, regs, auto, cb, init, avail, notifier, gen, ct, key, skip, bus) => _initService.CreateAndInitializeScopeContextAsync(scope, parent, regs, auto, cb, init, avail, notifier, gen, ct, key, skip, bus, SetScopeStateIfTracked, ThrowIfStaleGeneration, DisposeScopeContextAsync, (t, ops2) => CaptureCleanupFailuresAsync(t, ops2), CreateCleanupAggregateException, CreateFailureCleanupCancellationToken, IsStaleGenerationCancellation),
-                DisposeScopeContextAsync,
-                (token, ops) => CaptureCleanupFailuresAsync(token, ops),
-                CreateCleanupAggregateException,
-                CreateFailureCleanupCancellationToken,
-                FilterCancellationFailures,
-                SetScopeStateIfTracked,
-                PublishInCurrentGeneration,
-                ThrowIfStaleGeneration);
             _disposalService = new ScopeDisposalService(_activeState, _scopeRegistry, _executionScheduler, _logger, _coordinator, _activationService);
-            _loadingService = new ScopeLoadingService(_activeState, _scopeProfiles, _coordinator, _scopeTransitionService, _scopeTransitions);
             _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _generationGate, _initService, _disposalService);
         }
 
@@ -98,11 +83,7 @@ namespace RuntimeFlow.Contexts
 
         internal GenerationGate GenerationGate => _generationGate;
 
-        internal ScopeTransitionService ScopeTransitionService => _scopeTransitionService;
-
         internal ScopeDisposalService DisposalService => _disposalService;
-
-        internal ScopeLoadingService LoadingService => _loadingService;
 
         internal ScopeInitializationService InitializationService => _initService;
 
@@ -144,6 +125,27 @@ namespace RuntimeFlow.Contexts
 
         internal void SetScopeStateIfTracked(GameContextType scope, ScopeLifecycleState state, Type? explicitScopeKey = null)
             => _scopeRegistry.SetScopeStateIfTracked(scope, state, explicitScopeKey);
+
+        internal Task<GameContext> CreateAndInitializeScopeContextAsync(
+            GameContextType scope,
+            IGameContext parentContext,
+            IReadOnlyCollection<Action<IGameContext>> registrations,
+            IReadOnlyCollection<ServiceDescriptor> autoServices,
+            Action<IGameContext>? initializedCallback,
+            ISet<Type> initializedServices,
+            IDictionary<Type, object> availableServices,
+            IInitializationProgressNotifier progressNotifier,
+            long generation,
+            CancellationToken cancellationToken,
+            Type? scopeKey,
+            bool skipActivation = false,
+            ScopeEventBus? eventBus = null)
+            => _initService.CreateAndInitializeScopeContextAsync(
+                scope, parentContext, registrations, autoServices, initializedCallback, initializedServices, availableServices,
+                progressNotifier, generation, cancellationToken, scopeKey, skipActivation, eventBus,
+                SetScopeStateIfTracked, ThrowIfStaleGeneration, DisposeScopeContextAsync,
+                CaptureCleanupFailuresAsync, CreateCleanupAggregateException, CreateFailureCleanupCancellationToken,
+                IsStaleGenerationCancellation);
 
         internal ScopeLifecycleState GetScopeState(Type scopeType)
             => _scopeRegistry.GetScopeState(scopeType);

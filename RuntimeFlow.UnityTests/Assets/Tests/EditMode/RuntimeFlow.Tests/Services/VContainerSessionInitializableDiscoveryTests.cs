@@ -251,7 +251,7 @@ namespace RuntimeFlow.Tests
             var pipeline = RuntimePipeline.Create(builder =>
             {
                 builder.DefineSessionScope();
-                builder.Session().Register<SelfRegisteredSessionService>(Lifetime.Singleton);
+                builder.Session().Register<SelfRegisteredSessionService>(DiLifetime.Singleton);
             });
 
             await pipeline.InitializeAsync();
@@ -268,7 +268,7 @@ namespace RuntimeFlow.Tests
             var pipeline = RuntimePipeline.Create(builder =>
             {
                 builder.DefineSessionScope();
-                builder.Session().Register(typeof(SelfRegisteredByTypeSessionService), Lifetime.Singleton);
+                builder.Session().Register(typeof(SelfRegisteredByTypeSessionService), DiLifetime.Singleton);
             });
 
             await pipeline.InitializeAsync();
@@ -286,7 +286,7 @@ namespace RuntimeFlow.Tests
             var pipeline = RuntimePipeline.Create(builder =>
             {
                 builder.DefineSessionScope();
-                builder.Session().Register<FluentMixedSessionService>(Lifetime.Singleton);
+                builder.Session().Register<FluentMixedSessionService>(DiLifetime.Singleton);
                 builder.Session().ConfigureContainer(containerBuilder =>
                 {
                     containerBuilder.Register<VContainerMixedSessionService>(Lifetime.Singleton)

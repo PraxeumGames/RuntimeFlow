@@ -50,17 +50,17 @@ public sealed partial class ScopeTypeRegistryTests
             builder.DefineSessionScope();
 
             builder.Session()
-                .Register<FluentSessionService>(Lifetime.Singleton)
+                .Register<FluentSessionService>(DiLifetime.Singleton)
                 .As<ITestSessionService>()
                 .AsSelf();
 
             builder.Scene(new SceneScope(s => s
-                .Register<FluentSceneService>(Lifetime.Singleton)
+                .Register<FluentSceneService>(DiLifetime.Singleton)
                 .As<ITestSceneService>()
                 .AsSelf()));
 
             builder.Module(new ModuleScope(s => s
-                .Register<FluentModuleService>(Lifetime.Singleton)
+                .Register<FluentModuleService>(DiLifetime.Singleton)
                 .As<ITestModuleService>()
                 .AsSelf()));
         });

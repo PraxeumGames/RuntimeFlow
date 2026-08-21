@@ -11,7 +11,7 @@ public sealed partial class ScopeActivationEngineTests
     [Test]
     public void ShouldUseCompiledInitializationGraph_EmptyVersion_ReturnsFalse()
     {
-        var result = GameContextBuilder.ShouldUseCompiledInitializationGraph(string.Empty);
+        var result = InitializationGraphResolver.ShouldUseCompiledInitializationGraph(string.Empty);
 
         Assert.IsFalse(result);
     }
@@ -19,7 +19,7 @@ public sealed partial class ScopeActivationEngineTests
     [Test]
     public void ShouldUseCompiledInitializationGraph_MatchingVersion_ReturnsTrue()
     {
-        var result = GameContextBuilder.ShouldUseCompiledInitializationGraph(InitializationGraphRules.Version);
+        var result = InitializationGraphResolver.ShouldUseCompiledInitializationGraph(InitializationGraphRules.Version);
 
         Assert.IsTrue(result);
     }
@@ -30,7 +30,7 @@ public sealed partial class ScopeActivationEngineTests
         var actualVersion = "compiled-constructor-v1";
 
         var exception = Assert.Throws<InvalidOperationException>(() =>
-            GameContextBuilder.ShouldUseCompiledInitializationGraph(actualVersion));
+            InitializationGraphResolver.ShouldUseCompiledInitializationGraph(actualVersion));
 
         Assert.That(exception.Message, Does.Contain("Compiled initialization graph rule version mismatch."));
         Assert.That(exception.Message, Does.Contain($"Expected '{InitializationGraphRules.Version}'"));

@@ -17,7 +17,7 @@ public sealed partial class ScopeTypeRegistryTests
         var pipeline = RuntimePipeline.Create(builder =>
             {
                 builder.Scene(new SceneScope(s => s
-                    .Register<FluentSceneService>(Lifetime.Singleton)
+                    .Register<FluentSceneService>(DiLifetime.Singleton)
                     .As<ITestSceneService>()
                     .AsSelf()));
             })
@@ -40,7 +40,7 @@ public sealed partial class ScopeTypeRegistryTests
         var pipeline = RuntimePipeline.Create(builder =>
             {
                 builder.Scene(new SceneScope(s => s
-                    .Register(typeof(FluentSceneService), Lifetime.Singleton)
+                    .Register(typeof(FluentSceneService), DiLifetime.Singleton)
                     .As(typeof(ITestSceneService))
                     .AsSelf()));
             })
@@ -83,7 +83,7 @@ public sealed partial class ScopeTypeRegistryTests
             RuntimePipeline.Create(builder =>
             {
                 builder.Scene(new SceneScope(s => s
-                    .Register(typeof(OpenGenericFluentSceneService<>), Lifetime.Singleton)));
+                    .Register(typeof(OpenGenericFluentSceneService<>), DiLifetime.Singleton)));
             }));
 
         Assert.That(exception.Message, Does.Contain("RFRC2003"));

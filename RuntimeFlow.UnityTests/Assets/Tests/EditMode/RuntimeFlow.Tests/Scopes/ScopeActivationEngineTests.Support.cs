@@ -1,9 +1,7 @@
 using NUnit.Framework;
 using System;
-using System.Collections;
 using System.Collections.Generic;
-using System.Reflection;
-using System.Runtime.ExceptionServices;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
@@ -13,7 +11,8 @@ namespace RuntimeFlow.Tests
 
 public sealed partial class ScopeActivationEngineTests
 {
-    private static readonly BindingFlags InstanceFlags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+    private static readonly ScopeActivationService ActivationService =
+        new(InlineInitializationExecutionScheduler.Instance);
 
     private static GameContext CreateSessionContext(
         IGammaSessionActivationService gamma,
@@ -28,71 +27,22 @@ public sealed partial class ScopeActivationEngineTests
         return context;
     }
 
-    private static object DiscoverExecutionPlan(GameContextBuilder builder, GameContextType scope, GameContext context)
-    {
-        var method = typeof(GameContextBuilder).GetMethod(
-                         "DiscoverScopeActivationExecutionPlan",
-                         InstanceFlags,
-                         binder: null,
-                         types: new[] { typeof(GameContextType), typeof(GameContext) },
-                         modifiers: null)
-                     ?? throw new InvalidOperationException("Scope activation plan discovery method not found.");
-        return InvokeMethod(method, builder, scope, context)
-               ?? throw new InvalidOperationException("Scope activation plan discovery returned null.");
-    }
+    private static ScopeActivationExecutionPlan DiscoverExecutionPlan(GameContextBuilder builder, GameContextType scope, GameContext context)
+        => ActivationService.DiscoverPlan(scope, context);
 
-    private static IReadOnlyList<Type> ReadServiceOrder(object executionPlan, string propertyName)
-    {
-        var orderProperty = executionPlan.GetType().GetProperty(propertyName, InstanceFlags)
-                            ?? throw new InvalidOperationException($"Execution plan property '{propertyName}' not found.");
-        if (orderProperty.GetValue(executionPlan) is not IEnumerable participants)
-            throw new InvalidOperationException($"Execution plan property '{propertyName}' returned null.");
+    private static IReadOnlyList<Type> ReadServiceOrder(ScopeActivationExecutionPlan executionPlan, string propertyName)
+        => (propertyName == "EnterOrder" ? executionPlan.EnterOrder : executionPlan.ExitOrder)
+            .Select(participant => participant.ServiceType)
+            .ToArray();
 
-        var serviceTypes = new List<Type>();
-        foreach (var participant in participants)
-        {
-            var participantType = participant?.GetType()
-                                  ?? throw new InvalidOperationException("Scope activation participant is null.");
-            var serviceTypeProperty = participantType.GetProperty("ServiceType", InstanceFlags)
-                                      ?? throw new InvalidOperationException("Scope activation participant service type property not found.");
-            if (serviceTypeProperty.GetValue(participant) is not Type serviceType)
-                throw new InvalidOperationException("Scope activation participant service type value is null.");
-            serviceTypes.Add(serviceType);
-        }
-
-        return serviceTypes;
-    }
-
-    private static async Task ExecuteScopeActivationPhaseAsync(
+    private static Task ExecuteScopeActivationPhaseAsync(
         GameContextBuilder builder,
         string methodName,
         GameContext context,
         CancellationToken cancellationToken)
-    {
-        var method = typeof(GameContextBuilder).GetMethod(
-                         methodName,
-                         InstanceFlags,
-                         binder: null,
-                         types: new[] { typeof(GameContextType), typeof(GameContext), typeof(CancellationToken) },
-                         modifiers: null)
-                     ?? throw new InvalidOperationException($"Scope activation method '{methodName}' not found.");
-        var task = InvokeMethod(method, builder, GameContextType.Session, context, cancellationToken) as Task
-                   ?? throw new InvalidOperationException($"Scope activation method '{methodName}' did not return a Task.");
-        await task.ConfigureAwait(false);
-    }
-
-    private static object? InvokeMethod(MethodInfo method, object target, params object?[] args)
-    {
-        try
-        {
-            return method.Invoke(target, args);
-        }
-        catch (TargetInvocationException exception) when (exception.InnerException != null)
-        {
-            ExceptionDispatchInfo.Capture(exception.InnerException).Throw();
-            throw;
-        }
-    }
+        => methodName == "ExecuteScopeActivationEnterAsync"
+            ? ActivationService.ExecuteEnterAsync(GameContextType.Session, context, NullInitializationProgressNotifier.Instance, totalServices: 0, cancellationToken)
+            : ActivationService.ExecuteExitAsync(GameContextType.Session, context, NullInitializationProgressNotifier.Instance, cancellationToken);
 
     private interface IAlphaSessionActivationService : ISessionScopeActivationService { }    private interface IBetaSessionActivationService : ISessionScopeActivationService { }    private interface IGammaSessionActivationService : ISessionScopeActivationService { }
     private abstract class SessionActivationServiceBase : ISessionScopeActivationService
