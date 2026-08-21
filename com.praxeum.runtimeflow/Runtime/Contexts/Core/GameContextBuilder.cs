@@ -75,11 +75,12 @@ namespace RuntimeFlow.Contexts
             _coordinator = new ScopeOperationCoordinator();
             _generationGate = new GenerationGate(_coordinator);
             _activationService = new ScopeActivationService(_executionScheduler);
+            _initService = new ScopeInitializationService(_activeState, _scopeRegistry, _lazyInitialization, _executionScheduler, _healthSupervisor, _logger, _activationService);
             _scopeTransitions = new ScopeTransitionEngine(this);
             _scopeTransitionService = new ScopeTransitionService(
                 _activeState,
                 _activationService,
-                CreateAndInitializeScopeContextAsync,
+                (scope, parent, regs, auto, cb, init, avail, notifier, gen, ct, key, skip, bus) => _initService.CreateAndInitializeScopeContextAsync(scope, parent, regs, auto, cb, init, avail, notifier, gen, ct, key, skip, bus, SetScopeStateIfTracked, ThrowIfStaleGeneration, DisposeScopeContextAsync, (t, ops2) => CaptureCleanupFailuresAsync(t, ops2), CreateCleanupAggregateException, CreateFailureCleanupCancellationToken, IsStaleGenerationCancellation),
                 DisposeScopeContextAsync,
                 (token, ops) => CaptureCleanupFailuresAsync(token, ops),
                 CreateCleanupAggregateException,
@@ -90,7 +91,6 @@ namespace RuntimeFlow.Contexts
                 ThrowIfStaleGeneration);
             _disposalService = new ScopeDisposalService(_activeState, _scopeRegistry, _executionScheduler, _logger, _coordinator, _activationService);
             _loadingService = new ScopeLoadingService(_activeState, _scopeProfiles, _coordinator, _scopeTransitionService, _scopeTransitions);
-            _initService = new ScopeInitializationService(_activeState, _scopeRegistry, _lazyInitialization, _executionScheduler, _healthSupervisor, _logger, _activationService);
             _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _generationGate, _initService, _disposalService);
         }
 
