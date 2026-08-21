@@ -70,32 +70,4 @@ namespace RuntimeFlow.Contexts
         Task LoadAdditiveModuleAsync(Type moduleScopeKey, IInitializationProgressNotifier? progressNotifier = null, CancellationToken cancellationToken = default);
         Task UnloadAdditiveModuleAsync(Type moduleScopeKey, CancellationToken cancellationToken = default);
     }
-
-    public static class GameContextBuilderExtensions
-    {
-        /// <summary>Defines a scene scope and chains additional module scopes fluently.</summary>
-        public static IGameContextBuilder WithScene<TScope>(this IGameContextBuilder builder) where TScope : ISceneScope, new()
-        {
-            return builder.Scene<TScope>();
-        }
-
-        /// <summary>Defines a module scope fluently.</summary>
-        public static IGameContextBuilder WithModule<TScope>(this IGameContextBuilder builder) where TScope : IModuleScope, new()
-        {
-            return builder.Module<TScope>();
-        }
-
-        /// <summary>Defines a module scope with an existing installer instance fluently.</summary>
-        public static IGameContextBuilder WithModule<TScope>(this IGameContextBuilder builder, TScope installer) where TScope : IModuleScope
-        {
-            return builder.Module(installer);
-        }
-
-        /// <summary>Registers a transition handler in the Session scope.</summary>
-        public static IGameContextBuilder WithTransition<TTransition>(this IGameContextBuilder builder) where TTransition : class, IScopeTransitionHandler
-        {
-            builder.Session().Register<IScopeTransitionHandler, TTransition>(DiLifetime.Singleton);
-            return builder;
-        }
-    }
 }
