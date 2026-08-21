@@ -26,8 +26,9 @@ namespace RuntimeFlow.Editor.Dashboard.Adapters
                 nodes = RuntimeFlowCompiledInitializationGraph.Nodes;
                 return nodes != null && nodes.Count > 0;
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogWarning($"[RuntimeFlow] Dashboard could not read the compiled initialization graph: {ex.Message}");
                 ruleVersion = string.Empty;
                 nodes = Array.Empty<RuntimeFlowCompiledInitializationGraph.Node>();
                 return false;
@@ -40,8 +41,9 @@ namespace RuntimeFlow.Editor.Dashboard.Adapters
             {
                 return ExplicitTypeCatalogProvider.GetExplicitDependencyTypes();
             }
-            catch
+            catch (Exception ex)
             {
+                Debug.LogWarning($"[RuntimeFlow] Dashboard could not read the explicit dependency catalog: {ex.Message}");
                 return Array.Empty<Type>();
             }
         }

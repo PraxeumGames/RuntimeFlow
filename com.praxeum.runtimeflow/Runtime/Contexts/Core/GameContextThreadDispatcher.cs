@@ -10,6 +10,7 @@ namespace RuntimeFlow.Contexts
         private static SynchronizationContext? _mainThreadContext;
         private static int _mainThreadId;
         private static readonly object _sync = new();
+        private static bool _warnedMissingMainThreadContext;
 
         public static SynchronizationContext? MainThreadContext
         {
@@ -50,7 +51,10 @@ namespace RuntimeFlow.Contexts
             SynchronizationContext? ctx;
             lock (_sync) ctx = _mainThreadContext;
             if (ctx == null)
+            {
+                WarnMissingMainThreadContextOnce(operationDescription);
                 return Task.FromResult(action());
+            }
 
             var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
             ctx.Post(_ =>
@@ -80,9 +84,20 @@ namespace RuntimeFlow.Contexts
             SynchronizationContext? ctx;
             lock (_sync) ctx = _mainThreadContext;
             if (ctx == null)
+            {
+                WarnMissingMainThreadContextOnce(operationDescription);
                 return action();
+            }
 
             return DispatchToMainThreadAsync(action, operationDescription).GetAwaiter().GetResult();
+        }
+
+        private static void WarnMissingMainThreadContextOnce(string operationDescription)
+        {
+            if (_warnedMissingMainThreadContext) return;
+            _warnedMissingMainThreadContext = true;
+            UnityEngine.Debug.LogWarning($"[RuntimeFlow] No main-thread SynchronizationContext was captured; executing '{operationDescription}' on the calling thread. " +
+                                         "Call GameContext.CaptureMainThread() during startup to enable correct main-thread marshalling.");
         }
 
         private static async Task<T> WaitWithTimeoutAsync<T>(Task<T> task, string operationDescription, CancellationToken cancellationToken)

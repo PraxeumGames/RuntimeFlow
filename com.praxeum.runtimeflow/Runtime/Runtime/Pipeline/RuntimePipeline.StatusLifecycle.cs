@@ -15,7 +15,14 @@ namespace RuntimeFlow.Contexts
             _disposed = true;
             if (ActivePipeline == this)
                 ActivePipeline = null;
-            try { await _builder.DisposeAllScopesAsync(CancellationToken.None).ConfigureAwait(false); } catch { }
+            try
+            {
+                await _builder.DisposeAllScopesAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Pipeline disposal encountered scope teardown failures; continuing teardown.");
+            }
             _logger.LogDebug("Pipeline disposed");
         }
         private void ThrowIfDisposed() { if (_disposed) throw new ObjectDisposedException(nameof(RuntimePipeline)); }
