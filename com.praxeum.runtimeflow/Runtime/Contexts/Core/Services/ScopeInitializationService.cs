@@ -148,12 +148,6 @@ namespace RuntimeFlow.Contexts
             if (totalServices == 0) return totalServices;
 
             var completedServices = 0;
-            void RecordSuccessful(IEnumerable<(Task task, ServiceInitializerBinding initializer)> tasks)
-            {
-                foreach (var t in tasks)
-                    if (t.task.Status == TaskStatus.RanToCompletion)
-                        context.RecordInitialized(t.initializer);
-            }
 
             if (plan.EntryPoints != null)
             {
@@ -183,78 +177,123 @@ namespace RuntimeFlow.Contexts
             while (pending.Count > 0)
             {
                 throwIfStale(generation, cancellationToken);
-                var ready = new List<ServiceInitializerBinding>();
-                foreach (var kv in pending.Values)
-                {
-                    var allReady = true;
-                    foreach (var dep in kv.Dependencies)
-                        if (!IsDependencyReady(dep, pending, initializedServices)) { allReady = false; break; }
-                    if (allReady) ready.Add(kv);
-                }
-
+                var ready = CollectReadyServices(pending, initializedServices);
                 if (ready.Count == 0)
-                {
-                    var graph = new Dictionary<Type, IReadOnlyCollection<Type>>(pending.Count);
-                    foreach (var kv in pending)
-                    {
-                        var deps = new List<Type>();
-                        foreach (var d in kv.Value.Dependencies) if (pending.ContainsKey(d)) deps.Add(d);
-                        graph[kv.Key] = deps;
-                    }
-                    var cyclePath = DependencyCycleDetector.DetectCyclePath(graph);
-                    var unresolved = string.Join(", ", pending.Keys.Select(t => t.Name));
-                    var cycleDesc = cyclePath != null ? $"Cycle: {string.Join(" → ", cyclePath.Select(t => t.Name))}. " : string.Empty;
-                    throw new InvalidOperationException($"Initialization dependency cycle detected in scope {scope}. {cycleDesc}Remaining services: {unresolved}");
-                }
+                    ThrowIfDependencyCycle(scope, pending);
 
-                for (var r = 0; r < ready.Count; r++) progressNotifier.OnServiceStarted(scope, ready[r].ServiceType, completedServices, totalServices);
+                foreach (var init in ready)
+                    progressNotifier.OnServiceStarted(scope, init.ServiceType, completedServices, totalServices);
 
-                var unique = new List<ServiceInitializerBinding>(ready.Count);
-                var seen = new HashSet<Type>();
-                for (var r = 0; r < ready.Count; r++) if (seen.Add(ready[r].ImplementationType)) unique.Add(ready[r]);
+                var unique = DedupeByImplementationType(ready);
+                var taskMap = await RunWaveAsync(scope, context, unique, progressNotifier, completedServices, totalServices, cancellationToken).ConfigureAwait(false);
 
-                var taskMap = new (Task task, ServiceInitializerBinding initializer)[unique.Count];
-                var tasks = new Task[unique.Count];
-                for (var i = 0; i < unique.Count; i++)
-                {
-                    var init = unique[i];
-                    var task = ExecuteInitializerWithHealthAsync(scope, context, init, progressNotifier, completedServices, totalServices, cancellationToken);
-                    taskMap[i] = (task, init);
-                    tasks[i] = task;
-                }
-
-                var waveTask = Task.WhenAll(tasks);
-                var stall = _health.Options.WaveStallTimeout;
-                try
-                {
-                    if (_health.IsEnabled && stall > TimeSpan.Zero && stall != Timeout.InfiniteTimeSpan)
-                    {
-                        var first = await Task.WhenAny(waveTask, Task.Delay(stall, cancellationToken)).ConfigureAwait(false);
-                        if (first != waveTask)
-                        {
-                            var stalled = new List<string>();
-                            for (var t = 0; t < taskMap.Length; t++) if (!taskMap[t].task.IsCompleted) stalled.Add(taskMap[t].initializer.ServiceType.Name);
-                            if (stalled.Count > 0) _logger.LogWarning("[RuntimeFlow] Wave stall detected in scope {Scope}: {Count} service(s) haven't completed after {Timeout:F0}s: {Services}", scope, stalled.Count, stall.TotalSeconds, string.Join(", ", stalled));
-                            await waveTask.ConfigureAwait(false);
-                        }
-                    }
-                    else await waveTask.ConfigureAwait(false);
-                }
-                catch { RecordSuccessful(taskMap); throw; }
-
-                for (var r = 0; r < ready.Count; r++) context.RecordInitialized(ready[r]);
+                foreach (var init in ready) context.RecordInitialized(init);
                 throwIfStale(generation, cancellationToken);
-                for (var r = 0; r < ready.Count; r++)
+                foreach (var init in ready)
                 {
-                    pending.Remove(ready[r].ServiceType);
-                    initializedServices.Add(ready[r].ServiceType);
+                    pending.Remove(init.ServiceType);
+                    initializedServices.Add(init.ServiceType);
                     completedServices++;
-                    progressNotifier.OnServiceCompleted(scope, ready[r].ServiceType, completedServices, totalServices);
+                    progressNotifier.OnServiceCompleted(scope, init.ServiceType, completedServices, totalServices);
                 }
             }
 
             await StartVContainerStartablesAsync(plan.EntryPoints, cancellationToken).ConfigureAwait(false);
             return totalServices;
+        }
+
+        private static List<ServiceInitializerBinding> CollectReadyServices(
+            IReadOnlyDictionary<Type, ServiceInitializerBinding> pending,
+            ISet<Type> initializedServices)
+        {
+            var ready = new List<ServiceInitializerBinding>();
+            foreach (var kv in pending.Values)
+            {
+                var allReady = true;
+                foreach (var dep in kv.Dependencies)
+                    if (!IsDependencyReady(dep, pending, initializedServices)) { allReady = false; break; }
+                if (allReady) ready.Add(kv);
+            }
+            return ready;
+        }
+
+        private static void ThrowIfDependencyCycle(GameContextType scope, IReadOnlyDictionary<Type, ServiceInitializerBinding> pending)
+        {
+            var graph = new Dictionary<Type, IReadOnlyCollection<Type>>(pending.Count);
+            foreach (var kv in pending)
+            {
+                var deps = new List<Type>();
+                foreach (var d in kv.Value.Dependencies) if (pending.ContainsKey(d)) deps.Add(d);
+                graph[kv.Key] = deps;
+            }
+            var cyclePath = DependencyCycleDetector.DetectCyclePath(graph);
+            var unresolved = string.Join(", ", pending.Keys.Select(t => t.Name));
+            var cycleDesc = cyclePath != null ? $"Cycle: {string.Join(" → ", cyclePath.Select(t => t.Name))}. " : string.Empty;
+            throw new InvalidOperationException($"Initialization dependency cycle detected in scope {scope}. {cycleDesc}Remaining services: {unresolved}");
+        }
+
+        private static List<ServiceInitializerBinding> DedupeByImplementationType(List<ServiceInitializerBinding> ready)
+        {
+            var unique = new List<ServiceInitializerBinding>(ready.Count);
+            var seen = new HashSet<Type>();
+            foreach (var init in ready)
+                if (seen.Add(init.ImplementationType)) unique.Add(init);
+            return unique;
+        }
+
+        private async Task<(Task task, ServiceInitializerBinding initializer)[]> RunWaveAsync(
+            GameContextType scope,
+            GameContext context,
+            IReadOnlyList<ServiceInitializerBinding> unique,
+            IInitializationProgressNotifier progressNotifier,
+            int completedServices,
+            int totalServices,
+            CancellationToken cancellationToken)
+        {
+            var taskMap = new (Task task, ServiceInitializerBinding initializer)[unique.Count];
+            var tasks = new Task[unique.Count];
+            for (var i = 0; i < unique.Count; i++)
+            {
+                var init = unique[i];
+                var task = ExecuteInitializerWithHealthAsync(scope, context, init, progressNotifier, completedServices, totalServices, cancellationToken);
+                taskMap[i] = (task, init);
+                tasks[i] = task;
+            }
+
+            var waveTask = Task.WhenAll(tasks);
+            var stall = _health.Options.WaveStallTimeout;
+            try
+            {
+                if (_health.IsEnabled && stall > TimeSpan.Zero && stall != Timeout.InfiniteTimeSpan)
+                {
+                    var first = await Task.WhenAny(waveTask, Task.Delay(stall, cancellationToken)).ConfigureAwait(false);
+                    if (first != waveTask)
+                        await AwaitStalledWaveAsync(scope, waveTask, taskMap, stall).ConfigureAwait(false);
+                }
+                else await waveTask.ConfigureAwait(false);
+            }
+            catch
+            {
+                foreach (var entry in taskMap)
+                    if (entry.task.Status == TaskStatus.RanToCompletion)
+                        context.RecordInitialized(entry.initializer);
+                throw;
+            }
+            return taskMap;
+        }
+
+        private async Task AwaitStalledWaveAsync(
+            GameContextType scope,
+            Task waveTask,
+            (Task task, ServiceInitializerBinding initializer)[] taskMap,
+            TimeSpan stall)
+        {
+            var stalled = new List<string>();
+            foreach (var entry in taskMap)
+                if (!entry.task.IsCompleted) stalled.Add(entry.initializer.ServiceType.Name);
+            if (stalled.Count > 0)
+                _logger.LogWarning("[RuntimeFlow] Wave stall detected in scope {Scope}: {Count} service(s) haven't completed after {Timeout:F0}s: {Services}", scope, stalled.Count, stall.TotalSeconds, string.Join(", ", stalled));
+            await waveTask.ConfigureAwait(false);
         }
 
         private ScopeStartupPlan CreateStartupPlan(GameContextType scope, GameContext context, Type? scopeKey)
