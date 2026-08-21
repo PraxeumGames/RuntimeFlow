@@ -22,6 +22,7 @@ namespace RuntimeFlow.Contexts
         private readonly ScopeTransitionService _scopeTransitionService;
         private readonly ScopeDisposalService _disposalService;
         private readonly ScopeLoadingService _loadingService;
+        private readonly ScopeInitializationService _initService;
         private readonly ActiveScopeState _activeState = new();
         private readonly GenerationGate _generationGate;
 
@@ -88,6 +89,7 @@ namespace RuntimeFlow.Contexts
                 ThrowIfStaleGeneration);
             _disposalService = new ScopeDisposalService(_activeState, _scopeRegistry, _executionScheduler, _logger, _coordinator, _activationService);
             _loadingService = new ScopeLoadingService(_activeState, _scopeProfiles, _coordinator, _scopeTransitionService, _scopeTransitions);
+            _initService = new ScopeInitializationService(_activeState, _scopeRegistry, _lazyInitialization, _executionScheduler, _healthSupervisor, _logger, _activationService);
         }
 
         internal ActiveScopeState ActiveState => _activeState;
@@ -99,6 +101,8 @@ namespace RuntimeFlow.Contexts
         internal ScopeDisposalService DisposalService => _disposalService;
 
         internal ScopeLoadingService LoadingService => _loadingService;
+
+        internal ScopeInitializationService InitializationService => _initService;
 
         internal Task ExecuteOnMainThreadAsync(Func<CancellationToken, Task> operation, CancellationToken cancellationToken = default)
         {
