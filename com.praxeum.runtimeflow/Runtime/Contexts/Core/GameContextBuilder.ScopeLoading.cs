@@ -53,7 +53,7 @@ namespace RuntimeFlow.Contexts
                 return;
             }
 
-            var (initializedServices, availableServices) = CreateSeededInitializationState(_globalContext, _sessionContext);
+            var (initializedServices, availableServices) = _initService.CreateSeededState(_globalContext, _sessionContext);
 
             var sceneContext = await _scopeTransitions.EnterScopeAsync(
                     "LoadScene",
@@ -103,7 +103,7 @@ namespace RuntimeFlow.Contexts
                 return;
             }
 
-            var (initializedServices, availableServices) = CreateSeededInitializationState(_globalContext, _sessionContext, _sceneContext);
+            var (initializedServices, availableServices) = _initService.CreateSeededState(_globalContext, _sessionContext, _sceneContext);
 
             var moduleContext = await _scopeTransitions.EnterScopeAsync(
                     "LoadModule",

@@ -22,7 +22,7 @@ namespace RuntimeFlow.Contexts
 
                         var sceneProfile = _scopeProfiles.GetSceneProfile(sceneScopeKey);
 
-                        var (initializedServices, availableServices) = CreateSeededInitializationState(_globalContext, _sessionContext);
+                        var (initializedServices, availableServices) = _initService.CreateSeededState(_globalContext, _sessionContext);
 
                         var preloadedContext = await _scopeTransitions.EnterScopeAsync(
                                 "PreloadScene",
@@ -67,7 +67,7 @@ namespace RuntimeFlow.Contexts
 
                         var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
 
-                        var (initializedServices, availableServices) = CreateSeededInitializationState(
+                        var (initializedServices, availableServices) = _initService.CreateSeededState(
                             _globalContext,
                             _sessionContext,
                             _sceneContext);
@@ -124,7 +124,7 @@ namespace RuntimeFlow.Contexts
 
                         var moduleProfile = _scopeProfiles.GetModuleProfile(moduleScopeKey);
 
-                        var (initializedServices, availableServices) = CreateSeededInitializationState(
+                        var (initializedServices, availableServices) = _initService.CreateSeededState(
                             _globalContext,
                             _sessionContext,
                             _sceneContext);
