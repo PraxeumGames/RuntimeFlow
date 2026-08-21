@@ -183,7 +183,7 @@ namespace RuntimeFlow.Contexts
             private readonly GameContextType _scope;
             private readonly Type _scopeType;
             private Type? _pendingImplementationType;
-            private Lifetime _pendingLifetime;
+            private DiLifetime _pendingLifetime;
             private object? _pendingInstance;
             private bool _hasPendingInstance;
 
@@ -194,31 +194,31 @@ namespace RuntimeFlow.Contexts
                 _scopeType = scopeType ?? throw new ArgumentNullException(nameof(scopeType));
             }
 
-            public IGameScopeRegistrationBuilder Register<TInterface, TImplementation>(Lifetime lifetime)
+            public IGameScopeRegistrationBuilder Register<TInterface, TImplementation>(DiLifetime lifetime)
                 where TImplementation : class, TInterface
             {
                 FlushPending();
                 var serviceType = typeof(TInterface);
                 var implType = typeof(TImplementation);
                 _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                    context => context.Register(serviceType, implType, lifetime));
+                    context => context.Register(serviceType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
                 return this;
             }
 
-            public IGameScopeRegistrationBuilder Register<TImplementation>(Lifetime lifetime)
+            public IGameScopeRegistrationBuilder Register<TImplementation>(DiLifetime lifetime)
                 where TImplementation : class
             {
                 FlushPending();
                 var implType = typeof(TImplementation);
                 _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                    context => context.Register(implType, implType, lifetime));
+                    context => context.Register(implType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
                 _pendingImplementationType = implType;
                 _pendingLifetime = lifetime;
                 _hasPendingInstance = false;
                 return this;
             }
 
-            public IGameScopeRegistrationBuilder Register(Type implementationType, Lifetime lifetime)
+            public IGameScopeRegistrationBuilder Register(Type implementationType, DiLifetime lifetime)
             {
                 FlushPending();
                 if (implementationType == null) throw new ArgumentNullException(nameof(implementationType));
@@ -227,7 +227,7 @@ namespace RuntimeFlow.Contexts
                         $"[RFRC2003] Cannot register open generic type '{implementationType.FullName ?? implementationType.Name}'. " +
                         "Use a closed generic type or register via ConfigureContainer instead.");
                 _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                    context => context.Register(implementationType, implementationType, lifetime));
+                    context => context.Register(implementationType, implementationType, DiLifetimeMapper.ToVContainer(lifetime)));
                 _pendingImplementationType = implementationType;
                 _pendingLifetime = lifetime;
                 _hasPendingInstance = false;
@@ -251,7 +251,7 @@ namespace RuntimeFlow.Contexts
                     var lifetime = _pendingLifetime;
                     var serviceType = typeof(TInterface);
                     _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                        context => context.Register(serviceType, implType, lifetime));
+                        context => context.Register(serviceType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
                 }
                 return this;
             }
@@ -272,7 +272,7 @@ namespace RuntimeFlow.Contexts
                     var implType = _pendingImplementationType!;
                     var lifetime = _pendingLifetime;
                     _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                        context => context.Register(interfaceType, implType, lifetime));
+                        context => context.Register(interfaceType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
                 }
                 return this;
             }
@@ -293,7 +293,7 @@ namespace RuntimeFlow.Contexts
                     var implType = _pendingImplementationType!;
                     var lifetime = _pendingLifetime;
                     _owner.DeferScopedRegistration(_scope, ResolveScopeKey(_scope, _scopeType),
-                        context => context.Register(implType, implType, lifetime));
+                        context => context.Register(implType, implType, DiLifetimeMapper.ToVContainer(lifetime)));
                 }
                 return this;
             }

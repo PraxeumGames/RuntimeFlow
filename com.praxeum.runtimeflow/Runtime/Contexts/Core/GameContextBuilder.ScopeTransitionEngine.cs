@@ -185,7 +185,7 @@ namespace RuntimeFlow.Contexts
                 if (!_owner._preloadedContexts.TryGetValue(scopeKey, out var preloadedContext))
                     return false;
 
-                await _owner.ExecuteScopeActivationEnterAsync(
+                await _owner._activationService.ExecuteEnterAsync(
                         scope,
                         preloadedContext,
                         progressNotifier,
@@ -227,7 +227,7 @@ namespace RuntimeFlow.Contexts
 
                 try
                 {
-                    await _owner.ExecuteScopeActivationExitAsync(scope, context, progressNotifier, cancellationToken)
+                    await _owner._activationService.ExecuteExitAsync(scope, context, progressNotifier, cancellationToken)
                         .ConfigureAwait(false);
                 }
                 catch (Exception ex)

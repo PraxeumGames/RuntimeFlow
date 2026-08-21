@@ -19,35 +19,39 @@ namespace RuntimeFlow.Contexts
         private readonly ScopeOperationCoordinator _coordinator;
         private readonly ScopeActivationService _activationService;
         private readonly ScopeTransitionEngine _scopeTransitions;
-        private readonly Dictionary<Type, GameContext> _preloadedContexts = new();
-        private readonly Dictionary<Type, GameContext> _additiveModuleContexts = new();
+        private readonly ScopeTransitionService _scopeTransitionService;
+        private readonly ActiveScopeState _activeState = new();
+        private readonly GenerationGate _generationGate;
 
-        private Action<IGameContext>? _onGlobalInitialized;
-        private Action<IGameContext>? _onSessionInitialized;
-        private Action<IGameContext>? _onSceneInitialized;
-        private Action<IGameContext>? _onModuleInitialized;
+        private Dictionary<Type, GameContext> _preloadedContexts => _activeState.PreloadedContexts;
+        private Dictionary<Type, GameContext> _additiveModuleContexts => _activeState.AdditiveModuleContexts;
 
-        private IGameContext? _globalContext;
-        private GameContext? _sessionContext;
-        private GameContext? _sceneContext;
-        private GameContext? _moduleContext;
-        private Type? _activeSceneScopeKey;
-        private Type? _activeModuleScopeKey;
+        private Action<IGameContext>? _onGlobalInitialized { get => _activeState.OnGlobalInitialized; set => _activeState.OnGlobalInitialized = value; }
+        private Action<IGameContext>? _onSessionInitialized { get => _activeState.OnSessionInitialized; set => _activeState.OnSessionInitialized = value; }
+        private Action<IGameContext>? _onSceneInitialized { get => _activeState.OnSceneInitialized; set => _activeState.OnSceneInitialized = value; }
+        private Action<IGameContext>? _onModuleInitialized { get => _activeState.OnModuleInitialized; set => _activeState.OnModuleInitialized = value; }
 
-        internal IGameContext? GlobalContext => _globalContext;
-        internal GameContext? SessionContext => _sessionContext;
-        internal GameContext? SceneContext => _sceneContext;
-        internal GameContext? ModuleContext => _moduleContext;
-        internal IReadOnlyDictionary<Type, GameContext> PreloadedContexts => _preloadedContexts;
-        internal IReadOnlyDictionary<Type, GameContext> AdditiveModuleContexts => _additiveModuleContexts;
-        internal Type? ActiveSceneScopeKey => _activeSceneScopeKey;
-        internal Type? ActiveModuleScopeKey => _activeModuleScopeKey;
-        private bool _ownsGlobalContext = true;
+        private IGameContext? _globalContext { get => _activeState.GlobalContext; set => _activeState.GlobalContext = value; }
+        private GameContext? _sessionContext { get => _activeState.SessionContext; set => _activeState.SessionContext = value; }
+        private GameContext? _sceneContext { get => _activeState.SceneContext; set => _activeState.SceneContext = value; }
+        private GameContext? _moduleContext { get => _activeState.ModuleContext; set => _activeState.ModuleContext = value; }
+        private Type? _activeSceneScopeKey { get => _activeState.ActiveSceneScopeKey; set => _activeState.ActiveSceneScopeKey = value; }
+        private Type? _activeModuleScopeKey { get => _activeState.ActiveModuleScopeKey; set => _activeState.ActiveModuleScopeKey = value; }
 
-        private ScopeEventBus? _globalEventBus;
-        private ScopeEventBus? _sessionEventBus;
-        private ScopeEventBus? _sceneEventBus;
-        private ScopeEventBus? _moduleEventBus;
+        internal IGameContext? GlobalContext => _activeState.GlobalContext;
+        internal GameContext? SessionContext => _activeState.SessionContext;
+        internal GameContext? SceneContext => _activeState.SceneContext;
+        internal GameContext? ModuleContext => _activeState.ModuleContext;
+        internal IReadOnlyDictionary<Type, GameContext> PreloadedContexts => _activeState.PreloadedContexts;
+        internal IReadOnlyDictionary<Type, GameContext> AdditiveModuleContexts => _activeState.AdditiveModuleContexts;
+        internal Type? ActiveSceneScopeKey => _activeState.ActiveSceneScopeKey;
+        internal Type? ActiveModuleScopeKey => _activeState.ActiveModuleScopeKey;
+        private bool _ownsGlobalContext { get => _activeState.OwnsGlobalContext; set => _activeState.OwnsGlobalContext = value; }
+
+        private ScopeEventBus? _globalEventBus { get => _activeState.GlobalEventBus; set => _activeState.GlobalEventBus = value; }
+        private ScopeEventBus? _sessionEventBus { get => _activeState.SessionEventBus; set => _activeState.SessionEventBus = value; }
+        private ScopeEventBus? _sceneEventBus { get => _activeState.SceneEventBus; set => _activeState.SceneEventBus = value; }
+        private ScopeEventBus? _moduleEventBus { get => _activeState.ModuleEventBus; set => _activeState.ModuleEventBus = value; }
 
         private readonly GameContextLazyInitializationRegistry _lazyInitialization = new();
 
@@ -65,9 +69,28 @@ namespace RuntimeFlow.Contexts
             _healthSupervisor = healthSupervisor ?? RuntimeHealthSupervisor.Disabled;
             _logger = logger ?? NullLogger.Instance;
             _coordinator = new ScopeOperationCoordinator();
+            _generationGate = new GenerationGate(_coordinator);
             _activationService = new ScopeActivationService(_executionScheduler);
             _scopeTransitions = new ScopeTransitionEngine(this);
+            _scopeTransitionService = new ScopeTransitionService(
+                _activeState,
+                _activationService,
+                CreateAndInitializeScopeContextAsync,
+                DisposeScopeContextAsync,
+                (token, ops) => CaptureCleanupFailuresAsync(token, ops),
+                CreateCleanupAggregateException,
+                CreateFailureCleanupCancellationToken,
+                FilterCancellationFailures,
+                SetScopeStateIfTracked,
+                PublishInCurrentGeneration,
+                ThrowIfStaleGeneration);
         }
+
+        internal ActiveScopeState ActiveState => _activeState;
+
+        internal GenerationGate GenerationGate => _generationGate;
+
+        internal ScopeTransitionService ScopeTransitionService => _scopeTransitionService;
 
         internal Task ExecuteOnMainThreadAsync(Func<CancellationToken, Task> operation, CancellationToken cancellationToken = default)
         {

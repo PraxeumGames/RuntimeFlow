@@ -54,7 +54,7 @@ namespace RuntimeFlow.Contexts
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 if (scope != GameContextType.Global && !skipActivation)
                 {
-                    await ExecuteScopeActivationEnterAsync(scope, context, progressNotifier, totalServices, cancellationToken).ConfigureAwait(false);
+                    await _activationService.ExecuteEnterAsync(scope, context, progressNotifier, totalServices, cancellationToken).ConfigureAwait(false);
                 }
 
                 progressNotifier.OnScopeCompleted(scope, totalServices);
@@ -139,7 +139,7 @@ namespace RuntimeFlow.Contexts
                 context.OnBeforeDispose += eventBus.Dispose;
             }
 
-            RegisterAutoServices(context, autoServices, availableServices);
+            InitializationGraphResolver.RegisterAutoServices(context, autoServices, availableServices);
 
             if (initializedCallback != null)
                 context.OnInitialized += () => initializedCallback(context);
@@ -342,7 +342,7 @@ namespace RuntimeFlow.Contexts
             ISet<Type> initializedServices,
             Type? scopeKey)
         {
-            var initializers = DiscoverInitializers(context);
+            var initializers = InitializationGraphResolver.DiscoverInitializers(context);
 
             var lazyBindings = initializers
                 .Where(b => typeof(ILazyInitializableService).IsAssignableFrom(b.ImplementationType))

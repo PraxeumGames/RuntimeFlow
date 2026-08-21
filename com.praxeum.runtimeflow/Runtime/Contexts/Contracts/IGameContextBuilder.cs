@@ -8,9 +8,9 @@ namespace RuntimeFlow.Contexts
     /// <summary>Fluent builder for registering services within a specific scope.</summary>
     public interface IGameScopeRegistrationBuilder
     {
-        IGameScopeRegistrationBuilder Register<TInterface, TImplementation>(Lifetime lifetime) where TImplementation : class, TInterface;
-        IGameScopeRegistrationBuilder Register<TImplementation>(Lifetime lifetime) where TImplementation : class;
-        IGameScopeRegistrationBuilder Register(Type implementationType, Lifetime lifetime);
+        IGameScopeRegistrationBuilder Register<TInterface, TImplementation>(DiLifetime lifetime) where TImplementation : class, TInterface;
+        IGameScopeRegistrationBuilder Register<TImplementation>(DiLifetime lifetime) where TImplementation : class;
+        IGameScopeRegistrationBuilder Register(Type implementationType, DiLifetime lifetime);
         IGameScopeRegistrationBuilder As<TInterface>();
         IGameScopeRegistrationBuilder As(Type interfaceType);
         IGameScopeRegistrationBuilder AsSelf();
@@ -94,7 +94,7 @@ namespace RuntimeFlow.Contexts
         /// <summary>Registers a transition handler in the Session scope.</summary>
         public static IGameContextBuilder WithTransition<TTransition>(this IGameContextBuilder builder) where TTransition : class, IScopeTransitionHandler
         {
-            builder.Session().Register<IScopeTransitionHandler, TTransition>(Lifetime.Singleton);
+            builder.Session().Register<IScopeTransitionHandler, TTransition>(DiLifetime.Singleton);
             return builder;
         }
     }
