@@ -126,6 +126,7 @@ namespace RuntimeFlow.Contexts
         /// Synchronous disposal — used by <c>GameEntryPoint.OnDestroy</c> (cannot be async).
         /// On the main thread the full teardown is dispatched asynchronously to avoid blocking
         /// the very thread that must execute the dispatched continuations (deadlock risk).
+        /// Any failure is logged via <see cref="ILogger"/> instead of being swallowed.
         /// On worker threads the teardown is awaited synchronously.
         /// Prefer <see cref="DisposeAsync"/> when an async context is available.
         /// </summary>

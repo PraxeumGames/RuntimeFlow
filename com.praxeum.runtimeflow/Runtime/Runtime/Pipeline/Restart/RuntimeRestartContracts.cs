@@ -1,6 +1,6 @@
 using System;
 
-namespace SFS.Core.GameLoading
+namespace RuntimeFlow.Contexts
 {
     public interface IGameRestartHandler
     {

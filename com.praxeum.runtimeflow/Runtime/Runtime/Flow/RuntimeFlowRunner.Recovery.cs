@@ -94,7 +94,7 @@ namespace RuntimeFlow.Contexts
                     if (!retryAfterRecovery)
                         return;
 
-                    if (attempt >= maxAttempts)
+                    if (_retryPolicy.Enabled && attempt >= maxAttempts)
                         throw;
                 }
                 catch (Exception ex)
@@ -188,7 +188,9 @@ namespace RuntimeFlow.Contexts
 
             if (_retryPolicy.UseJitter && delayMs > 1.0d)
             {
-                var jitterFactor = 0.85d + JitterRandom.NextDouble() * 0.30d;
+                double jitter;
+                lock (JitterLock) jitter = JitterRandom.NextDouble();
+                var jitterFactor = 0.85d + jitter * 0.30d;
                 delayMs *= jitterFactor;
             }
 
@@ -199,9 +201,6 @@ namespace RuntimeFlow.Contexts
             RuntimeHealthCriticalException critical,
             CancellationToken cancellationToken)
         {
-            if (!_builder.CanRestartSession())
-                return false;
-
             var anomaly = new RuntimeHealthAnomaly(
                 RuntimeHealthStatus.Critical,
                 critical.Scope,
@@ -215,7 +214,16 @@ namespace RuntimeFlow.Contexts
             _statusObserver?.Invoke(
                 RuntimeExecutionState.Recovering,
                 $"Recovering session after critical anomaly in '{critical.ServiceType.Name}'.");
-            await _builder.RestartSessionAsync(_progressNotifier, cancellationToken).ConfigureAwait(false);
+
+            if (_builder.CanRestartSession())
+            {
+                await _builder.RestartSessionAsync(_progressNotifier, cancellationToken).ConfigureAwait(false);
+            }
+            else
+            {
+                await _builder.BuildAsync(_progressNotifier, cancellationToken).ConfigureAwait(false);
+            }
+
             _statusObserver?.Invoke(
                 RuntimeExecutionState.Degraded,
                 $"Session recovered after critical anomaly in '{critical.ServiceType.Name}'.");

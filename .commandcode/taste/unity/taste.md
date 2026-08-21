@@ -1,0 +1,3 @@
+- Prefers Unity Editor windows built with UI Toolkit (`VisualElement`, USS) rather than IMGUI. Confidence: 0.92
+- Editor tools should expose real, useful data (live inspection, not stub/placeholder UIs). Confidence: 0.9
+- Wants interactive demos of editor tooling to include broken-flow cases (a service throwing at startup and a hang/timeout), not only the happy path, so dashboard diagnostic informativeness can be judged. Confidence: 0.88

@@ -9,48 +9,17 @@ namespace RuntimeFlow.Contexts
 {
     public partial class GameContextBuilder
     {
-        private async Task CancelActiveLoadAsync(CancellationToken cancellationToken = default)
-        {
-            CancellationTokenSource? activeLoadCts;
-            Task activeLoadTask;
-            lock (_activeLoadSync)
-            {
-                activeLoadCts = _activeLoadCts;
-                if (activeLoadCts == null)
-                    return;
-
-                activeLoadTask = _activeLoadTask;
-            }
-
-            activeLoadCts.Cancel();
-            try
-            {
-                await AwaitWithCancellation(activeLoadTask, cancellationToken).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-            {
-            }
-            catch (Exception) when (activeLoadCts.IsCancellationRequested)
-            {
-            }
-            finally
-            {
-                if (ClearActiveLoadIfOwner(activeLoadCts))
-                    activeLoadCts.Dispose();
-            }
-        }
-
         internal async Task DisposeAllScopesAsync(CancellationToken cancellationToken = default)
         {
-            await CancelActiveLoadAsync(CancellationToken.None).ConfigureAwait(false);
-            await _sideScopeOperationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _coordinator.CancelActiveLoadAsync(CancellationToken.None).ConfigureAwait(false);
+            await _coordinator.SideLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 await DisposeAllScopesCoreAsync(cancellationToken).ConfigureAwait(false);
             }
             finally
             {
-                _sideScopeOperationLock.Release();
+                _coordinator.SideLock.Release();
             }
         }
 
@@ -257,34 +226,6 @@ namespace RuntimeFlow.Contexts
             }
 
             failures.Add(exception);
-        }
-
-        private static async Task AwaitWithCancellation(Task task, CancellationToken cancellationToken)
-        {
-            if (task == null) throw new ArgumentNullException(nameof(task));
-
-            if (task.IsCompleted)
-            {
-                await task.ConfigureAwait(false);
-                return;
-            }
-
-            var cancellationTask = Task.Delay(Timeout.Infinite, cancellationToken);
-            var completed = await Task.WhenAny(task, cancellationTask).ConfigureAwait(false);
-            if (completed != task)
-                cancellationToken.ThrowIfCancellationRequested();
-
-            await task.ConfigureAwait(false);
-        }
-
-        private void ThrowIfStaleGeneration(long generation, CancellationToken cancellationToken)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            lock (_scopeGenerationSync)
-            {
-                if (generation != _runGeneration)
-                    throw new OperationCanceledException(cancellationToken);
-            }
         }
     }
 }

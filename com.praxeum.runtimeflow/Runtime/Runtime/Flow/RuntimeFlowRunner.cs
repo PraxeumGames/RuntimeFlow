@@ -7,6 +7,7 @@ namespace RuntimeFlow.Contexts
 {
     internal sealed partial class RuntimeFlowRunner : IRuntimeFlowContext
     {
+        private static readonly object JitterLock = new();
         private static readonly System.Random JitterRandom = new();
 
         private readonly GameContextBuilder _builder;

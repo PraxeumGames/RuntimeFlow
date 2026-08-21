@@ -216,18 +216,35 @@ namespace RuntimeFlow.Contexts
             while (pending.Count > 0)
             {
                 ThrowIfStaleGeneration(generation, cancellationToken);
-                var ready = pending.Values
-                    .Where(initializer => initializer.Dependencies.All(dependency =>
-                        IsDependencyReadyForCurrentScope(dependency, pending, initializedServices)))
-                    .ToArray();
-
-                if (ready.Length == 0)
+                var ready = new List<ServiceInitializerBinding>();
+                foreach (var initializer in pending.Values)
                 {
-                    var dependencyGraph = pending.ToDictionary(
-                        kvp => kvp.Key,
-                        kvp => (IReadOnlyCollection<Type>)kvp.Value.Dependencies
-                            .Where(pending.ContainsKey)
-                            .ToArray());
+                    var allReady = true;
+                    foreach (var dep in initializer.Dependencies)
+                    {
+                        if (!IsDependencyReadyForCurrentScope(dep, pending, initializedServices))
+                        {
+                            allReady = false;
+                            break;
+                        }
+                    }
+                    if (allReady)
+                        ready.Add(initializer);
+                }
+
+                if (ready.Count == 0)
+                {
+                    var dependencyGraph = new Dictionary<Type, IReadOnlyCollection<Type>>(pending.Count);
+                    foreach (var kvp in pending)
+                    {
+                        var remainingDeps = new List<Type>();
+                        foreach (var dep in kvp.Value.Dependencies)
+                        {
+                            if (pending.ContainsKey(dep))
+                                remainingDeps.Add(dep);
+                        }
+                        dependencyGraph[kvp.Key] = remainingDeps;
+                    }
 
                     var cyclePath = DependencyCycleDetector.DetectCyclePath(dependencyGraph);
                     var unresolved = string.Join(", ", pending.Keys.Select(type => type.Name));
@@ -241,21 +258,29 @@ namespace RuntimeFlow.Contexts
                         $"Remaining services: {unresolved}");
                 }
 
-                foreach (var initializer in ready)
-                    progressNotifier.OnServiceStarted(scope, initializer.ServiceType, completedServices, totalServices);
+                for (var r = 0; r < ready.Count; r++)
+                    progressNotifier.OnServiceStarted(scope, ready[r].ServiceType, completedServices, totalServices);
 
-                var uniqueImplementations = ready
-                    .GroupBy(initializer => initializer.ImplementationType)
-                    .Select(group => group.First())
-                    .ToArray();
+                var uniqueImplementations = new List<ServiceInitializerBinding>(ready.Count);
+                var seenImpls = new HashSet<Type>();
+                for (var r = 0; r < ready.Count; r++)
+                {
+                    var item = ready[r];
+                    if (seenImpls.Add(item.ImplementationType))
+                        uniqueImplementations.Add(item);
+                }
 
-                var taskMap = uniqueImplementations
-                    .Select(initializer => (
-                        task: ExecuteInitializerWithHealthAsync(scope, context, initializer, progressNotifier, completedServices, totalServices, cancellationToken),
-                        initializer))
-                    .ToArray();
+                var taskMap = new (Task task, ServiceInitializerBinding initializer)[uniqueImplementations.Count];
+                var tasks = new Task[uniqueImplementations.Count];
+                for (var i = 0; i < uniqueImplementations.Count; i++)
+                {
+                    var init = uniqueImplementations[i];
+                    var task = ExecuteInitializerWithHealthAsync(scope, context, init, progressNotifier, completedServices, totalServices, cancellationToken);
+                    taskMap[i] = (task, init);
+                    tasks[i] = task;
+                }
 
-                var waveTask = Task.WhenAll(taskMap.Select(t => t.task));
+                var waveTask = Task.WhenAll(tasks);
                 var waveStallTimeout = _healthSupervisor.Options.WaveStallTimeout;
                 try
                 {
@@ -264,16 +289,18 @@ namespace RuntimeFlow.Contexts
                         var completedFirst = await Task.WhenAny(waveTask, Task.Delay(waveStallTimeout, cancellationToken)).ConfigureAwait(false);
                         if (completedFirst != waveTask)
                         {
-                            var stalledNames = taskMap
-                                .Where(t => !t.task.IsCompleted)
-                                .Select(t => t.initializer.ServiceType.Name)
-                                .ToArray();
+                            var stalledNames = new List<string>();
+                            for (var t = 0; t < taskMap.Length; t++)
+                            {
+                                if (!taskMap[t].task.IsCompleted)
+                                    stalledNames.Add(taskMap[t].initializer.ServiceType.Name);
+                            }
 
-                            if (stalledNames.Length > 0)
+                            if (stalledNames.Count > 0)
                             {
                                 _logger.LogWarning(
                                     "[RuntimeFlow] Wave stall detected in scope {Scope}: {Count} service(s) haven't completed after {Timeout:F0}s: {Services}",
-                                    scope, stalledNames.Length, waveStallTimeout.TotalSeconds, string.Join(", ", stalledNames));
+                                    scope, stalledNames.Count, waveStallTimeout.TotalSeconds, string.Join(", ", stalledNames));
                             }
 
                             await waveTask.ConfigureAwait(false);
@@ -290,15 +317,17 @@ namespace RuntimeFlow.Contexts
                     throw;
                 }
 
-                foreach (var initializer in ready)
-                    context.RecordInitialized(initializer);
+                for (var r = 0; r < ready.Count; r++)
+                    context.RecordInitialized(ready[r]);
+
                 ThrowIfStaleGeneration(generation, cancellationToken);
-                foreach (var initializer in ready)
+                for (var r = 0; r < ready.Count; r++)
                 {
-                    pending.Remove(initializer.ServiceType);
-                    initializedServices.Add(initializer.ServiceType);
+                    var init = ready[r];
+                    pending.Remove(init.ServiceType);
+                    initializedServices.Add(init.ServiceType);
                     completedServices++;
-                    progressNotifier.OnServiceCompleted(scope, initializer.ServiceType, completedServices, totalServices);
+                    progressNotifier.OnServiceCompleted(scope, init.ServiceType, completedServices, totalServices);
                 }
             }
 

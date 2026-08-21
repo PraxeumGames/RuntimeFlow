@@ -55,17 +55,6 @@ namespace RuntimeFlow.Contexts
             return this;
         }
 
-        public bool TryResolveScopeType(Type scopeType, out GameContextType scope)
-        {
-            if (scopeType == null) throw new ArgumentNullException(nameof(scopeType));
-            return _scopeRegistry.TryResolveScopeType(scopeType, out scope);
-        }
-
-        public ScopeLifecycleState GetScopeLifecycleState(Type scopeType)
-        {
-            return GetScopeState(scopeType);
-        }
-
         internal void BindScopedRegistration(
             GameContextType scope,
             Type? scopeKey,

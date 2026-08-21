@@ -31,7 +31,7 @@ namespace RuntimeFlow.Contexts
 
             registrations.Add(new Registration(
                 typeof(IObjectResolver),
-                Lifetime.Transient,
+                Lifetime.Singleton,
                 null,
                 new GameContextSelfProvider(selfResolver)));
 

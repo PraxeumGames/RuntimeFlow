@@ -8,13 +8,6 @@ using RuntimeFlow.Events;
 
 namespace RuntimeFlow.Contexts
 {
-    /// <summary>
-    /// Builds and owns the four-level <see cref="GameContext"/> hierarchy
-    /// (Global → Session → Scene → Module). Coordinates service registration,
-    /// scope activation/deactivation, ordered async initialization driven by the
-    /// generated dependency graph, and reverse-order disposal. Each scope is
-    /// constructed lazily and torn down deterministically when its owner exits.
-    /// </summary>
     public partial class GameContextBuilder : IGameContextBuilder
     {
         private readonly GameContextScopeProfileStore _scopeProfiles = new();
@@ -23,12 +16,11 @@ namespace RuntimeFlow.Contexts
         private readonly IInitializationExecutionScheduler _executionScheduler;
         private readonly RuntimeHealthSupervisor _healthSupervisor;
         private readonly ILogger _logger;
+        private readonly ScopeOperationCoordinator _coordinator;
+        private readonly ScopeActivationService _activationService;
         private readonly ScopeTransitionEngine _scopeTransitions;
         private readonly Dictionary<Type, GameContext> _preloadedContexts = new();
         private readonly Dictionary<Type, GameContext> _additiveModuleContexts = new();
-        private static readonly Lazy<Type[]> ExplicitDependencyTypeCatalog = new(
-            BuildExplicitDependencyTypeCatalog,
-            LazyThreadSafetyMode.ExecutionAndPublication);
 
         private Action<IGameContext>? _onGlobalInitialized;
         private Action<IGameContext>? _onSessionInitialized;
@@ -42,6 +34,12 @@ namespace RuntimeFlow.Contexts
         private Type? _activeSceneScopeKey;
         private Type? _activeModuleScopeKey;
 
+        internal IGameContext? GlobalContext => _globalContext;
+        internal GameContext? SessionContext => _sessionContext;
+        internal GameContext? SceneContext => _sceneContext;
+        internal GameContext? ModuleContext => _moduleContext;
+        internal IReadOnlyDictionary<Type, GameContext> PreloadedContexts => _preloadedContexts;
+        internal IReadOnlyDictionary<Type, GameContext> AdditiveModuleContexts => _additiveModuleContexts;
         internal Type? ActiveSceneScopeKey => _activeSceneScopeKey;
         internal Type? ActiveModuleScopeKey => _activeModuleScopeKey;
         private bool _ownsGlobalContext = true;
@@ -51,16 +49,7 @@ namespace RuntimeFlow.Contexts
         private ScopeEventBus? _sceneEventBus;
         private ScopeEventBus? _moduleEventBus;
 
-        private CancellationTokenSource? _activeLoadCts;
-        private Task _activeLoadTask = Task.CompletedTask;
-        private readonly object _activeLoadSync = new();
-        private readonly SemaphoreSlim _exclusiveScopeOperationStartLock = new(1, 1);
-        private long _runGeneration;
-        private readonly object _scopeGenerationSync = new();
-        private readonly SemaphoreSlim _sideScopeOperationLock = new(1, 1);
-
         private readonly GameContextLazyInitializationRegistry _lazyInitialization = new();
-        private readonly SemaphoreSlim _lazyInitLock = new(1, 1);
 
         public GameContextBuilder(IInitializationExecutionScheduler? executionScheduler = null)
             : this(executionScheduler, null, null)
@@ -75,43 +64,32 @@ namespace RuntimeFlow.Contexts
             _executionScheduler = executionScheduler ?? InlineInitializationExecutionScheduler.Instance;
             _healthSupervisor = healthSupervisor ?? RuntimeHealthSupervisor.Disabled;
             _logger = logger ?? NullLogger.Instance;
+            _coordinator = new ScopeOperationCoordinator();
+            _activationService = new ScopeActivationService(_executionScheduler);
             _scopeTransitions = new ScopeTransitionEngine(this);
         }
 
-        internal Task ExecuteOnMainThreadAsync(
-            Func<CancellationToken, Task> operation,
-            CancellationToken cancellationToken = default)
+        internal Task ExecuteOnMainThreadAsync(Func<CancellationToken, Task> operation, CancellationToken cancellationToken = default)
         {
             if (operation == null) throw new ArgumentNullException(nameof(operation));
-            return _executionScheduler.ExecuteAsync(
-                InitializationThreadAffinity.MainThread,
-                operation,
-                cancellationToken);
+            return _executionScheduler.ExecuteAsync(InitializationThreadAffinity.MainThread, operation, cancellationToken);
         }
 
-        private Task ExecuteStageCallbackOnMainThreadAsync(
-            Func<CancellationToken, Task> callback,
-            CancellationToken cancellationToken)
+        private Task ExecuteStageCallbackOnMainThreadAsync(Func<CancellationToken, Task> callback, CancellationToken cancellationToken)
         {
             if (callback == null) throw new ArgumentNullException(nameof(callback));
-            return _executionScheduler.ExecuteAsync(
-                InitializationThreadAffinity.MainThread,
-                callback,
-                cancellationToken);
+            return _executionScheduler.ExecuteAsync(InitializationThreadAffinity.MainThread, callback, cancellationToken);
         }
 
         private Task DrainMainThreadFrameAsync(CancellationToken cancellationToken)
         {
-            return _executionScheduler.ExecuteAsync(
-                InitializationThreadAffinity.MainThread,
-                async token =>
-                {
-                    token.ThrowIfCancellationRequested();
-                    await Task.Yield();
-                    token.ThrowIfCancellationRequested();
-                    await Task.Yield();
-                },
-                cancellationToken);
+            return _executionScheduler.ExecuteAsync(InitializationThreadAffinity.MainThread, async token =>
+            {
+                token.ThrowIfCancellationRequested();
+                await Task.Yield();
+                token.ThrowIfCancellationRequested();
+                await Task.Yield();
+            }, cancellationToken);
         }
 
         internal void UseExternalGlobalContext(IGameContext globalContext)
@@ -120,28 +98,105 @@ namespace RuntimeFlow.Contexts
             _ownsGlobalContext = false;
         }
 
-        public IGameContextBuilder OnGlobalInitialized(Action<IGameContext> callback)
+        public IGameContextBuilder OnGlobalInitialized(Action<IGameContext> callback) { _onGlobalInitialized += callback; return this; }
+        public IGameContextBuilder OnSessionInitialized(Action<IGameContext> callback) { _onSessionInitialized += callback; return this; }
+        public IGameContextBuilder OnSceneInitialized(Action<IGameContext> callback) { _onSceneInitialized += callback; return this; }
+        public IGameContextBuilder OnModuleInitialized(Action<IGameContext> callback) { _onModuleInitialized += callback; return this; }
+
+        internal void SetScopeStateIfTracked(GameContextType scope, ScopeLifecycleState state, Type? explicitScopeKey = null)
+            => _scopeRegistry.SetScopeStateIfTracked(scope, state, explicitScopeKey);
+
+        internal ScopeLifecycleState GetScopeState(Type scopeType)
+            => _scopeRegistry.GetScopeState(scopeType);
+
+        public ScopeLifecycleState GetScopeLifecycleState(Type scopeType)
+            => _scopeRegistry.GetScopeState(scopeType);
+
+        public bool TryResolveScopeType(Type scopeType, out GameContextType scope)
+            => _scopeRegistry.TryResolveScopeType(scopeType, out scope);
+
+        public IGameContext GetSessionContext()
+            => _sessionContext ?? throw new InvalidOperationException("Session scope is not initialized.");
+
+        public bool CanRestartSession()
+            => _sessionContext != null;
+
+        public bool TryResolveFromSession<T>(out T service) where T : class
         {
-            _onGlobalInitialized += callback;
-            return this;
+            if (_sessionContext != null && _sessionContext.TryResolve(typeof(T), out var resolved) && resolved is T typed)
+            {
+                service = typed;
+                return true;
+            }
+            service = null!;
+            return false;
         }
 
-        public IGameContextBuilder OnSessionInitialized(Action<IGameContext> callback)
+        public bool TryResolveFromSession(Type serviceType, out object service)
         {
-            _onSessionInitialized += callback;
-            return this;
+            if (_sessionContext != null && _sessionContext.TryResolve(serviceType, out service))
+                return true;
+            service = null!;
+            return false;
         }
 
-        public IGameContextBuilder OnSceneInitialized(Action<IGameContext> callback)
+        public async Task EnsureLazyServiceInitializedAsync(Type serviceType, CancellationToken cancellationToken = default)
         {
-            _onSceneInitialized += callback;
-            return this;
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+            if (_lazyInitialization.IsInitialized(serviceType))
+                return;
+
+            await _coordinator.LazyInitLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            try
+            {
+                if (_lazyInitialization.IsInitialized(serviceType))
+                    return;
+
+                if (!_lazyInitialization.TryGetBinding(serviceType, out var binding))
+                    return;
+
+                var instance = binding.Context.Resolve(binding.Initializer);
+                if (instance is IAsyncInitializableService asyncService)
+                {
+                    await asyncService.InitializeAsync(cancellationToken).ConfigureAwait(false);
+                }
+
+                binding.Context.RecordInitialized(binding.Initializer);
+                _lazyInitialization.MarkInitialized(serviceType);
+            }
+            finally
+            {
+                _coordinator.LazyInitLock.Release();
+            }
         }
 
-        public IGameContextBuilder OnModuleInitialized(Action<IGameContext> callback)
+        private void ValidateSceneScopeOperationPreconditions(Type sceneScopeKey)
         {
-            _onModuleInitialized += callback;
-            return this;
+            if (sceneScopeKey == null) throw new ArgumentNullException(nameof(sceneScopeKey));
+            if (!_scopeRegistry.TryResolveScopeType(sceneScopeKey, out _))
+                throw new InvalidOperationException($"Scene scope '{sceneScopeKey.Name}' is not declared.");
+            if (_sessionContext == null)
+                throw new InvalidOperationException("Session context is not initialized. Call LoadSessionAsync first.");
         }
+
+        private void ValidateModuleScopeOperationPreconditions(Type moduleScopeKey)
+        {
+            if (moduleScopeKey == null) throw new ArgumentNullException(nameof(moduleScopeKey));
+            if (!_scopeRegistry.TryResolveScopeType(moduleScopeKey, out _))
+                throw new InvalidOperationException($"Module scope '{moduleScopeKey.Name}' is not declared.");
+            if (_sceneContext == null)
+                throw new InvalidOperationException("Scene context is not initialized. Call LoadSceneAsync first.");
+        }
+
+        internal Task ExecuteExclusiveScopeOperationAsync(IInitializationProgressNotifier? n, CancellationToken ct, Func<ScopeOperationCoordinator.ScopeOperationContext, Task> op) => _coordinator.ExecuteExclusiveScopeOperationAsync(n, ct, op);
+        internal Task ExecuteParentInvalidatingExclusiveScopeOperationAsync(IInitializationProgressNotifier? n, CancellationToken ct, Func<ScopeOperationCoordinator.ScopeOperationContext, Task> op) => _coordinator.ExecuteParentInvalidatingExclusiveScopeOperationAsync(n, ct, op);
+        internal Task ExecuteGenerationBoundSideScopeOperationAsync(IInitializationProgressNotifier? n, CancellationToken ct, Func<ScopeOperationCoordinator.ScopeOperationContext, Task> op) => _coordinator.ExecuteGenerationBoundSideScopeOperationAsync(n, ct, op);
+        internal Task CancelActiveLoadAsync(CancellationToken ct = default) => _coordinator.CancelActiveLoadAsync(ct);
+        internal long BeginNewScopeGeneration() => _coordinator.BeginNewScopeGeneration();
+        internal long ReadScopeGeneration() => _coordinator.ReadScopeGeneration();
+        internal void PublishInCurrentGeneration(long generation, CancellationToken ct, Action publish) => _coordinator.PublishInCurrentGeneration(generation, ct, publish);
+        internal void ThrowIfStaleGeneration(long generation, CancellationToken ct) => _coordinator.ThrowIfStaleGeneration(generation, ct);
+        internal SemaphoreSlim SideScopeLock => _coordinator.SideLock;
+        internal SemaphoreSlim LazyInitLock => _coordinator.LazyInitLock;
     }
 }

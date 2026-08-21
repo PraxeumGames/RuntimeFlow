@@ -60,7 +60,7 @@ namespace RuntimeFlow.Contexts
             var retryObserver = options.RetryObserver ?? NullRuntimeRetryObserver.Instance;
             var loadingProgressObserver = options.LoadingProgressObserver ?? NullRuntimeLoadingProgressObserver.Instance;
 
-            return new RuntimePipeline(
+            var pipeline = new RuntimePipeline(
                 builder,
                 healthSupervisor,
                 errorClassifier,
@@ -71,6 +71,8 @@ namespace RuntimeFlow.Contexts
                 options.ReplayFlowOnSessionRestart,
                 options.SessionRestartPreparationHooks,
                 logger);
+            ActivePipeline = pipeline;
+            return pipeline;
         }
 
         public RuntimePipeline ConfigureFlow(IRuntimeFlowScenario flow)
@@ -118,14 +120,6 @@ namespace RuntimeFlow.Contexts
             return this;
         }
 
-        public RuntimeStatus GetRuntimeStatus()
-        {
-            lock (_statusSync)
-            {
-                return _status;
-            }
-        }
-
         public RuntimeReadinessStatus GetReadinessStatus()
         {
             var status = GetRuntimeStatus();
@@ -140,11 +134,6 @@ namespace RuntimeFlow.Contexts
         public RuntimeRestartReadiness GetRestartReadiness()
         {
             return _restartLifecycleManager.GetRestartReadiness();
-        }
-
-        public IRuntimeExecutionContext GetExecutionContext()
-        {
-            return _executionContextManager.GetExecutionContext();
         }
 
         RuntimeRestartLifecycleSnapshot IRuntimeRestartLifecycleManager.Snapshot => _restartLifecycleManager.Snapshot;

@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(dotnet:*)",
+      "Shell(for:*)",
+      "Shell(do:*)",
+      "Shell(ls:*)",
+      "Shell(done:*)",
+      "Shell(ls /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services.meta 2>&1; cat /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Stores.meta 2>&1 | head -5)",
+      "Shell(cat > /tmp/gen_meta.py << 'PY' import uuid, pathlib for path in [\"/Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services.meta\", \"/Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Runtime/Pipeline/Services.meta\"]: pathlib.Path(path).write_text(f\"fileFormatVersion: 2\\nguid: {uuid.uuid4().hex}\\nfolderAsset: yes\\nDefaultImporter:\\n externalObjects: {{}}\\n userData: \\n assetBundleName: \\n assetBundleVariant: \\n\") print(path) for p in [\"/Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ScopeOperationCoordinator.cs\", \"/Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ScopeActivationService.cs\"]: meta = p + \".meta\" pathlib.Path(meta).write_text(f\"fileFormatVersion: 2\\nguid: {uuid.uuid4().hex}\\nMonoImporter:\\n externalObjects: {{}}\\n serializedVersion: 2\\n defaultReferences: []\\n executionOrder: 0\\n icon: {{instanceID: 0}}\\n userData: \\n assetBundleName: \\n assetBundleVariant: \\n\") print(meta) PY python3 /tmp/gen_meta.py)",
+      "Shell(rm /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/GameContextBuilder.Operations.Support.cs /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/GameContextBuilder.Operations.Support.cs.meta 2>&1; echo \"removed\")",
+      "Shell(python3 << 'PY' import uuid, pathlib for p in [\"/Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Runtime/Pipeline/Services/PipelineStatusService.cs\", \"/Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Runtime/Pipeline/Services/PipelineOperationExecutor.cs\"]: meta = p + \".meta\" pathlib.Path(meta).write_text(f\"fileFormatVersion: 2\\nguid: {uuid.uuid4().hex}\\nMonoImporter:\\n externalObjects: {{}}\\n serializedVersion: 2\\n defaultReferences: []\\n executionOrder: 0\\n icon: {{instanceID: 0}}\\n userData: \\n assetBundleName: \\n assetBundleVariant: \\n\") print(meta) PY)",
+      "Shell(rm /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ContextTeardownService.cs /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ContextTeardownService.cs.meta /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ScopeTransitionCoordinator.cs /Users/mstislavpavlov/RuntimeFlow/com.praxeum.runtimeflow/Runtime/Contexts/Core/Services/ScopeTransitionCoordinator.cs.meta 2>&1; echo \"removed dead code\")",
+      "Shell(grep:*)",
+      "Shell(cp:*)",
+      "Shell(/Applications/Unity/Hub/Editor/2022.3.62f2/Unity.app/Contents/MacOS/Unity:*)"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

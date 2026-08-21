@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using SFS.Core.GameLoading;
 using VContainer;
 
 namespace RuntimeFlow.Contexts
@@ -136,21 +135,13 @@ namespace RuntimeFlow.Contexts
             }
 
             var resolver = sessionContext.Resolver;
-            return HasResolvedLegacyRestartAwareServices(
-                       resolver,
-                       typeof(IEnumerable<ISessionRestartAware>))
-                   || HasResolvedLegacyRestartAwareServices(
-                       resolver,
-                       typeof(IReadOnlyList<ISessionRestartAware>))
-                   || HasResolvedLegacyRestartAwareServices(
-                       resolver,
-                       typeof(ISessionRestartAware[]))
-                   || HasResolvedLegacyRestartAwareServices(
-                       resolver,
-                       typeof(ISessionRestartAware));
+            return HasResolvedRestartAwareServices(resolver, typeof(IEnumerable<ISessionRestartAware>))
+                || HasResolvedRestartAwareServices(resolver, typeof(IReadOnlyList<ISessionRestartAware>))
+                || HasResolvedRestartAwareServices(resolver, typeof(ISessionRestartAware[]))
+                || HasResolvedRestartAwareServices(resolver, typeof(ISessionRestartAware));
         }
 
-        private static bool HasResolvedLegacyRestartAwareServices(
+        private static bool HasResolvedRestartAwareServices(
             IObjectResolver resolver,
             Type serviceType)
         {
@@ -158,26 +149,18 @@ namespace RuntimeFlow.Contexts
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
 
             if (!resolver.TryResolve(serviceType, out var resolved) || resolved == null)
-            {
                 return false;
-            }
 
             if (resolved is ISessionRestartAware)
-            {
                 return true;
-            }
 
             if (resolved is not IEnumerable sequence)
-            {
                 return false;
-            }
 
             foreach (var resolvedService in sequence)
             {
                 if (resolvedService is ISessionRestartAware)
-                {
                     return true;
-                }
             }
 
             return false;

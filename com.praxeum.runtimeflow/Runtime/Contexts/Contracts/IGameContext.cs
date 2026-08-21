@@ -19,6 +19,8 @@ namespace RuntimeFlow.Contexts
         VContainer.IObjectResolver Resolver { get; }
         TService Resolve<TService>();
         object Resolve(Type serviceType);
+        System.Threading.Tasks.Task<TService> ResolveAsync<TService>(System.Threading.CancellationToken cancellationToken = default);
+        System.Threading.Tasks.Task<object> ResolveAsync(Type serviceType, System.Threading.CancellationToken cancellationToken = default);
         event System.Action? OnBeforeInitialize;
         event System.Action? OnInitialized;
         event System.Action? OnBeforeDispose;

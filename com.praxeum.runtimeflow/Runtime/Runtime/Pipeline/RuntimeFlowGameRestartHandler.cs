@@ -2,11 +2,10 @@ using System;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using RuntimeFlow.Contexts;
 using VContainer;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
 
-namespace SFS.Core.GameLoading
+namespace RuntimeFlow.Contexts
 {
     public sealed class RuntimeFlowGameRestartHandler : IGameRestartHandler, IDisposable
     {
@@ -97,6 +96,16 @@ namespace SFS.Core.GameLoading
         {
             Restart(reason, forceSave: false, _gameDataCleaner.ClearAllUserData);
         }
+
+        bool IGameRestartHandler.IsApplicationRestarting => IsApplicationRestarting;
+        event Action<bool> IGameRestartHandler.ApplicationRestartingChanged
+        {
+            add => ApplicationRestartingChanged += value;
+            remove => ApplicationRestartingChanged -= value;
+        }
+        void IGameRestartHandler.Restart(string reason, bool forceSave, Action? callback) => Restart(reason, forceSave, callback);
+        void IGameRestartHandler.RestartAndClearSecondaryUserData(string reason, bool forceSave) => RestartAndClearSecondaryUserData(reason, forceSave);
+        void IGameRestartHandler.HardRestart(string reason) => HardRestart(reason);
 
         public void Restart(string reason, bool forceSave = true, Action? callback = null)
         {

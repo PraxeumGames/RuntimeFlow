@@ -5,69 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] - 2026-08-21
+
+### Added
+- **UI Toolkit Dashboard (`RuntimeFlow.Editor`)**: Full-featured diagnostic window (`Window → RuntimeFlow → Dashboard & Graph`) with live PlayMode monitoring, DAG inspector, scope tree, and fault telemetry.
+- **Interactive Demo Scene & Chaos Testing (`Assets/Demo`)**: Complete demonstration showcasing Global, Session (Stages 1-4), Scene, Module, and Additive Scopes with live fault and timeout injection.
+- **`ResolveAsync<TService>()` on `IGameContext`**: Safe async DI resolution for background worker threads without sync-over-async blocking.
+- **Fluent Scope Registration DSL**: Extension methods `WithScene<T>()`, `WithModule<T>()`, and `WithTransition<T>()` on `IGameContextBuilder`.
+- **IL2CPP Code Preservation in Source Generator**: Automatic generation of `PreserveTypes()` and `PreserveCollection<T>()` with `[UnityEngine.Scripting.Preserve]` annotations in `RuntimeFlowGeneratedCatalog.g.cs`.
 
 ### Changed
-- The async lifecycle is now part of the public contract: `IGameContext` inherits
-  `IAsyncDisposable`, so consumers holding the interface can await `DisposeAsync()` instead of
-  being forced into the sync-only `Dispose()` contract.
-- Disposing async-disposable services requires an explicit scheduler: a context created outside
-  `GameContextBuilder` with no `ExecutionScheduler` throws `InvalidOperationException` from
-  `DisposeAsync` when async-disposable services are present, instead of silently falling back to
-  inline execution.
-- Reworked the DI container into a lifecycle-native container: `GameContext` is now its own
-  `IObjectResolver`. Instead of wrapping a private VContainer `Container`, each context builds a
-  flat VContainer `Registry` and resolves registrations directly through itself, so the context's
-  own `Dispose()` (or async teardown) is the single owner of every spawned/registered instance.
-  Scopes no longer need a parallel ownership layer to mirror container disposal.
-- `GameContext` now implements `IAsyncDisposable` and owns its native teardown:
-  `await context.DisposeAsync()` disposes async services in reverse initialization order (with
-  their declared thread affinity) and then every registered/constructed instance in reverse
-  order, aggregating failures. The context records its own initialization order as the builder
-  completes each wave, so teardown no longer depends on builder-level bookkeeping. Synchronous
-  `Dispose()` throws `NotSupportedException` when async-disposable services are present rather
-  than silently skipping their teardown.
-- Removed the builder-side initialization-order ledger: seed/replay reads the live context's
-  recorded order, and scope teardown delegates entirely to `context.DisposeAsync()`.
-- Instance registrations are tracked for disposal at registration time (disposed even if never
-  resolved) and resolved services are tracked only for non-instance registrations; teardown
-  disposes both in reverse order, preserving the previous disposal ordering without double-disposal.
-- Ownership tracking is now O(1) with reference-equality lookups.
-- Parent fallback now walks the context chain (`TryResolve`/`Resolve` on a context resolves from
-  its own registry, then the parent's), matching the old scoped-container behaviour.
-- `IObjectResolver.CreateScope` is no longer supported by `GameContext` (throws
-  `NotSupportedException`); scopes are created and owned by the RuntimeFlow pipeline.
-- Wired real VContainer diagnostics: registrations are traced at registry build and every
-  resolve is traced with call depth and timing through `GameContext.Diagnostics`.
+- **Zero-Reflection Decorators**: `GameContextDecorationChain` now compiles and caches direct factory delegates via `System.Linq.Expressions` with AOT fallback.
+- **Scope Plan Caching**: `ScopeActivationService` now caches discovered `ScopeActivationExecutionPlan` instances using `ConditionalWeakTable` + `ConcurrentDictionary`.
+- **Hot-Path Allocations & LINQ Optimization**: Replaced LINQ queries with indexed loops and reusable collections across `GameContextBuilder` initialization and service discovery.
+- **Canonical Restart Contracts**: Removed legacy SFS namespaces; framework restart contracts are now canonically in `RuntimeFlow.Contexts` (`IGameRestartHandler`, `IGameDataCleaner`, `ISessionRestartAware`, `IGameRestartStateSaver`).
 
-### Fixed
-- Fixed disposal after a failed initialization: owned instances tracked before the failure
-  (build callbacks, decoration) are now disposed instead of leaking, because teardown is gated
-  on disposal state rather than the initialized flag.
-
-### Removed
-- Removed `RuntimePipeline.CreateFromResolver` and `ResolverBackedGameContext`: pipelines are now
-  built from a global context (`Create`, `CreateFromGlobalContext`) only.
-- Removed `IGameContext.CreateChildContext`: scopes are created and owned by the RuntimeFlow
-  pipeline; direct child-context creation is no longer part of the public surface.
-- Removed the custom `RuntimeFlowInstanceProvider`/registration-builder plumbing, the
-  store-level ownership/disposal bookkeeping that mirrored VContainer lifetimes, and the
-  `GameContextScopeInitializationLedger`.
-
-### Fixed
-- Fixed `IsRegistered` constructing services during registration queries: checks now use the
-  container registration table and never instantiate the service.
-- Fixed double-disposal of scope-owned `RegisterInstance` services that were already resolved
-  through the container. Instances spawned by VContainer are now left to the container for
-  disposal, both during scope teardown and when an instance registration is replaced.
-- Fixed instance registration replacement: re-registering the same implementation type now
-  updates its lifetime (last registration wins) and disposes the replaced owned instance
-  instead of silently keeping the first registration.
-- Fixed scope teardown after a failed deactivation hook: teardown now always completes, the
-  active-scope reference is always cleared, and failures are aggregated into an
-  `AggregateException`. Cancellation-driven (superseded) transitions still surface as
-  `OperationCanceledException`.
-- Fixed `BootstrapResult.Dispose()` blocking the Unity main thread: disposal is now
+## [0.5.0] - 2026-07-13
   non-blocking on the main thread (synchronous on worker threads).
 - `RegisterInstance` now validates eagerly that the exposed service types are assignable from
   the instance type, consistent with `Register`.

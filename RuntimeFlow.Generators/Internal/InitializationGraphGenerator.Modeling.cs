@@ -7,18 +7,14 @@ namespace RuntimeFlow.Generators
 {
     public sealed partial class InitializationGraphGenerator
     {
-        private static GenerationModel? BuildModel(Compilation compilation, SourceProductionContext context)
+        private static GenerationModel? BuildModel(
+            Compilation compilation,
+            IReadOnlyCollection<INamedTypeSymbol> classSymbols,
+            GeneratorSymbols symbols,
+            SourceProductionContext context)
         {
-            var symbols = GeneratorSymbols.Create(compilation);
-            if (!symbols.IsValid)
-                return null;
-
-            if (!IsGraphGenerationEnabled(compilation, symbols))
-                return null;
-
             var nodes = new Dictionary<INamedTypeSymbol, ServiceNode>(SymbolEqualityComparer.Default);
-            foreach (var implementation in EnumerateNamedTypes(compilation.Assembly.GlobalNamespace)
-                         .Where(type => type.TypeKind == TypeKind.Class && !type.IsAbstract))
+            foreach (var implementation in classSymbols.Where(type => type != null))
             {
                 var serviceContracts = implementation.AllInterfaces
                     .Where(contract => IsScopedAsyncContract(contract, symbols))
@@ -111,6 +107,29 @@ namespace RuntimeFlow.Generators
                 .Any(attribute => SymbolEqualityComparer.Default.Equals(
                     attribute.AttributeClass,
                     symbols.GenerateGraphAttribute));
+        }
+
+        private static bool HasAnyScopedAsyncContract(Compilation compilation, GeneratorSymbols symbols)
+        {
+            foreach (var type in EnumerateNamedTypes(compilation.Assembly.GlobalNamespace))
+            {
+                if (type.TypeKind != TypeKind.Class || type.IsAbstract)
+                    continue;
+                if (type.AllInterfaces.Any(c => IsScopedAsyncContract(c, symbols)))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool HasAnyScopedAsyncContractFromClasses(IReadOnlyCollection<INamedTypeSymbol> classSymbols, GeneratorSymbols symbols)
+        {
+            foreach (var type in classSymbols)
+            {
+                if (type == null) continue;
+                if (type.AllInterfaces.Any(c => IsScopedAsyncContract(c, symbols)))
+                    return true;
+            }
+            return false;
         }
 
         private static void AddDependency(

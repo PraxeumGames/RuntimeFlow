@@ -1,0 +1,228 @@
+/* Root container */
+.runtimeflow-dashboard-root {
+    flex-grow: 1;
+    background-color: #1e1e1e;
+    color: #e0e0e0;
+    font-size: 12px;
+}
+
+/* Header & Toolbar */
+.rf-toolbar {
+    height: 32px;
+    background-color: #252526;
+    border-bottom-width: 1px;
+    border-bottom-color: #333333;
+    padding-left: 8px;
+    padding-right: 8px;
+    flex-direction: row;
+    align-items: center;
+}
+
+.rf-toolbar-title {
+    font-size: 13px;
+    -unity-font-style: bold;
+    color: #4ec9b0;
+    margin-right: 12px;
+}
+
+.rf-mode-badge {
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    -unity-font-style: bold;
+    margin-right: 8px;
+}
+
+.rf-mode-badge--play {
+    background-color: #1e5c2b;
+    color: #a8ffb2;
+}
+
+.rf-mode-badge--edit {
+    background-color: #3b3b3c;
+    color: #dcdcdc;
+}
+
+.rf-tab-button {
+    height: 24px;
+    padding: 2px 10px;
+    margin-right: 4px;
+    border-radius: 3px;
+    background-color: #2d2d30;
+    color: #cccccc;
+    border-width: 1px;
+    border-color: #3e3e42;
+}
+
+.rf-tab-button:hover {
+    background-color: #3e3e42;
+    color: #ffffff;
+}
+
+.rf-tab-button--active {
+    background-color: #0e639c;
+    color: #ffffff;
+    border-color: #1177bb;
+    -unity-font-style: bold;
+}
+
+.rf-search-field {
+    flex-grow: 1;
+    max-width: 240px;
+    margin-left: auto;
+    margin-right: 8px;
+}
+
+.rf-action-button {
+    height: 24px;
+    padding: 2px 8px;
+    margin-left: 4px;
+    background-color: #333337;
+    border-color: #434346;
+    border-radius: 3px;
+    color: #dddddd;
+}
+
+.rf-action-button:hover {
+    background-color: #3e3e42;
+    color: #ffffff;
+}
+
+.rf-action-button--primary {
+    background-color: #007acc;
+    color: #ffffff;
+    border-color: #0098ff;
+}
+
+/* Split view & Panes */
+.rf-split-view {
+    flex-grow: 1;
+}
+
+.rf-pane-left {
+    min-width: 220px;
+    background-color: #252526;
+    border-right-width: 1px;
+    border-right-color: #333333;
+    padding: 6px;
+}
+
+.rf-pane-right {
+    flex-grow: 1;
+    background-color: #1e1e1e;
+    padding: 12px;
+}
+
+/* Cards & Section Boxes */
+.rf-card {
+    background-color: #252526;
+    border-width: 1px;
+    border-color: #333333;
+    border-radius: 6px;
+    padding: 10px;
+    margin-bottom: 10px;
+}
+
+.rf-card-title {
+    font-size: 13px;
+    -unity-font-style: bold;
+    color: #569cd6;
+    margin-bottom: 6px;
+    border-bottom-width: 1px;
+    border-bottom-color: #333333;
+    padding-bottom: 4px;
+}
+
+/* Property Rows */
+.rf-property-row {
+    flex-direction: row;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 4px;
+}
+
+.rf-property-label {
+    color: #9cdcfe;
+    font-size: 11px;
+}
+
+.rf-property-value {
+    color: #d4d4d4;
+    font-size: 11px;
+    -unity-font-style: bold;
+}
+
+/* Status Badges */
+.rf-badge {
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+    -unity-font-style: bold;
+}
+
+.rf-badge--green {
+    background-color: #1e5c2b;
+    color: #85e89d;
+}
+
+.rf-badge--yellow {
+    background-color: #5c4e1e;
+    color: #ffea7f;
+}
+
+.rf-badge--red {
+    background-color: #5c1e1e;
+    color: #fdaeb7;
+}
+
+.rf-badge--blue {
+    background-color: #1e3a5c;
+    color: #79b8ff;
+}
+
+.rf-badge--gray {
+    background-color: #333333;
+    color: #888888;
+}
+
+/* List Items */
+.rf-list-item {
+    padding: 6px 8px;
+    border-radius: 4px;
+    margin-bottom: 2px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.rf-list-item:hover {
+    background-color: #2a2d2e;
+}
+
+.rf-list-item--selected {
+    background-color: #094771;
+    color: #ffffff;
+}
+
+.rf-item-name {
+    font-size: 12px;
+    -unity-font-style: bold;
+}
+
+.rf-item-desc {
+    font-size: 10px;
+    color: #888888;
+}
+
+/* Status Bar */
+.rf-status-bar {
+    height: 22px;
+    background-color: #007acc;
+    color: #ffffff;
+    font-size: 11px;
+    padding-left: 8px;
+    padding-right: 8px;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+}

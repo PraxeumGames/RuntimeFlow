@@ -150,35 +150,44 @@ namespace RuntimeFlow.Contexts
 
             var lifecycleIndex = new LifecycleRegistrationIndex();
 
-            var localExplicitServiceTypes = context.RegisteredServiceTypes
-                .Where(InitializationGraphRules.IsExplicitDependencyType)
-                .OrderBy(GetDeterministicTypeName, StringComparer.Ordinal)
-                .ToArray();
+            var localExplicitServiceTypes = new List<Type>();
+            foreach (var type in context.RegisteredServiceTypes)
+            {
+                if (InitializationGraphRules.IsExplicitDependencyType(type))
+                    localExplicitServiceTypes.Add(type);
+            }
+            localExplicitServiceTypes.Sort((a, b) => string.CompareOrdinal(GetDeterministicTypeName(a), GetDeterministicTypeName(b)));
 
-            foreach (var serviceType in localExplicitServiceTypes)
+            for (var i = 0; i < localExplicitServiceTypes.Count; i++)
             {
                 AddCandidateFromServiceType(
                     context,
                     compiledGraph,
-                    serviceType,
+                    localExplicitServiceTypes[i],
                     lifecycleIndex,
                     LifecycleRegistrationOrigin.RuntimeFlowRegistration);
             }
 
-            foreach (var discoveredType in DiscoverRegisteredAsyncServiceTypes(context)
-                         .OrderBy(GetDeterministicTypeName, StringComparer.Ordinal))
+            var discoveredAsyncTypes = new List<Type>(DiscoverRegisteredAsyncServiceTypes(context));
+            discoveredAsyncTypes.Sort((a, b) => string.CompareOrdinal(GetDeterministicTypeName(a), GetDeterministicTypeName(b)));
+
+            for (var i = 0; i < discoveredAsyncTypes.Count; i++)
             {
                 AddCandidateFromServiceType(
                     context,
                     compiledGraph,
-                    discoveredType,
+                    discoveredAsyncTypes[i],
                     lifecycleIndex,
                     LifecycleRegistrationOrigin.RuntimeFlowRegistration);
             }
 
-            foreach (var discoveredRegistration in DiscoverRegisteredAsyncServiceRegistrations(context)
-                         .OrderBy(candidate => GetDeterministicTypeName(candidate.ServiceType), StringComparer.Ordinal))
+            var discoveredRegistrations = new List<InitializerRegistrationCandidate>(
+                DiscoverRegisteredAsyncServiceRegistrations(context));
+            discoveredRegistrations.Sort((a, b) => string.CompareOrdinal(GetDeterministicTypeName(a.ServiceType), GetDeterministicTypeName(b.ServiceType)));
+
+            for (var i = 0; i < discoveredRegistrations.Count; i++)
             {
+                var discoveredRegistration = discoveredRegistrations[i];
                 var implementationType = discoveredRegistration.Registration.ImplementationType;
                 lifecycleIndex.Add(
                     discoveredRegistration.ServiceType,
@@ -516,7 +525,7 @@ namespace RuntimeFlow.Contexts
 
         private static IEnumerable<Type> DiscoverRegisteredAsyncServiceTypes(GameContext context)
         {
-            foreach (var type in ExplicitDependencyTypeCatalog.Value)
+            foreach (var type in ExplicitTypeCatalogProvider.GetExplicitDependencyTypes())
             {
                 if (IsLocallyRegisteredForInitialization(context, type))
                     yield return type;
@@ -527,35 +536,6 @@ namespace RuntimeFlow.Contexts
         {
             return context.RegisteredServiceTypes.Contains(serviceType)
                    || context.GetRegistrationsForServiceType(serviceType).Count > 0;
-        }
-
-        private static Type[] BuildExplicitDependencyTypeCatalog()
-        {
-            var result = new HashSet<Type>();
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
-            {
-                Type[] types;
-                try
-                {
-                    types = assembly.GetTypes();
-                }
-                catch (ReflectionTypeLoadException exception)
-                {
-                    types = exception.Types.Where(type => type != null).Cast<Type>().ToArray();
-                }
-                catch
-                {
-                    continue;
-                }
-
-                foreach (var type in types)
-                {
-                    if (InitializationGraphRules.IsExplicitDependencyType(type))
-                        result.Add(type);
-                }
-            }
-
-            return result.ToArray();
         }
 
         private static Type? ResolveToServiceType(
@@ -589,5 +569,7 @@ namespace RuntimeFlow.Contexts
                        GetDeterministicTypeName(current),
                        StringComparison.Ordinal) < 0;
         }
+
+        private static string GetDeterministicTypeName(Type type) => type.AssemblyQualifiedName ?? type.FullName ?? type.Name;
     }
 }

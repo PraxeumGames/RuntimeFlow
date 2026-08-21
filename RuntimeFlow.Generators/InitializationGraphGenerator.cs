@@ -1,6 +1,9 @@
 using System;
+using System.Collections.Immutable;
+using System.Linq;
 using System.Text;
 using Microsoft.CodeAnalysis;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Text;
 
 namespace RuntimeFlow.Generators
@@ -43,13 +46,36 @@ namespace RuntimeFlow.Generators
 
         public void Initialize(IncrementalGeneratorInitializationContext context)
         {
-            context.RegisterSourceOutput(context.CompilationProvider, static (spc, compilation) =>
+            var classes = context.SyntaxProvider.CreateSyntaxProvider(
+                static (node, _) => node is ClassDeclarationSyntax c && (c.BaseList != null || c.AttributeLists.Count > 0),
+                static (ctx, _) =>
+                {
+                    var symbol = ctx.SemanticModel.GetDeclaredSymbol((ClassDeclarationSyntax)ctx.Node) as INamedTypeSymbol;
+                    if (symbol == null || symbol.IsAbstract || symbol.TypeKind != TypeKind.Class)
+                        return null;
+                    return symbol;
+                }).Where(static s => s != null);
+
+            var compilationAndClasses = context.CompilationProvider.Combine(classes.Collect());
+
+            context.RegisterSourceOutput(compilationAndClasses, static (spc, tuple) =>
             {
-                var model = BuildModel(compilation, spc);
+                var compilation = tuple.Left;
+                var classSymbols = tuple.Right;
+                var symbols = GeneratorSymbols.Create(compilation);
+                if (!symbols.IsValid || !IsGraphGenerationEnabled(compilation, symbols))
+                {
+                    if (symbols.IsValid && !IsGraphGenerationEnabled(compilation, symbols) && !HasAnyScopedAsyncContractFromClasses(classSymbols!, symbols))
+                        spc.AddSource("RuntimeFlowGeneratedCatalog.g.cs", SourceText.From(RenderEmptyCatalog(), Encoding.UTF8));
+                    return;
+                }
+
+                var model = BuildModel(compilation, classSymbols!, symbols, spc);
                 if (model == null)
                     return;
 
                 spc.AddSource("CompiledInitializationGraph.g.cs", SourceText.From(Render(model), Encoding.UTF8));
+                spc.AddSource("RuntimeFlowGeneratedCatalog.g.cs", SourceText.From(RenderCatalog(compilation, classSymbols!, symbols), Encoding.UTF8));
             });
         }
     }

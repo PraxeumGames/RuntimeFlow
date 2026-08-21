@@ -138,7 +138,7 @@ namespace RuntimeFlow.Contexts
             long generation,
             CancellationToken cancellationToken)
         {
-            await _sideScopeOperationLock.WaitAsync(cancellationToken).ConfigureAwait(false);
+            await _coordinator.SideLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 return await _scopeTransitions.TryActivatePreloadedScopeAsync(
@@ -156,7 +156,7 @@ namespace RuntimeFlow.Contexts
             }
             finally
             {
-                _sideScopeOperationLock.Release();
+                _coordinator.SideLock.Release();
             }
         }
     }

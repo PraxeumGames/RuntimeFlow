@@ -1,6 +1,6 @@
 using System;
-using System.Runtime.ExceptionServices;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace RuntimeFlow.Contexts
 {
@@ -9,65 +9,95 @@ namespace RuntimeFlow.Contexts
         private static readonly TimeSpan MainThreadDispatchTimeout = TimeSpan.FromMinutes(2);
         private static SynchronizationContext? _mainThreadContext;
         private static int _mainThreadId;
+        private static readonly object _sync = new();
 
-        public static SynchronizationContext? MainThreadContext => _mainThreadContext;
+        public static SynchronizationContext? MainThreadContext
+        {
+            get { lock (_sync) return _mainThreadContext; }
+        }
 
         public static void CaptureMainThread()
         {
-            _mainThreadId = Thread.CurrentThread.ManagedThreadId;
-            // SynchronizationContext may not be set up yet during SubsystemRegistration.
-            // Capture it here if available; BeforeSceneLoad callback ensures it's set.
-            _mainThreadContext = SynchronizationContext.Current;
+            lock (_sync)
+            {
+                _mainThreadId = Thread.CurrentThread.ManagedThreadId;
+                _mainThreadContext = SynchronizationContext.Current;
+            }
         }
 
-        public static void CaptureMainThreadContext()
-        {
-            _mainThreadId = Thread.CurrentThread.ManagedThreadId;
-            _mainThreadContext = SynchronizationContext.Current;
-        }
+        public static void CaptureMainThreadContext() => CaptureMainThread();
 
         public static bool IsOnMainThread()
         {
-            if (_mainThreadContext != null && SynchronizationContext.Current == _mainThreadContext)
+            SynchronizationContext? ctx;
+            int mainId;
+            lock (_sync)
+            {
+                ctx = _mainThreadContext;
+                mainId = _mainThreadId;
+            }
+            if (Thread.CurrentThread.ManagedThreadId == mainId && mainId != 0)
                 return true;
+            return ctx != null && SynchronizationContext.Current == ctx;
+        }
 
-            return Thread.CurrentThread.ManagedThreadId == _mainThreadId;
+        public static Task<T> DispatchToMainThreadAsync<T>(Func<T> action, string operationDescription, CancellationToken cancellationToken = default)
+        {
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            if (IsOnMainThread())
+                return Task.FromResult(action());
+
+            SynchronizationContext? ctx;
+            lock (_sync) ctx = _mainThreadContext;
+            if (ctx == null)
+                return Task.FromResult(action());
+
+            var tcs = new TaskCompletionSource<T>(TaskCreationOptions.RunContinuationsAsynchronously);
+            ctx.Post(_ =>
+            {
+                try
+                {
+                    if (cancellationToken.IsCancellationRequested)
+                        tcs.TrySetCanceled(cancellationToken);
+                    else
+                        tcs.TrySetResult(action());
+                }
+                catch (Exception ex)
+                {
+                    tcs.TrySetException(ex);
+                }
+            }, null);
+
+            return WaitWithTimeoutAsync(tcs.Task, operationDescription, cancellationToken);
         }
 
         public static T DispatchToMainThread<T>(Func<T> action, string operationDescription)
         {
             if (action == null) throw new ArgumentNullException(nameof(action));
-
-            if (_mainThreadContext == null || IsOnMainThread())
+            if (IsOnMainThread())
                 return action();
 
-            T? result = default;
-            ExceptionDispatchInfo? capturedException = null;
-            using var completed = new ManualResetEventSlim(false);
-            _mainThreadContext.Post(_ =>
-            {
-                try
-                {
-                    result = action();
-                }
-                catch (Exception ex)
-                {
-                    capturedException = ExceptionDispatchInfo.Capture(ex);
-                }
-                finally
-                {
-                    completed.Set();
-                }
-            }, null);
+            SynchronizationContext? ctx;
+            lock (_sync) ctx = _mainThreadContext;
+            if (ctx == null)
+                return action();
 
-            if (!completed.Wait(MainThreadDispatchTimeout))
-            {
-                throw new TimeoutException(
-                    $"Timed out while waiting for main-thread dispatch to {operationDescription}.");
-            }
+            return DispatchToMainThreadAsync(action, operationDescription).GetAwaiter().GetResult();
+        }
 
-            capturedException?.Throw();
-            return result!;
+        private static async Task<T> WaitWithTimeoutAsync<T>(Task<T> task, string operationDescription, CancellationToken cancellationToken)
+        {
+            var delayToken = cancellationToken.CanBeCanceled ? cancellationToken : CancellationToken.None;
+            var delayTask = Task.Delay(MainThreadDispatchTimeout, delayToken);
+            var completed = await Task.WhenAny(task, delayTask).ConfigureAwait(false);
+
+            if (completed == task)
+                return await task.ConfigureAwait(false);
+
+            if (cancellationToken.IsCancellationRequested)
+                throw new OperationCanceledException(cancellationToken);
+
+            throw new TimeoutException($"Timed out while waiting for main-thread dispatch to {operationDescription}.");
         }
     }
 }

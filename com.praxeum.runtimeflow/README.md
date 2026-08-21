@@ -27,10 +27,10 @@ https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.1
 
 To install manually instead (not needed when resolving through UPM):
 
-Install RuntimeFlow package and pin version `0.4.0`:
+Install RuntimeFlow package and pin version `0.6.0`:
 
 ```text
-https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.4.0
+https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.6.0
 ```
 
 In `Packages/manifest.json`:
@@ -39,12 +39,12 @@ In `Packages/manifest.json`:
 {
   "dependencies": {
     "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1",
-    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.4.0"
+    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#0.6.0"
   }
 }
 ```
 
-> `#0.4.0` pins the dependency to the RuntimeFlow `0.4.0` git tag. Publish that tag in Git before using the URL in Unity.
+> `#0.6.0` pins the dependency to the RuntimeFlow `0.6.0` git tag. Publish that tag in Git before using the URL in Unity.
 > `RuntimeFlow.Runtime.asmdef` references `Microsoft.Extensions.Logging.Abstractions.dll` as a precompiled dependency.
 
 ## Quick start
@@ -192,16 +192,13 @@ Built-in presets:
 - `RuntimePipeline.Guards` executes registered restart preparation hooks before session restart.
 - Legacy reflection (`ISessionRestartAware`, `RuntimeSessionRestartStateResetter`) is a transitional fallback and runs only when no `IRuntimeSessionRestartPreparationHook` is registered.
 
-### Restart lifecycle ownership (breaking migration)
+### Restart lifecycle ownership
 
-- RuntimeFlow now owns restart contracts and orchestration via:
-  - `Runtime/Runtime/Pipeline/GameRestartContracts.cs`
+- RuntimeFlow owns restart contracts and orchestration via:
+  - `Runtime/Runtime/Pipeline/Restart/RuntimeRestartContracts.cs` (`RuntimeFlow.Contexts` — `IGameRestartHandler`, `IGameDataCleaner`, `ISessionRestartAware`, `IGameRestartStateSaver`)
   - `Runtime/Runtime/Pipeline/RuntimeFlowGameRestartHandler.cs`
   - `Runtime/Runtime/Pipeline/RuntimePipeline.Guards.cs`
-- Consumers should use framework restart contracts from `SFS.Core.GameLoading`
-  (`IGameRestartHandler`, `ISessionRestartAware`, `IGameDataCleaner`).
-- Project-local restart contracts/orchestrator and `SfsGameBootstrapper` glue wiring were removed.
-- This migration is a **breaking change** for integrations that referenced removed project-side restart types.
+- Consumers should use framework restart contracts from `RuntimeFlow.Contexts` (`IGameRestartHandler`, `ISessionRestartAware`, `IGameDataCleaner`, `IGameRestartStateSaver`). These are the framework lifecycle API — implement `ISessionRestartAware.BeforeSessionRestart()` to clean up resources before a session restart.
 - `RuntimeSessionRestartStateResetter` remains project-owned and is invoked through framework restart preparation hooks.
 
 ### Transition hooks

@@ -195,18 +195,18 @@ namespace RuntimeFlow.Contexts
         }
     }
 
-    internal static class RuntimeFlowCompiledInitializationGraph
+    public static class RuntimeFlowCompiledInitializationGraph
     {
         private const string GeneratedGraphTypeName = "RuntimeFlow.Contexts.Generated.CompiledInitializationGraph";
         private static readonly Lazy<GraphSnapshot> Snapshot = new(LoadSnapshot);
 
-        internal static string RuleVersion => Snapshot.Value.RuleVersion;
+        public static string RuleVersion => Snapshot.Value.RuleVersion;
 
-        internal static IReadOnlyList<Node> Nodes => Snapshot.Value.Nodes;
+        public static IReadOnlyList<Node> Nodes => Snapshot.Value.Nodes;
 
-        internal sealed class Node
+        public sealed class Node
         {
-            internal Node(Type serviceType, Type implementationType, GameContextType scope, Type[] dependencies)
+            public Node(Type serviceType, Type implementationType, GameContextType scope, Type[] dependencies)
             {
                 ServiceType = serviceType;
                 ImplementationType = implementationType;
@@ -214,10 +214,10 @@ namespace RuntimeFlow.Contexts
                 Dependencies = dependencies;
             }
 
-            internal Type ServiceType { get; }
-            internal Type ImplementationType { get; }
-            internal GameContextType Scope { get; }
-            internal Type[] Dependencies { get; }
+            public Type ServiceType { get; }
+            public Type ImplementationType { get; }
+            public GameContextType Scope { get; }
+            public Type[] Dependencies { get; }
         }
 
         private sealed class GraphSnapshot

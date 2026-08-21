@@ -1,0 +1,2 @@
+- When told to finish a task completely, keep working without pauses, clarifying questions, or proposing a partial/KISS stop; only stop once the issue is actually closed. Confidence: 0.98
+- After finishing a task, run a critic review of the result before declaring it done. Confidence: 0.95
