@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.Diagnostics.CodeAnalysis;
 using System.Linq.Expressions;
 using System.Reflection;
 using VContainer;
@@ -15,6 +14,8 @@ namespace RuntimeFlow.Contexts
         private static readonly ConcurrentDictionary<(Type serviceType, Type decoratorType), DecoratorFactory> FactoryCache = new();
         private readonly List<(Type serviceType, Type decoratorType)> _decorations = new();
         private readonly Dictionary<Type, object> _decoratedInstances = new();
+        private readonly Dictionary<Type, List<Type>> _layersByServiceType = new();
+        private readonly Dictionary<Type, int> _appliedLayerCount = new();
 
         public void Add(Type serviceType, Type decoratorType)
         {
@@ -26,9 +27,12 @@ namespace RuntimeFlow.Contexts
             _decorations.Add((serviceType, decoratorType));
         }
 
-        public bool TryGetDecoratedInstance(Type serviceType, [MaybeNullWhen(false)] out object instance)
+        public bool HasDecorationsFor(Type serviceType)
         {
-            return _decoratedInstances.TryGetValue(serviceType, out instance);
+            for (var i = 0; i < _decorations.Count; i++)
+                if (_decorations[i].serviceType == serviceType)
+                    return true;
+            return false;
         }
 
         public void ValidateRegistrations(Func<Type, bool> isRegistered)
@@ -44,21 +48,42 @@ namespace RuntimeFlow.Contexts
             }
         }
 
-        public void Apply(IObjectResolver container)
+        /// <summary>
+        /// Materializes decorated instances lazily at resolve time (main thread by the
+        /// resolution contract) instead of eagerly at context-initialize time, which the
+        /// pipeline may run on worker threads. Decoration layers apply in registration
+        /// order, each wrapping the previous result.
+        /// </summary>
+        public object GetOrMaterializeDecorated(Type serviceType, IObjectResolver container, Func<Type, object> resolveUndecorated)
         {
-            if (_decorations.Count == 0)
-                return;
+            var layers = GetLayers(serviceType);
+            var applied = _appliedLayerCount.TryGetValue(serviceType, out var stored) ? stored : 0;
 
-            for (var d = 0; d < _decorations.Count; d++)
+            var current = applied == 0
+                ? resolveUndecorated(serviceType)
+                : _decoratedInstances[serviceType];
+
+            for (var layer = applied; layer < layers.Count; layer++)
             {
-                var (serviceType, decoratorType) = _decorations[d];
-                var inner = _decoratedInstances.TryGetValue(serviceType, out var previous)
-                    ? previous
-                    : container.Resolve(serviceType);
-
-                var factory = FactoryCache.GetOrAdd((serviceType, decoratorType), CreateDecoratorFactory);
-                _decoratedInstances[serviceType] = factory(container, inner);
+                var factory = FactoryCache.GetOrAdd((serviceType, layers[layer]), CreateDecoratorFactory);
+                current = factory(container, current);
+                _decoratedInstances[serviceType] = current;
             }
+
+            _appliedLayerCount[serviceType] = layers.Count;
+            return current;
+        }
+
+        private List<Type> GetLayers(Type serviceType)
+        {
+            if (_layersByServiceType.TryGetValue(serviceType, out var cached))
+                return cached;
+            var layers = new List<Type>();
+            for (var i = 0; i < _decorations.Count; i++)
+                if (_decorations[i].serviceType == serviceType)
+                    layers.Add(_decorations[i].decoratorType);
+            _layersByServiceType[serviceType] = layers;
+            return layers;
         }
 
         private static DecoratorFactory CreateDecoratorFactory((Type serviceType, Type decoratorType) key)
@@ -140,11 +165,14 @@ namespace RuntimeFlow.Contexts
         public void ClearResolvedInstances()
         {
             _decoratedInstances.Clear();
+            _appliedLayerCount.Clear();
         }
 
         public void Clear()
         {
             _decoratedInstances.Clear();
+            _appliedLayerCount.Clear();
+            _layersByServiceType.Clear();
             _decorations.Clear();
         }
     }

@@ -149,7 +149,7 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey,
             Action<long, CancellationToken> throwIfStale)
         {
-            var plan = await CreateStartupPlan(scope, context, scopeKey).ConfigureAwait(false);
+            var plan = await CreateStartupPlan(scope, context, scopeKey, cancellationToken).ConfigureAwait(false);
             var totalServices = plan.TotalServiceCount;
             progressNotifier.OnScopeStarted(scope, totalServices);
             if (totalServices == 0) return totalServices;
@@ -303,27 +303,27 @@ namespace RuntimeFlow.Contexts
             await waveTask.ConfigureAwait(false);
         }
 
-        private async Task<ScopeStartupPlan> CreateStartupPlan(GameContextType scope, GameContext context, Type? scopeKey)
+        private async Task<ScopeStartupPlan> CreateStartupPlan(GameContextType scope, GameContext context, Type? scopeKey, CancellationToken cancellationToken)
         {
             var initializers = InitializationGraphResolver.DiscoverInitializers(context);
             var lazy = initializers.Where(b => typeof(ILazyInitializableService).IsAssignableFrom(b.ImplementationType)).ToList();
             foreach (var l in lazy) { initializers.Remove(l); _lazyRegistry.RegisterLazyBinding(l, context, scope, scopeKey); }
             var globalOps = scope == GameContextType.Global ? DiscoverGlobalOps(context) : Array.Empty<GlobalBootstrapOperationBinding>();
-            var entryPoints = await TryCreateEntryPointsPlanAsync(scope, context).ConfigureAwait(false);
+            var entryPoints = await TryCreateEntryPointsPlanAsync(scope, context, cancellationToken).ConfigureAwait(false);
             return new ScopeStartupPlan(entryPoints, globalOps, initializers.ToArray());
         }
 
         private static IReadOnlyList<GlobalBootstrapOperationBinding> DiscoverGlobalOps(GameContext context)
             => context.GetRegistrationsForServiceType(typeof(IGlobalBootstrapOperation)).Where(r => typeof(IGlobalBootstrapOperation).IsAssignableFrom(r.ImplementationType)).GroupBy(r => r.ImplementationType).Select(g => new GlobalBootstrapOperationBinding(g.Key, g.First())).ToArray();
 
-        private async Task<VContainerEntryPointsStartupPlan?> TryCreateEntryPointsPlanAsync(GameContextType scope, GameContext context)
+        private async Task<VContainerEntryPointsStartupPlan?> TryCreateEntryPointsPlanAsync(GameContextType scope, GameContext context, CancellationToken cancellationToken)
         {
             var regs = context.GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettings));
             if (regs.Count == 0) return null;
             var resolvedSettings = new RuntimeFlowVContainerEntryPointsSettings[regs.Count];
             for (var i = 0; i < regs.Count; i++)
-                resolvedSettings[i] = (RuntimeFlowVContainerEntryPointsSettings)await context.ResolveAsync(regs[i], CancellationToken.None).ConfigureAwait(false);
-            var settings = await MergeSettingsAsync(resolvedSettings, context).ConfigureAwait(false);
+                resolvedSettings[i] = (RuntimeFlowVContainerEntryPointsSettings)await context.ResolveAsync(regs[i], cancellationToken).ConfigureAwait(false);
+            var settings = await MergeSettingsAsync(resolvedSettings, context, cancellationToken).ConfigureAwait(false);
             var resolver = context.Resolver;
             var entryResolver = RuntimeFlowVContainerEntryPointPhaseRunner.ResolveEntryPointResolver(scope, resolver);
             return new VContainerEntryPointsStartupPlan(scope, scope.ToString().ToLowerInvariant(), resolver, entryResolver, settings,
@@ -333,9 +333,9 @@ namespace RuntimeFlow.Contexts
                 scope == GameContextType.Session);
         }
 
-        private static async Task<RuntimeFlowVContainerEntryPointsSettings> MergeSettingsAsync(IReadOnlyList<RuntimeFlowVContainerEntryPointsSettings> settings, GameContext context)
+        private static async Task<RuntimeFlowVContainerEntryPointsSettings> MergeSettingsAsync(IReadOnlyList<RuntimeFlowVContainerEntryPointsSettings> settings, GameContext context, CancellationToken cancellationToken)
         {
-            var contributions = await ResolveContributionsAsync(context).ConfigureAwait(false);
+            var contributions = await ResolveContributionsAsync(context, cancellationToken).ConfigureAwait(false);
             if (settings.Count == 0 && contributions.Length == 0) return RuntimeFlowVContainerEntryPointsSettings.Default;
             if (settings.Count == 1 && contributions.Length == 0) return settings[0];
             var exclInit = settings.SelectMany(s => s.ExcludedInitializableImplementationTypes).Concat(contributions.SelectMany(c => c.ExcludedInitializableImplementationTypes)).Distinct().ToArray();
@@ -345,14 +345,14 @@ namespace RuntimeFlow.Contexts
             return new RuntimeFlowVContainerEntryPointsSettings(exclInit, exclStart, priInit, after.Length == 0 ? null : resolver => { foreach (var cb in after) cb!(resolver); });
         }
 
-        private static async Task<RuntimeFlowVContainerEntryPointsSettingsContribution[]> ResolveContributionsAsync(GameContext context)
+        private static async Task<RuntimeFlowVContainerEntryPointsSettingsContribution[]> ResolveContributionsAsync(GameContext context, CancellationToken cancellationToken)
         {
             var list = new List<RuntimeFlowVContainerEntryPointsSettingsContribution>();
             var cur = context;
             while (cur != null)
             {
                 foreach (var r in cur.GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettingsContribution)))
-                    if (await cur.ResolveAsync(r).ConfigureAwait(false) is RuntimeFlowVContainerEntryPointsSettingsContribution c) list.Add(c);
+                    if (await cur.ResolveAsync(r, cancellationToken).ConfigureAwait(false) is RuntimeFlowVContainerEntryPointsSettingsContribution c) list.Add(c);
                 cur = cur.Parent as GameContext;
             }
             return list.Distinct().ToArray();

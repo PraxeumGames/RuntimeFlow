@@ -25,11 +25,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     ledger (no construction, no dispatch; a missing instance is now a loud invariant error);
   - async-initializer wave construction and lazy bindings resolve via the async dispatch path;
   - VContainer entry-point settings/contributions and global bootstrap operations resolve
-    through `ResolveAsync` during plan building.
+    through `ResolveAsync` during plan building; cancellation now propagates through plan
+    building instead of being dropped;
+  - **decorated services materialize lazily at resolve time** instead of eagerly at context
+    initialize — the pipeline builds contexts on worker continuations, so eager decoration
+    would have thrown under the new contract; chained decorators keep their registration
+    order (pinned by PlayMode coverage);
+  - auto-service parent fallbacks read the parent's instance ledger directly instead of
+    dispatching a synchronous resolve.
 
 ### Testing
-- PlayMode 7 → 8 tests: worker-thread `Resolve` throws with actionable guidance;
-  `ResolveAsync` from a worker still constructs on the Unity main thread.
+- PlayMode 7 → 10 tests: worker-thread `Resolve` throws with actionable guidance;
+  `ResolveAsync` from a worker still constructs on the Unity main thread; decorated services
+  resolve correctly across worker-built contexts; parent-ledger reads work without dispatch.
 
 ## [0.8.0] - 2026-08-21
 

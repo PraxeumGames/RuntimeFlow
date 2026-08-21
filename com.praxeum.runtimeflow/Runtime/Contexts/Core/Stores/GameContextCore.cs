@@ -173,18 +173,10 @@ namespace RuntimeFlow.Contexts
             return GameContextThreadDispatcher.DispatchToMainThreadAsync(() => ResolveRegistration(registration), description, cancellationToken);
         }
 
-        internal object Resolve(ServiceInitializerBinding initializer)
-        {
-            if (initializer == null) throw new ArgumentNullException(nameof(initializer));
-            if (!_initialized || _registry == null) throw new InvalidOperationException("Context not initialized");
-            GameContextThreadDispatcher.EnsureMainThreadOperationAllowed($"resolve '{initializer.ServiceType.FullName}'");
-            return ResolveCore(initializer);
-        }
-
         private object ResolveCore(Type serviceType)
         {
-            if (_decorationChain.TryGetDecoratedInstance(serviceType, out var decorated))
-                return decorated;
+            if (_decorationChain.HasDecorationsFor(serviceType))
+                return _decorationChain.GetOrMaterializeDecorated(serviceType, this, ResolveUndecorated);
             if (_registry!.TryGet(serviceType, out var registration) && registration != null)
                 return ResolveRegistration(registration);
             if (_parent != null)
@@ -192,11 +184,11 @@ namespace RuntimeFlow.Contexts
             throw new VContainerException(serviceType, $"No such registration of type: {serviceType}");
         }
 
-        private object ResolveCore(ServiceInitializerBinding initializer)
+        private object ResolveUndecorated(Type serviceType)
         {
-            if (initializer.Registration != null)
-                return ResolveRegistration(initializer.Registration);
-            return ResolveCore(initializer.ResolveServiceType);
+            if (_registry!.TryGet(serviceType, out var registration) && registration != null)
+                return ResolveRegistration(registration);
+            throw new VContainerException(serviceType, $"No such registration of type: {serviceType}");
         }
 
         internal bool TryGetImplementationType(Type serviceType, [MaybeNullWhen(false)] out Type implementationType)
@@ -253,6 +245,21 @@ namespace RuntimeFlow.Contexts
             return _registrationStore.TryGetRegisteredInstance(serviceType, out instance);
         }
 
+        /// <summary>
+        /// Ledger read of an already-initialized instance without construction or dispatch.
+        /// Used for cross-context dependency reads (auto-service parent fallbacks) that must
+        /// not block against the main thread.
+        /// </summary>
+        internal bool TryGetInitializedByType(Type serviceType, [MaybeNullWhen(false)] out object instance)
+        {
+            instance = null!;
+            if (_registry != null && _registry.TryGet(serviceType, out var registration)
+                && registration != null
+                && _instances.TryGetShared(registration, out instance!))
+                return true;
+            return false;
+        }
+
         internal void RegisterInstanceEx(Type implementationType, object instance, IReadOnlyCollection<Type> serviceTypes, bool ownsLifetime)
         {
             _registrationStore.RegisterInstance(implementationType, instance, serviceTypes);
@@ -281,7 +288,6 @@ namespace RuntimeFlow.Contexts
                 _registrationStore.ApplyRegistrations(builder);
                 _registry = builder.BuildRegistry(this, Diagnostics);
                 Diagnostics.NotifyContainerBuilt(this);
-                _decorationChain.Apply(this);
             }
             catch
             {

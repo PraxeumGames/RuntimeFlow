@@ -251,6 +251,15 @@ namespace RuntimeFlow.Contexts
                 return false;
             }
 
+            // RuntimeFlow parents are read straight from their instance ledger: the parent
+            // scope is fully initialized before a child scope is built, and a dispatching
+            // sync resolve here would have to block against the main thread.
+            if (parent is GameContext gameContext)
+            {
+                resolved = null;
+                return gameContext.TryGetInitializedByType(serviceType, out resolved);
+            }
+
             try
             {
                 resolved = parent.Resolve(serviceType);
