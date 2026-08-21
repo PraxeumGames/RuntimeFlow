@@ -14,11 +14,7 @@ namespace RuntimeFlow.Contexts
         private readonly IGameContext? _parent;
         private readonly GameContextRegistrationStore _registrationStore = new();
         private readonly GameContextDecorationChain _decorationChain = new();
-        private readonly Dictionary<Registration, object> _sharedInstances = new();
-        private readonly List<object> _ownedRegisteredInstances = new();
-        private readonly HashSet<object> _ownedRegisteredInstancesLookup = new(ReferenceEqualityComparer.Instance);
-        private readonly List<object> _ownedResolvedInstances = new();
-        private readonly HashSet<object> _ownedResolvedInstancesLookup = new(ReferenceEqualityComparer.Instance);
+        private readonly GameContextInstanceLedger _instances = new();
         private readonly List<ServiceInitializerBinding> _initializationOrder = new();
         private readonly HashSet<Type> _initializationOrderLookup = new();
         private Registry? _registry;
@@ -251,7 +247,7 @@ namespace RuntimeFlow.Contexts
         {
             _registrationStore.RegisterInstance(implementationType, instance, serviceTypes);
             if (ownsLifetime)
-                TrackOwnedRegisteredInstance(instance);
+                _instances.TrackOwned(instance);
         }
 
         public void Initialize()
@@ -278,9 +274,7 @@ namespace RuntimeFlow.Contexts
             {
                 _initialized = false;
                 _registry = null;
-                _sharedInstances.Clear();
-                _ownedResolvedInstances.Clear();
-                _ownedResolvedInstancesLookup.Clear();
+                _instances.ClearShared();
                 throw;
             }
             OnInitialized?.Invoke();
@@ -349,12 +343,12 @@ namespace RuntimeFlow.Contexts
 
         private object GetOrCreateSharedInstance(Registration registration)
         {
-            if (_sharedInstances.TryGetValue(registration, out var existing))
+            if (_instances.TryGetShared(registration, out var existing))
                 return existing;
             var instance = registration.SpawnInstance(this);
-            _sharedInstances[registration] = instance;
+            _instances.AddShared(registration, instance);
             if (registration.Provider is not FixedInstanceProvider)
-                TrackOwnedResolvedInstance(instance);
+                _instances.TrackOwned(instance);
             return instance;
         }
 
@@ -372,20 +366,6 @@ namespace RuntimeFlow.Contexts
             }
             registration = null!;
             return false;
-        }
-
-        private void TrackOwnedRegisteredInstance(object instance)
-        {
-            if (instance is not IDisposable) return;
-            if (_ownedRegisteredInstancesLookup.Add(instance))
-                _ownedRegisteredInstances.Add(instance);
-        }
-
-        private void TrackOwnedResolvedInstance(object instance)
-        {
-            if (instance is not IDisposable) return;
-            if (_ownedResolvedInstancesLookup.Add(instance))
-                _ownedResolvedInstances.Add(instance);
         }
 
         public void Dispose()
@@ -448,13 +428,15 @@ namespace RuntimeFlow.Contexts
 
         private bool TryGetInitializedInstance(ServiceInitializerBinding initializer, out object instance)
         {
-            var registration = initializer.Registration;
-            if (registration == null && _registry != null && _registry.TryGet(initializer.ResolveServiceType, out var found))
-                registration = found;
-            if (registration != null && _sharedInstances.TryGetValue(registration, out instance!))
-                return true;
-            instance = null!;
-            return false;
+            return _instances.TryGetInitialized(
+                initializer.Registration,
+                initializer.ResolveServiceType,
+                serviceType =>
+                {
+                    if (_registry != null && _registry.TryGet(serviceType, out var found)) return found;
+                    return null;
+                },
+                out instance);
         }
 
         private bool HasPendingAsyncDisposals()
@@ -478,8 +460,7 @@ namespace RuntimeFlow.Contexts
             var onDisposed = OnDisposed;
             try { OnBeforeDispose?.Invoke(); } catch (Exception ex) { failures.Add(ex); }
             _decorationChain.ClearResolvedInstances();
-            DisposeOwnedList(_ownedRegisteredInstances, failures);
-            DisposeOwnedList(_ownedResolvedInstances, failures);
+            _instances.DisposeOwnedReverse(failures);
             ResetState();
             try { onDisposed?.Invoke(); } catch (Exception ex) { failures.Add(ex); }
         }
@@ -487,11 +468,7 @@ namespace RuntimeFlow.Contexts
         private void ResetState()
         {
             _registry = null;
-            _sharedInstances.Clear();
-            _ownedRegisteredInstances.Clear();
-            _ownedRegisteredInstancesLookup.Clear();
-            _ownedResolvedInstances.Clear();
-            _ownedResolvedInstancesLookup.Clear();
+            _instances.Clear();
             _initializationOrder.Clear();
             _initializationOrderLookup.Clear();
             _initialized = false;
@@ -501,15 +478,6 @@ namespace RuntimeFlow.Contexts
             OnInitialized = null;
             OnBeforeDispose = null;
             OnDisposed = null;
-        }
-
-        private static void DisposeOwnedList(List<object> instances, List<Exception> failures)
-        {
-            for (var i = instances.Count - 1; i >= 0; i--)
-            {
-                if (instances[i] is not IDisposable disposable) continue;
-                try { disposable.Dispose(); } catch (Exception ex) { failures.Add(ex); }
-            }
         }
     }
 }
