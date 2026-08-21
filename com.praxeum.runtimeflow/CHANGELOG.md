@@ -5,6 +5,66 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-21
+
+### Breaking changes
+- **`DiLifetime` replaces `VContainer.Lifetime` in RuntimeFlow registration APIs**
+  (`IGameContext.Register`, `IGameScopeRegistrationBuilder.Register`). The VContainer type no
+  longer leaks through the contract; use `RuntimeFlow.Contexts.DiLifetime.Singleton/Transient/Scoped`.
+- **Removed `GameContextBuilderExtensions`** (`WithScene<T>()`, `WithModule<T>()` sugar) —
+  unused 1:1 duplicates of `IGameContextBuilder.Scene<T>()` / `.Module<T>()`.
+- **Removed the `Runtime/Runtime/Lifecycle` subsystem** (`LifecycleStateEngine`,
+  `ILifecycleTransitions`, `NullLifecycleTransitions`, `ILifecycleSnapshotObserver`) — dead code,
+  zero references since introduction.
+- **Removed internal shims**: `GenerationGate` (use `ScopeOperationCoordinator`),
+  dead `ScopeLoadingService`/`ScopeTransitionService` chain, nested `ScopeTransitionEngine`.
+
+### Fixed
+- **Broken build baseline restored**: the branch did not compile before this release
+  (duplicate `Register` overload, missing `CreateAndInitializeScopeContextAsync`, wrong
+  `setState` delegate signature, `ValueTask`/`Task` mismatch in scope disposal).
+- Scope contexts created during initialization now receive the execution scheduler —
+  async-disposable services no longer fail teardown with "An ExecutionScheduler is required".
+- Session restart / re-initialization now runs **activation exit hooks** (module → scene →
+  session) before tearing down scopes; previously exit hooks were skipped on those paths.
+- `RuntimePipeline.DisposeAsync` logs scope-teardown failures instead of swallowing them.
+- Editor dashboard bridge logs swallowed exceptions instead of silent defaults.
+- `IsObjectDisposedFailure` classifies by exception type, not by message string matching.
+- `GameContextThreadDispatcher` warns once when no main-thread context was captured and work
+  falls back to the calling thread (latent wrong-thread hazard is now observable).
+
+### Changed
+- **DI core**: dual instance ledgers merged into a single chronological
+  `GameContextInstanceLedger`; teardown walks reverse order so dependents dispose first.
+  Full delegation to VContainer's `Container` was evaluated and rejected: it provides neither
+  reverse-initialization-order async disposal nor registration-keyed instance lookup, both
+  required by RuntimeFlow's lifecycle-native contracts.
+- **21-parameter scope initialization** collapsed into a `ScopeLifecycleDependencies`
+  collaborator bundled once per owner.
+- Teardown helpers (`CaptureCleanupFailuresAsync`, `CreateCleanupAggregate`,
+  `FilterCancellationFailures`, `DisposeAndClearEventBuses`) consolidated into
+  `ScopeCleanupFailures` (were duplicated across builder/orchestrator/disposal service).
+- `ScopeTransitionEngine` extracted from `GameContextBuilder` internals into a standalone
+  `ScopeTransitionService` with explicit collaborators; builder disposal partials slimmed to
+  thin delegations (~480 lines removed overall).
+
+### Packaging
+- `Microsoft.Extensions.Logging.Abstractions.dll` now ships inside the package
+  (`Runtime/Plugins/`); previously consumers had to place it manually. Added
+  `Third Party Notices.md`.
+- Added `docs/VCONTAINER_FORK.md`: pin policy for the Bezarius VContainer fork, the VContainer
+  internals RuntimeFlow relies on, and an upgrade checklist.
+
+### Testing / CI
+- Unity EditMode suite grown to **268 tests**, all green; PlayMode suite runs in CI too.
+- CI: Unity EditMode + PlayMode jobs run nightly and via manual dispatch; PRs keep .NET-only
+  gates unless `RUNTIMEFLOW_RUN_UNITY_TESTS=1`.
+- New coverage: Editor dashboard bridge (`RuntimePipelineEditorBridgeTests`), flow scenarios
+  and presets behavior (`RuntimeFlowScenarioTests`).
+- `scripts/run_unity_editmode_tests.sh`: auto-selects the editor matching
+  `ProjectVersion.txt`, supports `playmode`, distinguishes skipped tests, uses absolute
+  result paths, fails loudly when Unity produces no results XML.
+
 ## [0.6.0] - 2026-08-21
 
 ### Added

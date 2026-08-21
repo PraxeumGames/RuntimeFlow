@@ -68,7 +68,8 @@ Generation is opt-in per consumer assembly via `[assembly: RuntimeFlow.Contexts.
 dotnet build RuntimeFlow.sln
 dotnet build RuntimeFlow.Generators
 dotnet test RuntimeFlow.Generators.Tests
-scripts/run_unity_editmode_tests.sh
+scripts/run_unity_editmode_tests.sh              # EditMode suite
+scripts/run_unity_editmode_tests.sh playmode     # PlayMode suite
 ```
 
 Useful focused runs:
@@ -77,12 +78,16 @@ Useful focused runs:
 UNITY_BIN=/path/to/Unity scripts/run_unity_editmode_tests.sh
 ```
 
+The script auto-selects the Unity editor matching `RuntimeFlow.UnityTests/ProjectSettings/ProjectVersion.txt`
+when `UNITY_BIN` is unset.
+
 ## Quality gates
 
 - `dotnet build RuntimeFlow.sln` — must succeed with zero warnings (warnings are treated as errors via `Directory.Build.props`).
 - `dotnet test RuntimeFlow.Generators.Tests --no-build` — Roslyn generator regression tests for RF0001..RF0004 diagnostics.
 - `scripts/run_unity_editmode_tests.sh` — NUnit EditMode runtime tests using the real Unity package and real VContainer.
-- The .NET generator gates run on every push / pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Runtime lifecycle tests run through `RuntimeFlow.UnityTests`; the workflow includes a gated Unity EditMode job that is enabled by setting repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS=1` and Unity license secrets.
+- The .NET generator gates run on every push / pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Runtime lifecycle tests run through `RuntimeFlow.UnityTests`; the workflow runs both EditMode and PlayMode jobs nightly and on manual dispatch. PRs run .NET gates only unless the repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS=1` is set and Unity license secrets are configured.
+- VContainer is pinned to a maintained fork; see [`docs/VCONTAINER_FORK.md`](docs/VCONTAINER_FORK.md) before touching the pin.
 
 ## License
 
