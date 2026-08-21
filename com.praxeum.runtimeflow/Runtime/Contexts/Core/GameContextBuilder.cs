@@ -19,6 +19,7 @@ namespace RuntimeFlow.Contexts
         private readonly ScopeOperationCoordinator _coordinator;
         private readonly ScopeActivationService _activationService;
         private readonly ScopeTransitionService _scopeTransitions;
+        private readonly ScopePreloadService _preloadService;
         private readonly ScopeDisposalService _disposalService;
         private readonly ScopeInitializationService _initService;
         private readonly RuntimeLifecycleOrchestrator _lifecycleOrchestrator;
@@ -85,6 +86,7 @@ namespace RuntimeFlow.Contexts
                 IsStaleCancellation = IsStaleGenerationCancellation,
             };
             _scopeTransitions = new ScopeTransitionService(_activeState, _scopeRegistry, _coordinator, _activationService, _initService, _disposalService, _lifecycleDeps);
+            _preloadService = new ScopePreloadService(_activeState, _scopeRegistry, _scopeProfiles, _initService, _scopeTransitions, FlushDeferredScopedRegistrations);
             _lifecycleOrchestrator = new RuntimeLifecycleOrchestrator(_activeState, _scopeProfiles, _scopeRegistry, _lazyInitialization, _executionScheduler, _logger, _coordinator, _initService, _disposalService);
         }
 
