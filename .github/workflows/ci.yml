@@ -5,6 +5,10 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  schedule:
+    # Nightly full Unity run at 03:15 UTC.
+    - cron: "15 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -86,7 +90,9 @@ jobs:
   unity-editmode-runtime-tests:
     name: Unity EditMode Runtime Tests
     runs-on: ubuntu-latest
-    if: ${{ vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
+    # Full Unity runs are nightly and manual; PRs run only the .NET gates unless
+    # the repository variable RUNTIMEFLOW_RUN_UNITY_TESTS is set to '1'.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -108,4 +114,31 @@ jobs:
         with:
           name: unity-editmode-test-results
           path: TestResults/UnityEditMode
+          if-no-files-found: warn
+
+  unity-playmode-runtime-tests:
+    name: Unity PlayMode Runtime Tests
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Unity PlayMode tests
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: RuntimeFlow.UnityTests
+          testMode: playmode
+          artifactsPath: TestResults/UnityPlayMode
+
+      - name: Upload Unity test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-playmode-test-results
+          path: TestResults/UnityPlayMode
           if-no-files-found: warn
