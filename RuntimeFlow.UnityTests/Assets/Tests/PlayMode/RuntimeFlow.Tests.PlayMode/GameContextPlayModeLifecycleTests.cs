@@ -179,6 +179,107 @@ namespace RuntimeFlow.Tests.PlayMode
                 "Async session services must be disposed in reverse initialization order by the pipeline in PlayMode.");
         }
 
+        private interface IMainThreadConstructedService
+        {
+            int ConstructedThreadId { get; }
+            bool HadSynchronizationContext { get; }
+        }
+
+        private sealed class MainThreadConstructedService : IMainThreadConstructedService
+        {
+            public int ConstructedThreadId { get; } = Thread.CurrentThread.ManagedThreadId;
+            public bool HadSynchronizationContext { get; } = SynchronizationContext.Current != null;
+        }
+
+        private interface ISessionExitHookService : ISessionInitializableService, ISessionScopeActivationService, IInitializationThreadAffinityProvider
+        {
+            List<string> Calls { get; }
+        }
+
+        private static int MainThreadIdCapture;
+
+        private sealed class SessionExitHookService : ISessionExitHookService
+        {
+            public List<string> Calls { get; } = new();
+
+            public InitializationThreadAffinity ThreadAffinity => InitializationThreadAffinity.MainThread;
+
+            public Task InitializeAsync(CancellationToken cancellationToken)
+            {
+                Calls.Add("init");
+                return Task.CompletedTask;
+            }
+
+            public Task OnScopeActivatedAsync(CancellationToken cancellationToken)
+            {
+                Calls.Add("enter");
+                return Task.CompletedTask;
+            }
+
+            public Task OnScopeDeactivatingAsync(CancellationToken cancellationToken)
+            {
+                Calls.Add($"exit:{Thread.CurrentThread.ManagedThreadId == MainThreadIdCapture}");
+                return Task.CompletedTask;
+            }
+        }
+
+        [Test]
+        public async Task Resolve_FromWorkerThread_ConstructsServiceOnUnityMainThread()
+        {
+            var context = new GameContext();
+            context.Register(typeof(IMainThreadConstructedService), typeof(MainThreadConstructedService), DiLifetime.Singleton);
+            context.Initialize();
+
+            IMainThreadConstructedService resolved = null!;
+            // Await (do not block-wait): the dispatch target IS this main thread, and only
+            // returning control to the player loop lets the marshalled work execute.
+            await Task.Run(async () => resolved = context.Resolve<IMainThreadConstructedService>());
+
+            Assert.That(
+                resolved.ConstructedThreadId,
+                Is.EqualTo(Thread.CurrentThread.ManagedThreadId),
+                "Singleton construction must be marshalled to the Unity main thread even when Resolve is called from a worker.");
+            Assert.That(resolved.HadSynchronizationContext, Is.True);
+        }
+
+        [Test]
+        public async Task Pipeline_RestartSession_ExitHooks_RunOnUnityMainThread()
+        {
+            MainThreadIdCapture = Thread.CurrentThread.ManagedThreadId;
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.DefineSessionScope();
+                builder.Session().Register<ISessionExitHookService, SessionExitHookService>(DiLifetime.Singleton);
+            });
+
+            await pipeline.InitializeAsync();
+            var hookBeforeRestart = pipeline.SessionContext.Resolve<ISessionExitHookService>();
+            await pipeline.RestartSessionAsync();
+
+            CollectionAssert.Contains(hookBeforeRestart.Calls, "exit:True");
+        }
+
+        [Test]
+        public async Task Pipeline_DisposeAsync_FromWorkerThread_CompletesWithoutDeadlock()
+        {
+            var calls = new List<string>();
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.DefineSessionScope();
+                builder.Session().RegisterInstance<List<string>>(calls);
+                builder.Session().Register<IAsyncSessionServiceB, AsyncSessionServiceB>(DiLifetime.Singleton);
+                builder.Session().Register<IAsyncSessionServiceA, AsyncSessionServiceA>(DiLifetime.Singleton);
+            });
+            await pipeline.InitializeAsync();
+
+            var disposeTask = Task.Run(pipeline.DisposeAsync().AsTask);
+            var completed = await Task.WhenAny(disposeTask, Task.Delay(TimeSpan.FromSeconds(15)));
+
+            Assert.That(completed, Is.EqualTo(disposeTask), "Pipeline disposal must complete from a worker thread without deadlocking the player loop.");
+            Assert.DoesNotThrow(() => disposeTask.GetAwaiter().GetResult());
+            Assert.That(calls.FindAll(c => c.StartsWith("dispose:")), Is.EqualTo(new[] { "dispose:A", "dispose:B" }));
+        }
+
         private static void RecordInitializer(GameContext context, Type serviceType, Type implementationType)
         {
             var registrations = context.GetRegistrationsForServiceType(serviceType);
