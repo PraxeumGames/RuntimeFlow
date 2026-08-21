@@ -51,8 +51,13 @@ namespace RuntimeFlow.Contexts
                     continue;
                 foreach (var init in gc.InitializationOrder)
                 {
+                    // Seeded state reads already-initialized instances straight from the
+                    // instance ledger: no construction, no main-thread dispatch required.
+                    if (!gc.TryGetInitializedInstance(init, out var instance))
+                        throw new InvalidOperationException(
+                            $"Seeded state expects an initialized instance for '{init.ServiceType.Name}', but none was recorded.");
                     initialized.Add(init.ServiceType);
-                    available[init.ServiceType] = gc.Resolve(init);
+                    available[init.ServiceType] = instance;
                 }
             }
             return (initialized, available);
@@ -144,7 +149,7 @@ namespace RuntimeFlow.Contexts
             Type? scopeKey,
             Action<long, CancellationToken> throwIfStale)
         {
-            var plan = CreateStartupPlan(scope, context, scopeKey);
+            var plan = await CreateStartupPlan(scope, context, scopeKey).ConfigureAwait(false);
             var totalServices = plan.TotalServiceCount;
             progressNotifier.OnScopeStarted(scope, totalServices);
             if (totalServices == 0) return totalServices;
@@ -298,22 +303,27 @@ namespace RuntimeFlow.Contexts
             await waveTask.ConfigureAwait(false);
         }
 
-        private ScopeStartupPlan CreateStartupPlan(GameContextType scope, GameContext context, Type? scopeKey)
+        private async Task<ScopeStartupPlan> CreateStartupPlan(GameContextType scope, GameContext context, Type? scopeKey)
         {
             var initializers = InitializationGraphResolver.DiscoverInitializers(context);
             var lazy = initializers.Where(b => typeof(ILazyInitializableService).IsAssignableFrom(b.ImplementationType)).ToList();
             foreach (var l in lazy) { initializers.Remove(l); _lazyRegistry.RegisterLazyBinding(l, context, scope, scopeKey); }
-            return new ScopeStartupPlan(TryCreateEntryPointsPlan(scope, context), scope == GameContextType.Global ? DiscoverGlobalOps(context) : Array.Empty<GlobalBootstrapOperationBinding>(), initializers.ToArray());
+            var globalOps = scope == GameContextType.Global ? DiscoverGlobalOps(context) : Array.Empty<GlobalBootstrapOperationBinding>();
+            var entryPoints = await TryCreateEntryPointsPlanAsync(scope, context).ConfigureAwait(false);
+            return new ScopeStartupPlan(entryPoints, globalOps, initializers.ToArray());
         }
 
         private static IReadOnlyList<GlobalBootstrapOperationBinding> DiscoverGlobalOps(GameContext context)
             => context.GetRegistrationsForServiceType(typeof(IGlobalBootstrapOperation)).Where(r => typeof(IGlobalBootstrapOperation).IsAssignableFrom(r.ImplementationType)).GroupBy(r => r.ImplementationType).Select(g => new GlobalBootstrapOperationBinding(g.Key, g.First())).ToArray();
 
-        private VContainerEntryPointsStartupPlan? TryCreateEntryPointsPlan(GameContextType scope, GameContext context)
+        private async Task<VContainerEntryPointsStartupPlan?> TryCreateEntryPointsPlanAsync(GameContextType scope, GameContext context)
         {
             var regs = context.GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettings));
             if (regs.Count == 0) return null;
-            var settings = MergeSettings(regs.Select(r => (RuntimeFlowVContainerEntryPointsSettings)context.Resolve(r)).ToArray(), context);
+            var resolvedSettings = new RuntimeFlowVContainerEntryPointsSettings[regs.Count];
+            for (var i = 0; i < regs.Count; i++)
+                resolvedSettings[i] = (RuntimeFlowVContainerEntryPointsSettings)await context.ResolveAsync(regs[i], CancellationToken.None).ConfigureAwait(false);
+            var settings = await MergeSettingsAsync(resolvedSettings, context).ConfigureAwait(false);
             var resolver = context.Resolver;
             var entryResolver = RuntimeFlowVContainerEntryPointPhaseRunner.ResolveEntryPointResolver(scope, resolver);
             return new VContainerEntryPointsStartupPlan(scope, scope.ToString().ToLowerInvariant(), resolver, entryResolver, settings,
@@ -323,9 +333,9 @@ namespace RuntimeFlow.Contexts
                 scope == GameContextType.Session);
         }
 
-        private static RuntimeFlowVContainerEntryPointsSettings MergeSettings(IReadOnlyList<RuntimeFlowVContainerEntryPointsSettings> settings, GameContext context)
+        private static async Task<RuntimeFlowVContainerEntryPointsSettings> MergeSettingsAsync(IReadOnlyList<RuntimeFlowVContainerEntryPointsSettings> settings, GameContext context)
         {
-            var contributions = ResolveContributions(context);
+            var contributions = await ResolveContributionsAsync(context).ConfigureAwait(false);
             if (settings.Count == 0 && contributions.Length == 0) return RuntimeFlowVContainerEntryPointsSettings.Default;
             if (settings.Count == 1 && contributions.Length == 0) return settings[0];
             var exclInit = settings.SelectMany(s => s.ExcludedInitializableImplementationTypes).Concat(contributions.SelectMany(c => c.ExcludedInitializableImplementationTypes)).Distinct().ToArray();
@@ -335,14 +345,14 @@ namespace RuntimeFlow.Contexts
             return new RuntimeFlowVContainerEntryPointsSettings(exclInit, exclStart, priInit, after.Length == 0 ? null : resolver => { foreach (var cb in after) cb!(resolver); });
         }
 
-        private static RuntimeFlowVContainerEntryPointsSettingsContribution[] ResolveContributions(GameContext context)
+        private static async Task<RuntimeFlowVContainerEntryPointsSettingsContribution[]> ResolveContributionsAsync(GameContext context)
         {
             var list = new List<RuntimeFlowVContainerEntryPointsSettingsContribution>();
             var cur = context;
             while (cur != null)
             {
                 foreach (var r in cur.GetRegistrationsForServiceType(typeof(RuntimeFlowVContainerEntryPointsSettingsContribution)))
-                    if (cur.Resolve(r) is RuntimeFlowVContainerEntryPointsSettingsContribution c) list.Add(c);
+                    if (await cur.ResolveAsync(r).ConfigureAwait(false) is RuntimeFlowVContainerEntryPointsSettingsContribution c) list.Add(c);
                 cur = cur.Parent as GameContext;
             }
             return list.Distinct().ToArray();
@@ -359,7 +369,21 @@ namespace RuntimeFlow.Contexts
 
         private async Task<int> ExecuteGlobalBootstrapOperationsAsync(GameContextType scope, GameContext context, IReadOnlyList<GlobalBootstrapOperationBinding> bindings, IInitializationProgressNotifier notifier, int completed, int total, long generation, CancellationToken ct, Action<long, CancellationToken> throwIfStale)
         {
-            var ops = bindings.Select(b => (binding: b, operation: (IGlobalBootstrapOperation)context.Resolve(b.Registration))).OrderBy(x => x.operation.Order).ThenBy(x => NormalizeName(x.operation.Name, x.binding.ImplementationType), StringComparer.Ordinal).ThenBy(x => x.binding.ImplementationType.FullName ?? x.binding.ImplementationType.Name, StringComparer.Ordinal).ToArray();
+            var ops = new (GlobalBootstrapOperationBinding binding, IGlobalBootstrapOperation operation)[bindings.Count];
+            for (var i = 0; i < bindings.Count; i++)
+            {
+                var b = bindings[i];
+                var operation = (IGlobalBootstrapOperation)await context.ResolveAsync(b.Registration, ct).ConfigureAwait(false);
+                ops[i] = (b, operation);
+            }
+            Array.Sort(ops, (x, y) =>
+            {
+                var byOrder = x.operation.Order.CompareTo(y.operation.Order);
+                if (byOrder != 0) return byOrder;
+                var byName = string.CompareOrdinal(NormalizeName(x.operation.Name, x.binding.ImplementationType), NormalizeName(y.operation.Name, y.binding.ImplementationType));
+                if (byName != 0) return byName;
+                return string.CompareOrdinal(x.binding.ImplementationType.FullName ?? x.binding.ImplementationType.Name, y.binding.ImplementationType.FullName ?? y.binding.ImplementationType.Name);
+            });
             for (var i = 0; i < ops.Length; i++)
             {
                 throwIfStale(generation, ct);
@@ -403,7 +427,9 @@ namespace RuntimeFlow.Contexts
 
         private async Task ExecuteInitializerWithHealthAsync(GameContextType scope, GameContext context, ServiceInitializerBinding init, IInitializationProgressNotifier notifier, int completed, int total, CancellationToken ct)
         {
-            var resolved = context.Resolve(init);
+            // Wave tasks continue on worker threads after the first await, so instance
+            // construction goes through the async dispatch path.
+            var resolved = await context.ResolveAsync(init, ct).ConfigureAwait(false);
             if (resolved is not IAsyncInitializableService svc) throw new InvalidOperationException($"Service {init.ServiceType.Name} is expected to implement {nameof(IAsyncInitializableService)}.");
             var affinity = resolved is IInitializationThreadAffinityProvider p ? p.ThreadAffinity : InitializationThreadAffinity.MainThread;
             var timeout = _health.GetServiceTimeout(scope, init.ServiceType);

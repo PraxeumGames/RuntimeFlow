@@ -75,24 +75,30 @@ namespace RuntimeFlow.Contexts
             return WaitWithTimeoutAsync(tcs.Task, operationDescription, cancellationToken);
         }
 
-        public static T DispatchToMainThread<T>(Func<T> action, string operationDescription)
+        /// <summary>
+        /// Enforces the main-thread resolution contract. On the main thread this is a no-op.
+        /// Without a captured SynchronizationContext (headless/EditMode) the operation is
+        /// allowed inline with a one-time warning. Otherwise the caller must use the async
+        /// API; blocking cross-thread resolution does not exist by design.
+        /// </summary>
+        public static void EnsureMainThreadOperationAllowed(string operationDescription)
         {
-            if (action == null) throw new ArgumentNullException(nameof(action));
-            if (IsOnMainThread())
-                return action();
-
-            SynchronizationContext? ctx;
-            lock (_sync) ctx = _mainThreadContext;
-            if (ctx == null)
+            if (IsOnMainThread()) return;
+            lock (_sync)
             {
-                WarnMissingMainThreadContextOnce(operationDescription);
-                return action();
+                if (_mainThreadContext == null)
+                {
+                    WarnMissingMainThreadContextOnce(operationDescription);
+                    return;
+                }
             }
-
-            return DispatchToMainThreadAsync(action, operationDescription).GetAwaiter().GetResult();
+            throw new InvalidOperationException(
+                $"'{operationDescription}' must run on the Unity main thread. " +
+                "From background threads use the async API instead (for example 'await context.ResolveAsync<TService>()'). " +
+                "Synchronous cross-thread resolution was removed because it can deadlock the caller against the main thread.");
         }
 
-        private static void WarnMissingMainThreadContextOnce(string operationDescription)
+        internal static void WarnMissingMainThreadContextOnce(string operationDescription)
         {
             if (_warnedMissingMainThreadContext) return;
             _warnedMissingMainThreadContext = true;

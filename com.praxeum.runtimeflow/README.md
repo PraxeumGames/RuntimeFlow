@@ -156,6 +156,22 @@ instance it registers or constructs, and disposes them itself. The async lifecyc
 - Scopes are created and torn down by the pipeline; `IObjectResolver.CreateScope` is not
   supported on a `GameContext`.
 
+### Resolution threading contract
+
+Service construction may touch Unity APIs, so **synchronous resolution is main-thread-only**:
+
+- `Resolve<T>()`, `Resolve(type)`, `Resolve(registration)` run inline on the Unity main thread.
+- From a background thread (with a captured main-thread context) they throw
+  `InvalidOperationException` instead of blocking — synchronous cross-thread resolution was
+  removed because it can deadlock the caller against the main thread.
+- Cross-thread code uses `await context.ResolveAsync<T>()` / `ResolveAsync(type)` /
+  `ResolveAsync(registration)`; construction is marshalled to the main thread and the awaiter
+  never blocks it.
+- In headless environments without a captured `SynchronizationContext` (for example EditMode
+  tests), synchronous calls execute inline with a one-time warning.
+- `Initialize()` is deliberately thread-agnostic: it only builds the registration graph
+  (pure C#); Unity-bound construction happens at resolve time.
+
 ### Flow presets
 
 `RuntimeFlowPresets` includes reusable scenario builders:

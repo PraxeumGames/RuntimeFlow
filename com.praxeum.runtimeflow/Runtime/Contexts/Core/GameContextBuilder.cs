@@ -205,7 +205,7 @@ namespace RuntimeFlow.Contexts
                 if (!_lazyInitialization.TryGetBinding(serviceType, out var binding))
                     return;
 
-                var instance = binding.Context.Resolve(binding.Initializer);
+                var instance = await binding.Context.ResolveAsync(binding.Initializer, cancellationToken).ConfigureAwait(false);
                 if (instance is IAsyncInitializableService asyncService)
                 {
                     await asyncService.InitializeAsync(cancellationToken).ConfigureAwait(false);

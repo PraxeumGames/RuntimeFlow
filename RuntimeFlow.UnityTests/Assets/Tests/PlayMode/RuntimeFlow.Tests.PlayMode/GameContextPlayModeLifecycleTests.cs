@@ -224,22 +224,42 @@ namespace RuntimeFlow.Tests.PlayMode
         }
 
         [Test]
-        public async Task Resolve_FromWorkerThread_ConstructsServiceOnUnityMainThread()
+        public async Task ResolveAsync_FromWorkerThread_ConstructsServiceOnUnityMainThread()
         {
             var context = new GameContext();
             context.Register(typeof(IMainThreadConstructedService), typeof(MainThreadConstructedService), DiLifetime.Singleton);
             context.Initialize();
 
             IMainThreadConstructedService resolved = null!;
-            // Await (do not block-wait): the dispatch target IS this main thread, and only
-            // returning control to the player loop lets the marshalled work execute.
-            await Task.Run(async () => resolved = context.Resolve<IMainThreadConstructedService>());
+            // The async dispatch target IS this main thread: returning control to the
+            // player loop lets the marshalled work execute.
+            await Task.Run(async () => resolved = await context.ResolveAsync<IMainThreadConstructedService>());
 
             Assert.That(
                 resolved.ConstructedThreadId,
                 Is.EqualTo(Thread.CurrentThread.ManagedThreadId),
-                "Singleton construction must be marshalled to the Unity main thread even when Resolve is called from a worker.");
+                "Singleton construction must be marshalled to the Unity main thread even when resolution starts on a worker.");
             Assert.That(resolved.HadSynchronizationContext, Is.True);
+        }
+
+        [Test]
+        public async Task Resolve_FromWorkerThread_WithCapturedContext_ThrowsWithGuidance()
+        {
+            var context = new GameContext();
+            context.Register(typeof(IMainThreadConstructedService), typeof(MainThreadConstructedService), DiLifetime.Singleton);
+            context.Initialize();
+
+            InvalidOperationException? caught = null;
+            await Task.Run(() =>
+            {
+                try { context.Resolve<IMainThreadConstructedService>(); }
+                catch (InvalidOperationException ex) { caught = ex; }
+            });
+
+            Assert.That(caught, Is.Not.Null,
+                "Synchronous cross-thread resolution must fail loudly instead of blocking against the main thread.");
+            StringAssert.Contains("main thread", caught!.Message);
+            StringAssert.Contains("ResolveAsync", caught.Message);
         }
 
         [Test]

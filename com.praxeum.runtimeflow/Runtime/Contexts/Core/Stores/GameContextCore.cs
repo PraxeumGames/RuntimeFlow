@@ -148,7 +148,8 @@ namespace RuntimeFlow.Contexts
         {
             if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
             if (!_initialized || _registry == null) throw new InvalidOperationException("Context not initialized");
-            return GameContextThreadDispatcher.DispatchToMainThread(() => ResolveCore(serviceType), $"resolve '{serviceType.FullName}'");
+            GameContextThreadDispatcher.EnsureMainThreadOperationAllowed($"resolve '{serviceType.FullName}'");
+            return ResolveCore(serviceType);
         }
 
         public async System.Threading.Tasks.Task<TService> ResolveAsync<TService>(System.Threading.CancellationToken cancellationToken = default)
@@ -164,11 +165,20 @@ namespace RuntimeFlow.Contexts
             return GameContextThreadDispatcher.DispatchToMainThreadAsync(() => ResolveCore(serviceType), $"resolve '{serviceType.FullName}'", cancellationToken);
         }
 
+        public System.Threading.Tasks.Task<object> ResolveAsync(Registration registration, System.Threading.CancellationToken cancellationToken = default)
+        {
+            if (registration == null) throw new ArgumentNullException(nameof(registration));
+            if (!_initialized || _registry == null) throw new InvalidOperationException("Context not initialized");
+            var description = $"resolve '{registration.ImplementationType?.FullName ?? registration.ImplementationType?.Name ?? "<unknown>"}'";
+            return GameContextThreadDispatcher.DispatchToMainThreadAsync(() => ResolveRegistration(registration), description, cancellationToken);
+        }
+
         internal object Resolve(ServiceInitializerBinding initializer)
         {
             if (initializer == null) throw new ArgumentNullException(nameof(initializer));
             if (!_initialized || _registry == null) throw new InvalidOperationException("Context not initialized");
-            return GameContextThreadDispatcher.DispatchToMainThread(() => ResolveCore(initializer), $"resolve '{initializer.ServiceType.FullName}'");
+            GameContextThreadDispatcher.EnsureMainThreadOperationAllowed($"resolve '{initializer.ServiceType.FullName}'");
+            return ResolveCore(initializer);
         }
 
         private object ResolveCore(Type serviceType)
@@ -253,7 +263,10 @@ namespace RuntimeFlow.Contexts
         public void Initialize()
         {
             if (_initialized) return;
-            GameContextThreadDispatcher.DispatchToMainThread(() => { InitializeCore(); return true; }, "initialize context");
+            // Thread-agnostic by design: InitializeCore only builds the registration graph
+            // (pure C#); Unity-bound construction happens at Resolve time, which enforces
+            // its own main-thread contract.
+            InitializeCore();
         }
 
         private void InitializeCore()
@@ -284,9 +297,9 @@ namespace RuntimeFlow.Contexts
         {
             if (registration == null) throw new ArgumentNullException(nameof(registration));
             if (!_initialized || _registry == null) throw new InvalidOperationException("Context not initialized");
-            return GameContextThreadDispatcher.DispatchToMainThread(
-                () => ResolveRegistration(registration),
+            GameContextThreadDispatcher.EnsureMainThreadOperationAllowed(
                 $"resolve '{registration.ImplementationType?.FullName ?? registration.ImplementationType?.Name ?? "<unknown>"}'");
+            return ResolveRegistration(registration);
         }
 
         public bool TryResolve(Type serviceType, out object resolved)
@@ -426,7 +439,7 @@ namespace RuntimeFlow.Contexts
             return instance is IInitializationThreadAffinityProvider provider ? provider.ThreadAffinity : InitializationThreadAffinity.MainThread;
         }
 
-        private bool TryGetInitializedInstance(ServiceInitializerBinding initializer, out object instance)
+        internal bool TryGetInitializedInstance(ServiceInitializerBinding initializer, out object instance)
         {
             return _instances.TryGetInitialized(
                 initializer.Registration,

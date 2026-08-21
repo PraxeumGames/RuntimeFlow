@@ -95,7 +95,16 @@ namespace RuntimeFlow.Contexts
         public object Resolve(Type serviceType) => _core.Resolve(serviceType);
         public System.Threading.Tasks.Task<TService> ResolveAsync<TService>(System.Threading.CancellationToken cancellationToken = default) => _core.ResolveAsync<TService>(cancellationToken);
         public System.Threading.Tasks.Task<object> ResolveAsync(Type serviceType, System.Threading.CancellationToken cancellationToken = default) => _core.ResolveAsync(serviceType, cancellationToken);
+        internal System.Threading.Tasks.Task<object> ResolveAsync(Registration registration, System.Threading.CancellationToken cancellationToken = default) => _core.ResolveAsync(registration, cancellationToken);
         internal object Resolve(ServiceInitializerBinding initializer) => _core.Resolve(initializer);
+        internal System.Threading.Tasks.Task<object> ResolveAsync(ServiceInitializerBinding initializer, System.Threading.CancellationToken cancellationToken = default)
+        {
+            if (initializer == null) throw new ArgumentNullException(nameof(initializer));
+            return initializer.Registration != null
+                ? _core.ResolveAsync(initializer.Registration, cancellationToken)
+                : _core.ResolveAsync(initializer.ResolveServiceType, cancellationToken);
+        }
+        internal bool TryGetInitializedInstance(ServiceInitializerBinding initializer, out object instance) => _core.TryGetInitializedInstance(initializer, out instance);
         internal bool TryGetImplementationType(Type serviceType, out Type implementationType) => _core.TryGetImplementationType(serviceType, out implementationType);
         internal IReadOnlyList<Registration> GetRegistrationsForServiceType(Type serviceType) => _core.GetRegistrationsForServiceType(serviceType);
         internal bool TryGetRegisteredInstance(Type serviceType, out object instance) => _core.TryGetRegisteredInstance(serviceType, out instance);

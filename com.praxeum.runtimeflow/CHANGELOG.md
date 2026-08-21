@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-21
+
+### Breaking changes
+- **Synchronous cross-thread resolution removed.** `Resolve<T>()` / `Resolve(type)` /
+  `Resolve(registration)` from a background thread (with a captured main-thread
+  `SynchronizationContext`) now throw `InvalidOperationException` pointing at
+  `await ResolveAsync<T>()`. Previously such calls blocked the worker against the main thread
+  (sync-over-async with an internal 2-minute timeout) and could deadlock. The blocking
+  dispatch path no longer exists. Headless environments without a captured context (EditMode
+  tests) keep the inline fallback with a one-time warning.
+- `Initialize()` is now documented and implemented as thread-agnostic: it only builds the
+  registration graph (pure C#); Unity-bound construction happens at resolve time, which
+  enforces the main-thread contract above.
+
+### Changed
+- Internal startup paths no longer rely on blocking dispatch:
+  - seeded state for child scopes reads initialized instances straight from the instance
+    ledger (no construction, no dispatch; a missing instance is now a loud invariant error);
+  - async-initializer wave construction and lazy bindings resolve via the async dispatch path;
+  - VContainer entry-point settings/contributions and global bootstrap operations resolve
+    through `ResolveAsync` during plan building.
+
+### Testing
+- PlayMode 7 → 8 tests: worker-thread `Resolve` throws with actionable guidance;
+  `ResolveAsync` from a worker still constructs on the Unity main thread.
+
 ## [0.8.0] - 2026-08-21
 
 ### Breaking changes
