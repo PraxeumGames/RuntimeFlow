@@ -21,6 +21,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     type implements, so instance fakes participate in startup discovery exactly like
     type-registered services.
   - Shipped test doubles: `NoopSceneLoader`, `CollectingLoadingProgressObserver`.
+- **`RuntimeFlow.Content` — universal content/config/platform-source primitive**
+  (`ContentSource<TData>`): one small subclass per concern (remote config, Addressables-style
+  catalogs, game-service authentication) plus a one-line registration
+  (`builder.Global().Content<TSource,TData>()`). Inherits wave scheduling, health timeouts,
+  retries, progress and cancellation from the pipeline; session-stage placement via the
+  existing `IPlatformStartupInitializableService` / `IContentStartupInitializableService`
+  markers; sign-in dialogs exempt from the watchdog via
+  `IUserInteractionGatedInitializableService`. Per-source failure policy: required sources
+  fail startup, optional sources degrade to `FallbackData` with `UsedFallback` marking.
+  Design notes and platform sketches: `docs/CONTENT_AND_PLATFORM_SOURCES.md`.
 
 ### Breaking changes
 - **Synchronous cross-thread resolution removed.** `Resolve<T>()` / `Resolve(type)` /
