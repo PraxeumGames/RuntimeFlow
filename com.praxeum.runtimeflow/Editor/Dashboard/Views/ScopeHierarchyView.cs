@@ -96,37 +96,38 @@ namespace RuntimeFlow.Editor.Dashboard.Views
             DrawContextCard(moduleTitle, builder.ModuleContext, "Tied to active sub-feature module", GameContextType.Module);
 
             // Additive Modules Card
-            var additiveContexts = builder.AdditiveModuleContexts;
-            if (additiveContexts.Count > 0)
-            {
-                var additiveCard = new VisualElement();
-                additiveCard.AddToClassList("rf-card");
-                var addTitle = new Label($"Additive Modules ({additiveContexts.Count})");
-                addTitle.AddToClassList("rf-card-title");
-                additiveCard.Add(addTitle);
-
-                foreach (var kvp in additiveContexts)
-                {
-                    DrawSubContextRow(additiveCard, kvp.Key.Name, kvp.Value);
-                }
-                _contentScrollView.Add(additiveCard);
-            }
+            DrawDictionaryCard("Additive Modules", builder.AdditiveModuleContexts);
 
             // Preloaded Scopes Card
-            var preloaded = builder.PreloadedContexts;
-            if (preloaded.Count > 0)
-            {
-                var preloadedCard = new VisualElement();
-                preloadedCard.AddToClassList("rf-card");
-                var preTitle = new Label($"Preloaded Scopes ({preloaded.Count})");
-                preTitle.AddToClassList("rf-card-title");
-                preloadedCard.Add(preTitle);
+            DrawDictionaryCard("Preloaded Scopes", builder.PreloadedContexts);
+        }
 
-                foreach (var kvp in preloaded)
-                {
-                    DrawSubContextRow(preloadedCard, kvp.Key.Name, kvp.Value);
-                }
-                _contentScrollView.Add(preloadedCard);
+        /// <summary>
+        /// These dictionaries mutate inside side-lock operations (preload/unload). The
+        /// dashboard reads them from the editor loop without taking runtime locks, so a
+        /// collection changed mid-enumeration is simply skipped until the next refresh.
+        /// </summary>
+        private void DrawDictionaryCard(string title, IReadOnlyDictionary<Type, GameContext> contexts)
+        {
+            try
+            {
+                if (contexts.Count == 0)
+                    return;
+
+                var card = new VisualElement();
+                card.AddToClassList("rf-card");
+                var cardTitle = new Label($"{title} ({contexts.Count})");
+                cardTitle.AddToClassList("rf-card-title");
+                card.Add(cardTitle);
+
+                foreach (var kvp in contexts)
+                    DrawSubContextRow(card, kvp.Key.Name, kvp.Value);
+
+                _contentScrollView.Add(card);
+            }
+            catch (InvalidOperationException)
+            {
+                // Live state changed during enumeration; the next refresh draws it.
             }
         }
 

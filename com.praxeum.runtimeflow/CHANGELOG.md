@@ -38,6 +38,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - PlayMode 7 → 10 tests: worker-thread `Resolve` throws with actionable guidance;
   `ResolveAsync` from a worker still constructs on the Unity main thread; decorated services
   resolve correctly across worker-built contexts; parent-ledger reads work without dispatch.
+- Editor dashboard: scope-hierarchy view tolerates live preloaded/additive dictionaries that
+  mutate during preload/unload operations (skips the card until the next refresh instead of
+  throwing inside the editor update loop).
+- Test project drops the unused Microsoft.Extensions.DependencyInjection.Abstractions
+  assembly and its asmdef references.
 
 ## [0.8.0] - 2026-08-21
 
