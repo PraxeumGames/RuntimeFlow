@@ -4,6 +4,18 @@ using RuntimeFlow.Events;
 
 namespace RuntimeFlow.Contexts
 {
+    /// <summary>
+    /// Mutable scope state shared by the builder services (orchestrator, transitions,
+    /// preload, disposal). Threading contract:
+    /// - Writes happen only inside operations serialized by <see cref="ScopeOperationCoordinator"/>
+    ///   locks or on the main thread via scheduler hops; every such transition carries a memory
+    ///   barrier, so readers observe state no older than their last synchronization point.
+    /// - Reference writes are atomic; readers must tolerate staleness (a just-cleared context
+    ///   may still be visible) and treat disposed contexts defensively.
+    /// - The preloaded/additive dictionaries are mutated under the side lock; lock-free
+    ///   readers (the Editor dashboard) must handle mid-enumeration changes.
+    /// Do not add fields here that require stronger guarantees without revisiting this contract.
+    /// </summary>
     internal sealed class ActiveScopeState
     {
         public IGameContext? GlobalContext { get; set; }
