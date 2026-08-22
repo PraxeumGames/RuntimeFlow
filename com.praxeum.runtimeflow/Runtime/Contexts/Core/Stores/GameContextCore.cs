@@ -176,7 +176,14 @@ namespace RuntimeFlow.Contexts
         private object ResolveCore(Type serviceType)
         {
             if (_decorationChain.HasDecorationsFor(serviceType))
-                return _decorationChain.GetOrMaterializeDecorated(serviceType, this, ResolveUndecorated);
+            {
+                var decorated = _decorationChain.GetOrMaterializeDecorated(serviceType, this, ResolveUndecorated);
+                // The wrapper is a real owned instance: without this it would never be
+                // disposed at teardown (the inner instance is tracked separately).
+                // Ledger chronology disposes the wrapper before the inner instance.
+                _instances.TrackOwned(decorated);
+                return decorated;
+            }
             if (_registry!.TryGet(serviceType, out var registration) && registration != null)
                 return ResolveRegistration(registration);
             if (_parent != null)

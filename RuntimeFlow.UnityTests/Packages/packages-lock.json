@@ -5,7 +5,7 @@
       "depth": 0,
       "source": "local",
       "dependencies": {
-        "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1"
+        "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#c30a8af94809177788cd4392ea9b6ff6373c51b9"
       }
     },
     "com.unity.ext.nunit": {
@@ -27,7 +27,7 @@
       "url": "https://packages.unity.com"
     },
     "jp.hadashikick.vcontainer": {
-      "version": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1",
+      "version": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#c30a8af94809177788cd4392ea9b6ff6373c51b9",
       "depth": 0,
       "source": "git",
       "dependencies": {},

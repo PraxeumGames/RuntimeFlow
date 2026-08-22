@@ -87,7 +87,8 @@ when `UNITY_BIN` is unset.
 - `dotnet test RuntimeFlow.Generators.Tests --no-build` — Roslyn generator regression tests for RF0001..RF0004 diagnostics.
 - `scripts/run_unity_editmode_tests.sh` — NUnit EditMode runtime tests using the real Unity package and real VContainer.
 - The .NET generator gates run on every push / pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Runtime lifecycle tests run through `RuntimeFlow.UnityTests`; the workflow runs both EditMode and PlayMode jobs nightly and on manual dispatch. PRs run .NET gates only unless the repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS=1` is set and Unity license secrets are configured.
-- VContainer is pinned to a maintained fork; see [`docs/VCONTAINER_FORK.md`](docs/VCONTAINER_FORK.md) before touching the pin.
+- VContainer is pinned to an immutable commit SHA of a maintained fork; see [`docs/VCONTAINER_FORK.md`](docs/VCONTAINER_FORK.md) before touching the pin.
+- The package declares minimum Unity `2021.3`; the suite is validated on `2022.3` (local runs and CI). Other editor versions are untested claims, not guarantees.
 
 ## License
 

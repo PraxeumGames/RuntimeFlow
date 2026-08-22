@@ -1,15 +1,15 @@
 # VContainer fork pin policy
 
-RuntimeFlow declares a single package dependency:
+RuntimeFlow declares a single package dependency, pinned to an **immutable commit SHA**
+(tags are mutable; a tag pin is a supply-chain hazard):
 
 ```json
-"jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1"
+"jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#c30a8af94809177788cd4392ea9b6ff6373c51b9"
 ```
 
-This is a **fork** of upstream [hadashiA/VContainer](https://github.com/hadashiA/VContainer),
-tag `1.15.3.1` (upstream reports version `1.15.3`). The same pin is used by the
-RuntimeFlow Unity test project and by SF2 — do not change it without re-running the
-full EditMode suite.
+The pinned commit is the `1.15.3.1` annotated tag (peeled: `c30a8af9…`); upstream reports
+version `1.15.3`. The same pin is used by the RuntimeFlow Unity test project and by SF2 —
+do not change it without re-running the full EditMode suite.
 
 ## Why a fork
 
