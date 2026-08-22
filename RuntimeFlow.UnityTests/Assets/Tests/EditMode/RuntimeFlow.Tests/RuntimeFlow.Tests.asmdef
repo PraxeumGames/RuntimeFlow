@@ -3,7 +3,8 @@
     "rootNamespace": "RuntimeFlow.Tests",
     "references": [
         "RuntimeFlow.Runtime",
-        "VContainer"
+        "VContainer",
+        "RuntimeFlow.Testing"
     ],
     "includePlatforms": [
         "Editor"

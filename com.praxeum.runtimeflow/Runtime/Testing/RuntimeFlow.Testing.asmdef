@@ -1,0 +1,20 @@
+{
+    "name": "RuntimeFlow.Testing",
+    "rootNamespace": "RuntimeFlow.Testing",
+    "references": [
+        "RuntimeFlow.Runtime"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "Microsoft.Extensions.Logging.Abstractions.dll"
+    ],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

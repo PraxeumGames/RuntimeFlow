@@ -80,6 +80,14 @@ if [[ ! -f "$RESULTS_XML" ]]; then
   exit "$UNITY_EXIT_CODE"
 fi
 
+# A stale results XML can coexist with a failed compilation (Bee keeps old assemblies
+# and the runner may still execute them). Compilation errors are authoritative.
+if grep -qE "Scripts have compiler errors|Script Compilation Error" "$LOG_FILE"; then
+  echo "COMPILATION ERRORS detected in $LOG_FILE; any executed tests ran against stale assemblies." >&2
+  grep -E "error CS" "$LOG_FILE" | sed 's/.*Assets/Assets/' | sort -u | head -10 >&2
+  exit "${UNITY_EXIT_CODE:-1}"
+fi
+
 python3 - "$RESULTS_XML" <<'PYEOF'
 import sys
 import xml.etree.ElementTree as ET

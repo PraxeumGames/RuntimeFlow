@@ -5,7 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.9.0] - 2026-08-21
+## [0.9.0] - 2026-08-22
+
+### Added
+- **`RuntimeFlow.Testing` harness** (test-only assembly, stripped from player builds via
+  `UNITY_INCLUDE_TESTS`): addresses the framework's second design goal — fast runtime tests
+  with overridable dependencies.
+  - `TestPipeline.Create(...).Override<TService,TOverride>() / Override(fakeInstance) /
+    StartAsync()`: deterministic defaults (inline scheduler, health/retry off), fluent
+    overrides with post-build verification (a shadowed or typo'd override fails the test
+    descriptively), ambient activation (`Activate()` sets/clears `ActivePipeline`).
+  - `LifecycleFake.Of/OfHandle<TService>()`: DispatchProxy-based fakes with lifecycle fault
+    injection — `FailInitializeAttempts(n)`, `FailDisposeAttempts(n)`, delays, full call log.
+    Instance overrides are automatically exposed under every lifecycle contract their runtime
+    type implements, so instance fakes participate in startup discovery exactly like
+    type-registered services.
+  - Shipped test doubles: `NoopSceneLoader`, `CollectingLoadingProgressObserver`.
 
 ### Breaking changes
 - **Synchronous cross-thread resolution removed.** `Resolve<T>()` / `Resolve(type)` /
