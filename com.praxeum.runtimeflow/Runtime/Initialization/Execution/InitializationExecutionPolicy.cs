@@ -23,6 +23,28 @@ namespace RuntimeFlow.Contexts
             CancellationToken cancellationToken);
     }
 
+    /// <summary>
+    /// Fully deterministic scheduler for tests: ignores thread affinity entirely and runs
+    /// every operation inline on the caller. Immune to ambient main-thread captures that
+    /// leak between tests through static state.
+    /// </summary>
+    internal sealed class InlineStrictInitializationExecutionScheduler : IInitializationExecutionScheduler
+    {
+        public static readonly IInitializationExecutionScheduler Instance = new InlineStrictInitializationExecutionScheduler();
+
+        private InlineStrictInitializationExecutionScheduler() { }
+
+        public Task ExecuteAsync(
+            InitializationThreadAffinity affinity,
+            Func<CancellationToken, Task> operation,
+            CancellationToken cancellationToken)
+        {
+            if (operation == null) throw new ArgumentNullException(nameof(operation));
+            cancellationToken.ThrowIfCancellationRequested();
+            return operation(cancellationToken);
+        }
+    }
+
     internal sealed class InlineInitializationExecutionScheduler : IInitializationExecutionScheduler
     {
         public static readonly IInitializationExecutionScheduler Instance = new InlineInitializationExecutionScheduler();

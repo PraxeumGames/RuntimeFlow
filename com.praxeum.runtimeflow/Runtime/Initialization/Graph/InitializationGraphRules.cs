@@ -11,12 +11,26 @@ namespace RuntimeFlow.Contexts
 
         /// <summary>
         /// Checks if a constructor parameter type represents an async initialization dependency.
-        /// Only interfaces that extend <see cref="IAsyncInitializableService"/> qualify —
-        /// this avoids treating <c>ILogger</c>, <c>IMediator</c>, etc. as initialization deps.
+        /// Qualifies: interfaces that extend <see cref="IAsyncInitializableService"/> (via the
+        /// contract catalog) and closed <c>ContentSource&lt;TData&gt;</c> / <c>IContentSource&lt;TData&gt;</c>
+        /// types — a content source injected into a constructor is an explicit data-flow edge:
+        /// the consumer initializes after the source loads.
         /// </summary>
         internal static bool IsAsyncDependencyType(Type serviceType)
         {
-            return InitializationContractCatalog.IsConstructorDependencyType(serviceType);
+            if (InitializationContractCatalog.IsConstructorDependencyType(serviceType))
+                return true;
+            return IsClosedContentSourceType(serviceType);
+        }
+
+        /// <summary>Detects closed <c>ContentSource&lt;TData&gt;</c> / <c>IContentSource&lt;TData&gt;</c> types.</summary>
+        internal static bool IsClosedContentSourceType(Type type)
+        {
+            if (!type.IsGenericType)
+                return false;
+            var definition = type.GetGenericTypeDefinition();
+            return definition == typeof(RuntimeFlow.Content.ContentSource<>)
+                   || definition == typeof(RuntimeFlow.Content.IContentSource<>);
         }
 
         /// <summary>

@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     type implements, so instance fakes participate in startup discovery exactly like
     type-registered services.
   - Shipped test doubles: `NoopSceneLoader`, `CollectingLoadingProgressObserver`.
+- **Golden Path (`GameFlow`)** — intent vocabulary for a typical mobile startup:
+  `Config / Auth / Profile / Catalog / Scene / Entry / LoadingUi`, class- or delegate-based
+  sources, explicit failure policies, entry-scene auto-load, deterministic scheduler for
+  tests and `StartupTimeout` watchdog. Startup plan inspection via
+  `DescribeStartupPlan()` (nodes, edges, origins) with loud validation of unregistered
+  content dependencies at composition time.
 - **`RuntimeFlow.Content` — universal content/config/platform-source primitive**
   (`ContentSource<TData>`): one small subclass per concern (remote config, Addressables-style
   catalogs, game-service authentication) plus a one-line registration

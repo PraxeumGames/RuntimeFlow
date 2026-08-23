@@ -33,23 +33,28 @@ namespace RuntimeFlow.Content
 
     /// <summary>
     /// Universal base for content/config/platform sources: remote config fetches,
-    /// Addressables/catalog initialization, game-service authentication. One small subclass
-    /// plus one registration line replaces the usual operation/service/wiring triple.
+    /// Addressables/catalog initialization, game-service authentication.
     ///
-    /// Scope and stage are chosen by which markers the concrete class combines:
-    /// register it in Global scope as an <see cref="IAsyncInitializableService"/>, or combine
-    /// with <c>IPlatformStartupInitializableService</c> / <c>IContentStartupInitializableService</c>
-    /// for session-stage placement. Combine with
-    /// <c>IUserInteractionGatedInitializableService</c> when loading blocks on a user dialog
-    /// (sign-in consent) so the health watchdog exempts it.
+    /// Scope and stage are chosen by which markers the concrete class combines: register it in
+    /// Global scope as an <see cref="IAsyncInitializableService"/>, or combine with
+    /// <c>IPlatformStartupInitializableService</c> / <c>IContentStartupInitializableService</c>
+    /// for session-stage placement. Combine with <c>IUserInteractionGatedInitializableService</c>
+    /// when loading blocks on a user dialog (sign-in consent) so the health watchdog exempts it.
     ///
-    /// Failure policy: required sources fail startup; set <see cref="IsOptional"/> and provide
-    /// <see cref="FallbackData"/> to degrade gracefully instead — the pipeline stays green and
-    /// dependents read the fallback snapshot (<see cref="UsedFallback"/> marks it).
+    /// Failure policy is declared once in the constructor via <see cref="Policy(bool, TData)"/>:
+    /// required sources fail startup; optional sources degrade to the fallback snapshot and mark
+    /// <see cref="UsedFallback"/>.
+    ///
+    /// Ordering: a constructor parameter of type <c>IContentSource&lt;TOther&gt;</c> /
+    /// <c>ContentSource&lt;TOther&gt;</c> declares a data-flow edge — this source initializes
+    /// after that one. No attributes needed for content chaining.
     /// </summary>
     public abstract class ContentSource<TData> : IAsyncInitializableService, IContentSource<TData>, IContentSourceInfo
         where TData : class
     {
+        private bool _optional;
+        private TData? _fallback;
+
         /// <summary>Loaded data, or the fallback snapshot when degraded.</summary>
         public TData Data { get; private set; } = null!;
 
@@ -59,14 +64,24 @@ namespace RuntimeFlow.Content
 
         public abstract string SourceName { get; }
 
-        /// <summary>When true, load failures degrade to <see cref="FallbackData"/> instead of failing startup.</summary>
-        public virtual bool IsOptional => false;
-
-        /// <summary>Served when an optional source fails. Must return non-null when <see cref="IsOptional"/> is true.</summary>
-        protected virtual TData? FallbackData => null;
+        public bool IsOptional => _optional;
 
         /// <summary>Override to log through the host's logger; defaults to silent.</summary>
         protected virtual ILogger Logger => NullLogger.Instance;
+
+        /// <summary>
+        /// Declares the failure policy. Call once from the constructor:
+        /// <c>Policy(optional: true, fallback: Snapshot.Offline)</c>. Optional sources degrade
+        /// to <paramref name="fallback"/> on failure; required sources fail startup.
+        /// </summary>
+        protected internal void Policy(bool optional, TData? fallback = null)
+        {
+            _optional = optional;
+            _fallback = fallback;
+            if (optional && fallback == null)
+                throw new InvalidOperationException(
+                    $"Content source '{GetType().Name}' declares an optional policy but provides no fallback.");
+        }
 
         /// <summary>Fetches/builds the snapshot. Called once per initialization.</summary>
         protected abstract Task<TData> LoadAsync(CancellationToken cancellationToken);
@@ -83,14 +98,11 @@ namespace RuntimeFlow.Content
                 IsLoaded = true;
                 Logger.LogInformation("Content source '{SourceName}' loaded.", SourceName);
             }
-            catch (Exception ex) when (IsOptional && !cancellationToken.IsCancellationRequested)
+            catch (Exception ex) when (_optional && !cancellationToken.IsCancellationRequested)
             {
-                var fallback = FallbackData ?? throw new InvalidOperationException(
-                    $"Optional content source '{SourceName}' must provide FallbackData.", ex);
-
                 await OnLoadFailedAsync(ex, cancellationToken).ConfigureAwait(false);
                 Logger.LogWarning(ex, "Content source '{SourceName}' failed; degraded to fallback data.", SourceName);
-                Data = fallback;
+                Data = _fallback!;
                 UsedFallback = true;
                 IsLoaded = true;
             }

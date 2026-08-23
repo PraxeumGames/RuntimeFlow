@@ -138,6 +138,77 @@ namespace RuntimeFlow.Contexts
         internal void SetScopeStateIfTracked(GameContextType scope, ScopeLifecycleState state, Type? explicitScopeKey = null)
             => _scopeRegistry.SetScopeStateIfTracked(scope, state, explicitScopeKey);
 
+        private static readonly Type[] InstanceDiscoveryBaseContracts =
+        {
+            typeof(IAsyncInitializableService),
+        };
+
+        private static readonly IReadOnlyDictionary<GameContextType, Type> InstanceScopeMarkers =
+            new System.Collections.Generic.Dictionary<GameContextType, Type>
+            {
+                [GameContextType.Global] = typeof(IGlobalInitializableService),
+                [GameContextType.Session] = typeof(ISessionInitializableService),
+                [GameContextType.Scene] = typeof(ISceneInitializableService),
+                [GameContextType.Module] = typeof(IModuleInitializableService),
+            };
+
+        private static readonly Type[] InstanceLifecycleContracts =
+        {
+            typeof(ILazyInitializableService),
+            typeof(IAsyncDisposableService),
+            typeof(IGlobalDisposableService),
+            typeof(ISessionDisposableService),
+            typeof(ISceneDisposableService),
+            typeof(IModuleDisposableService),
+            typeof(ISessionScopeActivationService),
+            typeof(ISceneScopeActivationService),
+            typeof(IModuleScopeActivationService),
+        };
+
+        /// <summary>
+        /// Registers an instance in <paramref name="scope"/> while guaranteeing that startup
+        /// discovery sees it exactly like a type registration: the instance is exposed under
+        /// <paramref name="primaryServiceType"/>, the async-initialization contract, the scope
+        /// marker, and every additional lifecycle contract its runtime type implements.
+        /// </summary>
+        internal void RegisterInstanceDeferredForDiscovery(
+            GameContextType scope,
+            object instance,
+            Type primaryServiceType,
+            IReadOnlyCollection<Type>? extraExposedTypes = null,
+            Action<IGameContext>? onContextAvailable = null)
+        {
+            if (instance == null) throw new ArgumentNullException(nameof(instance));
+            if (primaryServiceType == null) throw new ArgumentNullException(nameof(primaryServiceType));
+
+            var instanceType = instance.GetType();
+            var exposed = new List<Type> { primaryServiceType };
+            if (extraExposedTypes != null)
+                foreach (var t in extraExposedTypes)
+                    if (!exposed.Contains(t))
+                        exposed.Add(t);
+            foreach (var contract in InstanceDiscoveryBaseContracts)
+                AddIfImplemented(exposed, contract, instanceType);
+            if (InstanceScopeMarkers.TryGetValue(scope, out var scopeMarker))
+                AddIfImplemented(exposed, scopeMarker, instanceType);
+            foreach (var contract in InstanceLifecycleContracts)
+                AddIfImplemented(exposed, contract, instanceType);
+
+            DeferScopedRegistration(scope, null, context =>
+            {
+                onContextAvailable?.Invoke(context);
+                context.RegisterInstance(instance, exposed);
+            });
+        }
+
+        private static void AddIfImplemented(List<Type> exposed, Type contract, Type instanceType)
+        {
+            if (!contract.IsAssignableFrom(instanceType))
+                return;
+            if (!exposed.Contains(contract))
+                exposed.Add(contract);
+        }
+
         internal ScopeLifecycleState GetScopeState(Type scopeType)
             => _scopeRegistry.GetScopeState(scopeType);
 

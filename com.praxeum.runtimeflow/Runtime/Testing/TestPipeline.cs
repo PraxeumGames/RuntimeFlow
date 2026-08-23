@@ -97,13 +97,10 @@ namespace RuntimeFlow.Testing
         /// type implements (initializable/disposable/activation markers), so instance-based
         /// fakes participate in startup discovery exactly like type-registered services.
         /// </summary>
-        public TestPipelineBuilder OverrideInstance<TService>(TService instance)
+        public TestPipelineBuilder OverrideInstance<TService>(TService instance, GameContextType scope = GameContextType.Session)
             where TService : class
         {
             if (instance == null) throw new ArgumentNullException(nameof(instance));
-            var instanceType = instance.GetType();
-            var exposedTypes = ExpandWithLifecycleContracts(instanceType, new[] { typeof(TService) });
-
             _postBuildChecks.Add(async context =>
             {
                 var resolved = await context.ResolveAsync<TService>().ConfigureAwait(false);
@@ -112,50 +109,10 @@ namespace RuntimeFlow.Testing
                         $"Override did not take effect: resolved '{resolved?.GetType().Name ?? "<null>"}' instead of " +
                         $"the provided instance for service '{typeof(TService).Name}'.");
             });
-            _configure += builder => ((GameContextBuilder)builder).DeferScopedRegistration(
-                GameContextType.Session,
-                null,
-                context => context.RegisterInstance(instance, exposedTypes));
+            _configure += builderConcrete => ((GameContextBuilder)builderConcrete).RegisterInstanceDeferredForDiscovery(
+                scope, instance, typeof(TService));
             return this;
         }
-
-        private static IReadOnlyCollection<Type> ExpandWithLifecycleContracts(Type instanceType, IReadOnlyCollection<Type> serviceTypes)
-        {
-            List<Type>? expanded = null;
-            foreach (var contract in LifecycleContracts)
-                if (contract.IsAssignableFrom(instanceType))
-                {
-                    expanded ??= new List<Type>(serviceTypes);
-                    if (!expanded.Contains(contract))
-                        expanded.Add(contract);
-                }
-
-            if (expanded == null)
-                return serviceTypes;
-
-            foreach (var serviceType in serviceTypes)
-                if (!expanded.Contains(serviceType))
-                    expanded.Add(serviceType);
-            return expanded;
-        }
-
-        private static readonly Type[] LifecycleContracts =
-        {
-            typeof(IAsyncInitializableService),
-            typeof(ILazyInitializableService),
-            typeof(IGlobalInitializableService),
-            typeof(ISessionInitializableService),
-            typeof(ISceneInitializableService),
-            typeof(IModuleInitializableService),
-            typeof(IAsyncDisposableService),
-            typeof(IGlobalDisposableService),
-            typeof(ISessionDisposableService),
-            typeof(ISceneDisposableService),
-            typeof(IModuleDisposableService),
-            typeof(ISessionScopeActivationService),
-            typeof(ISceneScopeActivationService),
-            typeof(IModuleScopeActivationService),
-        };
 
         /// <summary>Runs additional configuration on the builder (scopes, real services, guards).</summary>
         public TestPipelineBuilder Configure(Action<IGameContextBuilder> configure)
@@ -166,6 +123,9 @@ namespace RuntimeFlow.Testing
         }
 
         /// <summary>Builds and initializes the pipeline (global + session scopes).</summary>
+        /// <summary>Hard deadline for StartAsync; hangs surface as TimeoutException. Default: 60 seconds.</summary>
+        public TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
         public async Task<TestPipeline> StartAsync(CancellationToken cancellationToken = default)
         {
             var pipeline = RuntimePipeline.Create(
@@ -177,14 +137,28 @@ namespace RuntimeFlow.Testing
                 },
                 configureOptions: options =>
                 {
-                    // Deterministic and fast: no supervision, no retries, inline scheduling.
+                    options.ExecutionScheduler = InlineStrictInitializationExecutionScheduler.Instance;
+                    // Fully deterministic: strict inline scheduling (immune to ambient
+                    // main-thread captures), no supervision, no retries.
                     options.Health.Enabled = false;
                     options.RetryPolicy.MaxAttempts = 0;
                 });
 
             try
             {
-                await pipeline.InitializeAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+                UnityEngine.Debug.LogWarning("[tp] pipeline created; starting boot");
+                var bootTask = pipeline.InitializeAsync(cancellationToken: cancellationToken);
+                UnityEngine.Debug.LogWarning("[tp] boot task started; waiting (timeout 60s)");
+                var completed = await Task.WhenAny(bootTask, Task.Delay(StartupTimeout, cancellationToken)).ConfigureAwait(false);
+                if (completed != bootTask)
+                {
+                    var status = pipeline.GetRuntimeStatus();
+                    UnityEngine.Debug.LogError($"[tp] TIMEOUT fired. Status=[{status.State}] {status.CurrentOperationCode}: {status.Message}");
+                    throw new TimeoutException(
+                        $"TestPipeline startup exceeded {StartupTimeout}. Last status: [{status.State}] " +
+                        $"{status.CurrentOperationCode}: {status.Message}");
+                }
+                await bootTask.ConfigureAwait(false);
             }
             catch
             {

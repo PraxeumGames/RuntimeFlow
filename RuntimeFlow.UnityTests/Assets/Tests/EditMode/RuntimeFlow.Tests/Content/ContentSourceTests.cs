@@ -22,13 +22,10 @@ namespace RuntimeFlow.Tests
 
         private abstract class RemoteConfigSourceBase : ContentSource<RemoteConfigSnapshot>
         {
-            private readonly bool _optional;
-
-            protected RemoteConfigSourceBase(bool optional) => _optional = optional;
+            protected RemoteConfigSourceBase(bool optional)
+                => Policy(optional, new RemoteConfigSnapshot());
 
             public override string SourceName => "remote-config";
-            public override bool IsOptional => _optional;
-            protected override RemoteConfigSnapshot? FallbackData { get; } = new();
 
             protected override Task<RemoteConfigSnapshot> LoadAsync(CancellationToken cancellationToken)
                 => throw new InvalidOperationException("network unreachable");
