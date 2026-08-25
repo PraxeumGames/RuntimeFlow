@@ -39,7 +39,7 @@ namespace RuntimeFlow.Flow
             => new GameFlowBuilder(advanced);
     }
 
-    public sealed class GameFlowBuilder
+    public sealed partial class GameFlowBuilder
     {
         private readonly Action<IGameContextBuilder>? _advanced;
         private readonly List<Action<IGameContextBuilder>> _steps = new();

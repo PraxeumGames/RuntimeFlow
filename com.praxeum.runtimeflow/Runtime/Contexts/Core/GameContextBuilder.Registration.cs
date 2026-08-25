@@ -92,7 +92,7 @@ namespace RuntimeFlow.Contexts
             return this;
         }
 
-        private IGameScopeRegistrationBuilder CreateScopeRegistrationBuilder(Type scopeType)
+        internal IGameScopeRegistrationBuilder CreateScopeRegistrationBuilder(Type scopeType)
         {
             if (scopeType == null) throw new ArgumentNullException(nameof(scopeType));
             if (!_scopeRegistry.TryGetDeclaredScope(scopeType, out var scope))
