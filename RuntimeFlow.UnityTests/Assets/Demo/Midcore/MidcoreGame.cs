@@ -25,6 +25,7 @@ namespace RuntimeFlow.Demo.Midcore
             })
             .Scene<PreloaderScene>()
             .Entry<PreloaderScene>()
+            .Scene<SessionRejoinScene>()
             .Scene<MetaScene>();
     }
 }

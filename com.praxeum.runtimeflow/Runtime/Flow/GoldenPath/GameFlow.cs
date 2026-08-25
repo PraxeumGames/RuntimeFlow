@@ -45,6 +45,7 @@ namespace RuntimeFlow.Flow
         private readonly List<Action<IGameContextBuilder>> _steps = new();
         private readonly List<ContentPlanEntryBuilder> _plan = new();
         private Type? _entrySceneType;
+        private Type? _entryResolverType;
 
         internal GameFlowBuilder(Action<IGameContextBuilder>? advanced)
         {
@@ -158,9 +159,8 @@ namespace RuntimeFlow.Flow
             => Step(b => b.Scene<TScene>());
 
         /// <summary>
-        /// Declares the entry scene: loaded automatically right after the boot completes.
-        /// Typical mobile shape is a preloader entry scene whose services navigate onward
-        /// (meta/battle) via <c>GameHandle.LoadSceneAsync</c> once their content is ready.
+        /// Declares a static entry scene: loaded automatically after boot. For dynamic routing
+        /// (tutorial vs meta vs session rejoin), use <see cref="ResolveEntryWith{TResolver}"/> instead.
         /// </summary>
         public GameFlowBuilder Entry<TScene>() where TScene : ISceneScope, new()
         {
@@ -169,6 +169,20 @@ namespace RuntimeFlow.Flow
                     $"GameFlow.Entry<{typeof(TScene).Name}> conflicts with previously declared " +
                     $"entry scene '{_entrySceneType.Name}'. Only one entry scene is allowed.");
             _entrySceneType = typeof(TScene);
+            _entryResolverType = null;
+            return this;
+        }
+
+        /// <summary>
+        /// Declares dynamic entry routing: after boot, the resolver determines which scene to load.
+        /// Use this for flows where the destination depends on player state (tutorial for new players,
+        /// meta for returning, session rejoin after disconnect).
+        /// </summary>
+        public GameFlowBuilder ResolveEntryWith<TResolver>()
+            where TResolver : IEntryRouteResolver
+        {
+            _entrySceneType = null;
+            _entryResolverType = typeof(TResolver);
             return this;
         }
 
@@ -479,8 +493,17 @@ namespace RuntimeFlow.Flow
         private async Task BootAsync(RuntimePipeline pipeline, CancellationToken ct)
         {
             await pipeline.InitializeAsync(cancellationToken: ct).ConfigureAwait(false);
-            if (_entrySceneType != null)
+
+            if (_entryResolverType != null)
+            {
+                var resolver = (IEntryRouteResolver)Activator.CreateInstance(_entryResolverType)!;
+                var route = await resolver.ResolveAsync(ct).ConfigureAwait(false);
+                await pipeline.LoadSceneAsync(route.SceneType, cancellationToken: ct).ConfigureAwait(false);
+            }
+            else if (_entrySceneType != null)
+            {
                 await pipeline.LoadSceneAsync(_entrySceneType, cancellationToken: ct).ConfigureAwait(false);
+            }
         }
     }
 
