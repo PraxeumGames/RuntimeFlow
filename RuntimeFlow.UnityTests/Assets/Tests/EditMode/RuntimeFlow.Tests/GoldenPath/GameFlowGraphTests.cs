@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using RuntimeFlow.Content;
 using RuntimeFlow.Contexts;
 using RuntimeFlow.Flow;
+using RuntimeFlow.Demo.Midcore;
 
 namespace RuntimeFlow.Tests
 {
@@ -109,15 +110,6 @@ namespace RuntimeFlow.Tests
                 => Task.FromResult(new ProfileSnapshot());
         }
 
-        [Test]
-        public void Auth_RequiresPlatformStageMarker()
-        {
-            Assert.Throws<InvalidOperationException>(() =>
-                GameFlow.Create()
-                    .Auth<NotPlatformAuthSource, AuthSnapshotStub>(),
-                "Auth without the platform marker must fail at composition time.");
-        }
-
         private sealed class NotPlatformAuthSource : ContentSource<AuthSnapshotStub>
         {
             public override string SourceName => "auth";
@@ -147,6 +139,7 @@ namespace RuntimeFlow.Tests
             PreloaderService.InitCount = 0;
 
             await using var game = await GameFlow.Create().DeterministicScheduler()
+                .Scene<PreloaderScene>()
                 .Entry<PreloaderScene>()
                 .StartAsync();
 

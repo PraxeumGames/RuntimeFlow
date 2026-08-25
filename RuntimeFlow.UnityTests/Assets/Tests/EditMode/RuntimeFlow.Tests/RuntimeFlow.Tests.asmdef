@@ -4,7 +4,8 @@
     "references": [
         "RuntimeFlow.Runtime",
         "VContainer",
-        "RuntimeFlow.Testing"
+        "RuntimeFlow.Testing",
+        "RuntimeFlow.Demo"
     ],
     "includePlatforms": [
         "Editor"

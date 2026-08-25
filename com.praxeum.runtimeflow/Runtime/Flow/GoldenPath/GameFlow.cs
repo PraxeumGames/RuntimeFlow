@@ -93,7 +93,6 @@ namespace RuntimeFlow.Flow
             where TSource : ContentSource<TData>
             where TData : class
         {
-            RequireStageMarker<TSource, IPlatformStartupInitializableService>("Auth");
             TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name, policy);
             return Step(b => b.Session().Content<TSource, TData>());
         }
@@ -140,7 +139,6 @@ namespace RuntimeFlow.Flow
             where TSource : ContentSource<TData>
             where TData : class
         {
-            RequireStageMarker<TSource, IContentStartupInitializableService>("Catalog");
             TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name, policy);
             return Step(b => b.Session().Content<TSource, TData>());
         }
@@ -171,7 +169,7 @@ namespace RuntimeFlow.Flow
                     $"GameFlow.Entry<{typeof(TScene).Name}> conflicts with previously declared " +
                     $"entry scene '{_entrySceneType.Name}'. Only one entry scene is allowed.");
             _entrySceneType = typeof(TScene);
-            return Scene<TScene>();
+            return this;
         }
 
         /// <summary>Loading-screen / first-UI service. Session scope, UI stage — the source must implement <c>IUiStartupInitializableService</c>.</summary>
