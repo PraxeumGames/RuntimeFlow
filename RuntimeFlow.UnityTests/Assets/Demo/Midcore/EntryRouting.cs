@@ -61,7 +61,7 @@ namespace RuntimeFlow.Demo.Midcore
         /// <summary>Set by tests to simulate different routing scenarios.</summary>
         public static string Scenario { get; set; } = "default";
 
-        public Task<EntryRoute> ResolveAsync(CancellationToken cancellationToken)
+        public Task<EntryRoute> ResolveAsync(IGameContext sessionContext, CancellationToken cancellationToken)
         {
             switch (Scenario)
             {

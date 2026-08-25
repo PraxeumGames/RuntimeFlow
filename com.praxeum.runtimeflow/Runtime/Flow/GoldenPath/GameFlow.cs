@@ -66,12 +66,12 @@ namespace RuntimeFlow.Flow
         /// Contract: Global scope. Required unless policy says otherwise.
         /// Must not implement session stage markers — use Profile/Catalog for session content.
         /// </summary>
-        public GameFlowBuilder Config<TSource, TData>(ContentPolicy<TData>? policy = null)
+        public GameFlowBuilder Config<TSource, TData>()
             where TSource : ContentSource<TData>
             where TData : class
         {
             ValidateNoSessionStageMarker<TSource>("Config");
-            TrackPlan<TSource, TData>(GameContextType.Global, typeof(TSource).Name, policy);
+            TrackPlan<TSource, TData>(GameContextType.Global, typeof(TSource).Name);
             return Step(b => b.Global().Content<TSource, TData>());
         }
 
@@ -90,11 +90,12 @@ namespace RuntimeFlow.Flow
         /// <c>IUserInteractionGatedInitializableService</c> when sign-in shows a dialog
         /// (health watchdog exempted).
         /// </summary>
-        public GameFlowBuilder Auth<TSource, TData>(ContentPolicy<TData>? policy = null)
+        public GameFlowBuilder Auth<TSource, TData>()
             where TSource : ContentSource<TData>
             where TData : class
         {
-            TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name, policy);
+            RequireStageMarker<TSource, IPlatformStartupInitializableService>("Auth");
+            TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name);
             return Step(b => b.Session().Content<TSource, TData>());
         }
 
@@ -111,12 +112,15 @@ namespace RuntimeFlow.Flow
         /// Contract: Session scope. Chain after authentication by injecting
         /// <c>IContentSource&lt;TAuthData&gt;</c> (implicit edge).
         /// </summary>
-        public GameFlowBuilder Profile<TSource, TData>(ContentPolicy<TData>? policy = null)
+        public GameFlowBuilder Profile<TSource, TData>()
             where TSource : ContentSource<TData>
             where TData : class
         {
             ValidateNoPlatformStageMarker<TSource>("Profile");
-            TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name, policy);
+            // Session content sources should implement IContentStartupInitializableService
+            // for proper Content-stage scheduling; validation is advisory here because
+            // plain ISessionInitializableService is also valid.
+            TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name);
             return Step(b => b.Session().Content<TSource, TData>());
         }
 
@@ -133,11 +137,12 @@ namespace RuntimeFlow.Flow
         /// Contract: Session scope, Content stage. The source must implement
         /// <c>IContentStartupInitializableService</c>.
         /// </summary>
-        public GameFlowBuilder Catalog<TSource, TData>(ContentPolicy<TData>? policy = null)
+        public GameFlowBuilder Catalog<TSource, TData>()
             where TSource : ContentSource<TData>
             where TData : class
         {
-            TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name, policy);
+            RequireStageMarker<TSource, IContentStartupInitializableService>("Catalog");
+            TrackPlan<TSource, TData>(GameContextType.Session, typeof(TSource).Name);
             return Step(b => b.Session().Content<TSource, TData>());
         }
 
@@ -179,11 +184,7 @@ namespace RuntimeFlow.Flow
         {
             _entrySceneType = null;
             _entryResolverType = typeof(TResolver);
-            return Step(b =>
-            {
-                // Auto-register so BootAsync can resolve from session scope.
-                b.Session().Register<TResolver>(DiLifetime.Singleton);
-            });
+            return this;
         }
 
         /// <summary>Loading-screen / first-UI service. Session scope, UI stage — the source must implement <c>IUiStartupInitializableService</c>.</summary>
@@ -206,7 +207,7 @@ namespace RuntimeFlow.Flow
 
         /// <summary>
         /// Escape hatch onto the full builder API for anything the golden path does not name.
-        /// Steps run in declaration order, after all vocabulary steps.
+        /// Runs at its position in the declaration chain, interleaved with vocabulary steps.
         /// </summary>
         public GameFlowBuilder Advanced(Action<IGameContextBuilder> configure)
         {
@@ -214,10 +215,6 @@ namespace RuntimeFlow.Flow
             _steps.Add(configure);
             return this;
         }
-
-        // ---------- delegate plumbing ----------
-
-        // ---------- validation ----------
 
         private static void RequireStageMarker<TSource, TMarker>(string vocabularyName)
             where TMarker : class
@@ -258,12 +255,24 @@ namespace RuntimeFlow.Flow
             ContentPolicy<TData>? policy)
             where TData : class
         {
-            // Validate eagerly at composition time.
             if (string.IsNullOrWhiteSpace(sourceName))
                 throw new ArgumentException("Source name is required.", nameof(sourceName));
             if (load == null) throw new ArgumentNullException(nameof(load));
 
+            // Detect duplicate data producers at composition time (C1 fix).
+            if (_plan.Any(p => p.DataType == typeof(TData)))
+                throw new InvalidOperationException(
+                    $"A content source producing '{typeof(TData).Name}' is already registered. " +
+                    $"Only one producer per data type is allowed.");
+
             var primary = typeof(DelegateContentSource<TData>);
+
+            // Track in plan so DescribeStartupPlan sees delegate sources too (C1 fix).
+            _plan.Add(new ContentPlanEntryBuilder(
+                scope, sourceName, primary, typeof(TData),
+                required: policy?.IsOptional != true,
+                dependsOn: Array.Empty<string>(),
+                isDelegate: true));
 
             var source = new DelegateContentSource<TData>(sourceName, load);
             if (policy != null)
@@ -284,7 +293,7 @@ namespace RuntimeFlow.Flow
 
         // ---------- plan tracking ----------
 
-        private void TrackPlan<TSource, TData>(GameContextType scope, string name, ContentPolicy<TData>? policy)
+        private void TrackPlan<TSource, TData>(GameContextType scope, string name, ContentPolicy<TData>? policy = null)
             where TSource : ContentSource<TData>
             where TData : class
         {
@@ -306,7 +315,13 @@ namespace RuntimeFlow.Flow
         {
             var dataToName = new Dictionary<Type, string>();
             foreach (var p in _plan)
+            {
+                if (dataToName.TryGetValue(p.DataType, out var existing))
+                    throw new InvalidOperationException(
+                        $"Startup plan error: '{p.Name}' and '{existing}' both produce " +
+                        $"'{p.DataType.Name}'. Only one source per data type is allowed.");
                 dataToName[p.DataType] = p.Name;
+            }
 
             // Merge implicit constructor data-flow edges and non-content [DependsOn] edges
             // into the declared ones.
@@ -481,8 +496,11 @@ namespace RuntimeFlow.Flow
 
             if (_entryResolverType != null)
             {
-                var resolver = (IEntryRouteResolver)pipeline.SessionContext.Resolve(_entryResolverType);
-                var route = await resolver.ResolveAsync(ct).ConfigureAwait(false);
+                // Resolve from session scope so the resolver has access to game state.
+                var resolver = (IEntryRouteResolver)(Activator.CreateInstance(_entryResolverType)
+                    ?? throw new InvalidOperationException(
+                        $"Cannot create entry route resolver '{_entryResolverType.Name}'."));
+                var route = await resolver.ResolveAsync(pipeline.SessionContext, ct).ConfigureAwait(false);
                 await pipeline.LoadSceneAsync(route.SceneType, cancellationToken: ct).ConfigureAwait(false);
             }
             else if (_entrySceneType != null)
@@ -555,7 +573,5 @@ namespace RuntimeFlow.Flow
         private readonly List<string> _deps; public IReadOnlyList<string> DependsOn => _deps;
         public bool IsDelegate { get; }
 
-        public ContentPlanEntry Build()
-            => new(Scope, Name, IsDelegate ? null : ImplType, Required, DependsOn);
     }
 }

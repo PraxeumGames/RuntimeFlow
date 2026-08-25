@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using RuntimeFlow.Contexts;
 
 namespace RuntimeFlow.Flow
 {
@@ -10,10 +11,11 @@ namespace RuntimeFlow.Flow
     ///
     /// Typical implementations inspect player profile, save data, feature flags and active
     /// session state to decide between tutorial, meta hub, session rejoin, or battle.
+    /// The session context is fully initialized when this is called.
     /// </summary>
     public interface IEntryRouteResolver
     {
-        Task<EntryRoute> ResolveAsync(CancellationToken cancellationToken);
+        Task<EntryRoute> ResolveAsync(IGameContext sessionContext, CancellationToken cancellationToken);
     }
 
     /// <summary>The resolved destination: a scene type plus optional navigation metadata.</summary>

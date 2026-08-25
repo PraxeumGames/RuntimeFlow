@@ -146,20 +146,25 @@ namespace RuntimeFlow.Testing
 
             try
             {
-                                var bootTask = pipeline.InitializeAsync(cancellationToken: cancellationToken);
-                                var completed = await Task.WhenAny(bootTask, Task.Delay(StartupTimeout, cancellationToken)).ConfigureAwait(false);
+                var bootTask = pipeline.InitializeAsync(cancellationToken: cancellationToken);
+                var timeoutTask = Task.Delay(StartupTimeout, CancellationToken.None);
+                var completed = await Task.WhenAny(bootTask, timeoutTask).ConfigureAwait(false);
+
                 if (completed != bootTask)
                 {
                     var status = pipeline.GetRuntimeStatus();
-                                        throw new TimeoutException(
+                    throw new TimeoutException(
                         $"TestPipeline startup exceeded {StartupTimeout}. Last status: [{status.State}] " +
                         $"{status.CurrentOperationCode}: {status.Message}");
                 }
+
                 await bootTask.ConfigureAwait(false);
             }
             catch
             {
-                await pipeline.DisposeAsync().ConfigureAwait(false);
+                var disposeTask = pipeline.DisposeAsync().AsTask();
+                if (!disposeTask.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Pipeline disposal hung after startup failure.");
                 throw;
             }
 

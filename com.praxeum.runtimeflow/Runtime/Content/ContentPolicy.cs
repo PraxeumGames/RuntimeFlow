@@ -25,10 +25,5 @@ namespace RuntimeFlow.Content
         /// <summary>The source degrades to <paramref name="fallback"/> when loading fails.</summary>
         public static ContentPolicy<TData> Optional(TData fallback) => new(fallback ?? throw new ArgumentNullException(nameof(fallback)));
 
-        internal void ApplyTo(ContentSource<TData> source, string sourceName)
-        {
-            if (IsOptional)
-                source.Policy(optional: true, fallback: Fallback);
-        }
     }
 }
