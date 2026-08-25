@@ -94,13 +94,16 @@ namespace RuntimeFlow.Content
         {
             try
             {
-                Data = await LoadAsync(cancellationToken).ConfigureAwait(false);
+                Data = await LoadAsync(cancellationToken).ConfigureAwait(false)
+                      ?? throw new InvalidOperationException(
+                          $"Content source '{SourceName}' LoadAsync returned null.");
                 IsLoaded = true;
                 Logger.LogInformation("Content source '{SourceName}' loaded.", SourceName);
             }
             catch (Exception ex) when (_optional && !cancellationToken.IsCancellationRequested)
             {
-                await OnLoadFailedAsync(ex, cancellationToken).ConfigureAwait(false);
+                try { await OnLoadFailedAsync(ex, cancellationToken).ConfigureAwait(false); }
+                catch (Exception hookEx) { Logger.LogError(hookEx, "OnLoadFailedAsync hook threw for '{SourceName}'.", SourceName); }
                 Logger.LogWarning(ex, "Content source '{SourceName}' failed; degraded to fallback data.", SourceName);
                 Data = _fallback!;
                 UsedFallback = true;

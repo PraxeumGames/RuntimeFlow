@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Content;
@@ -19,7 +20,7 @@ namespace RuntimeFlow.Flow
     ///
     /// Sources can be classes derived from <see cref="ContentSource{TData}"/> (data-flow edges
     /// declared by constructor parameters of type <c>IContentSource&lt;TOther&gt;</c>) or plain
-    /// load delegates with explicit failure policies and <c>after:</c> tokens:
+    /// load delegates with explicit failure policies:
     ///
     /// <code>
     /// var game = await GameFlow.Create()
@@ -77,10 +78,9 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Config<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null,
-            IReadOnlyList<SourceToken<TData>>? after = null)
+            ContentPolicy<TData>? policy = null)
             where TData : class
-            => ConfigDelegate(sourceName, load, policy, after);
+            => RegisterDelegate(GameContextType.Global, sourceName, load, policy);
 
         // ---------- vocabulary: auth ----------
 
@@ -101,17 +101,15 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Auth<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null,
-            IReadOnlyList<SourceToken<TData>>? after = null)
+            ContentPolicy<TData>? policy = null)
             where TData : class
-            => AuthDelegate(sourceName, load, policy, after);
+            => RegisterDelegate(GameContextType.Session, sourceName, load, policy);
 
         // ---------- vocabulary: profile ----------
 
         /// <summary>
         /// Contract: Session scope. Chain after authentication by injecting
-        /// <c>IContentSource&lt;TAuthData&gt;</c> (implicit edge) or passing an
-        /// <c>after:</c> token.
+        /// <c>IContentSource&lt;TAuthData&gt;</c> (implicit edge).
         /// </summary>
         public GameFlowBuilder Profile<TSource, TData>(ContentPolicy<TData>? policy = null)
             where TSource : ContentSource<TData>
@@ -125,10 +123,9 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Profile<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null,
-            IReadOnlyList<SourceToken<TData>>? after = null)
+            ContentPolicy<TData>? policy = null)
             where TData : class
-            => ProfileDelegate(sourceName, load, policy, after);
+            => RegisterDelegate(GameContextType.Session, sourceName, load, policy);
 
         // ---------- vocabulary: catalog ----------
 
@@ -147,10 +144,9 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Catalog<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null,
-            IReadOnlyList<SourceToken<TData>>? after = null)
+            ContentPolicy<TData>? policy = null)
             where TData : class
-            => CatalogDelegate(sourceName, load, policy, after);
+            => RegisterDelegate(GameContextType.Session, sourceName, load, policy);
 
         // ---------- vocabulary: scenes / ui / services ----------
 
@@ -179,11 +175,15 @@ namespace RuntimeFlow.Flow
         /// meta for returning, session rejoin after disconnect).
         /// </summary>
         public GameFlowBuilder ResolveEntryWith<TResolver>()
-            where TResolver : IEntryRouteResolver
+            where TResolver : class, IEntryRouteResolver
         {
             _entrySceneType = null;
             _entryResolverType = typeof(TResolver);
-            return this;
+            return Step(b =>
+            {
+                // Auto-register so BootAsync can resolve from session scope.
+                b.Session().Register<TResolver>(DiLifetime.Singleton);
+            });
         }
 
         /// <summary>Loading-screen / first-UI service. Session scope, UI stage — the source must implement <c>IUiStartupInitializableService</c>.</summary>
@@ -247,60 +247,31 @@ namespace RuntimeFlow.Flow
                     "Use Auth(...) for platform sources.");
         }
 
-        private GameFlowBuilder ConfigDelegate<TData>(string sourceName, Func<FlowLoadContext, CancellationToken, Task<TData>> load, ContentPolicy<TData>? policy, IReadOnlyList<SourceToken<TData>>? after)
-            where TData : class
-        {
-            var primary = RegisterDelegate(GameContextType.Global, sourceName, load, policy, after);
-            TrackPlanDelegate(GameContextType.Global, sourceName, primary, policy, after);
-            return this;
-        }
 
-        private GameFlowBuilder AuthDelegate<TData>(string sourceName, Func<FlowLoadContext, CancellationToken, Task<TData>> load, ContentPolicy<TData>? policy, IReadOnlyList<SourceToken<TData>>? after)
-            where TData : class
-        {
-            var primary = RegisterDelegate(GameContextType.Session, sourceName, load, policy, after);
-            TrackPlanDelegate(GameContextType.Session, sourceName, primary, policy, after);
-            return this;
-        }
 
-        private GameFlowBuilder ProfileDelegate<TData>(string sourceName, Func<FlowLoadContext, CancellationToken, Task<TData>> load, ContentPolicy<TData>? policy, IReadOnlyList<SourceToken<TData>>? after)
-            where TData : class
-        {
-            var primary = RegisterDelegate(GameContextType.Session, sourceName, load, policy, after);
-            TrackPlanDelegate(GameContextType.Session, sourceName, primary, policy, after);
-            return this;
-        }
 
-        private GameFlowBuilder CatalogDelegate<TData>(string sourceName, Func<FlowLoadContext, CancellationToken, Task<TData>> load, ContentPolicy<TData>? policy, IReadOnlyList<SourceToken<TData>>? after)
-            where TData : class
-        {
-            var primary = RegisterDelegate(GameContextType.Session, sourceName, load, policy, after);
-            TrackPlanDelegate(GameContextType.Session, sourceName, primary, policy, after);
-            return this;
-        }
 
-        private Type RegisterDelegate<TData>(
+        private GameFlowBuilder RegisterDelegate<TData>(
             GameContextType scope,
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy,
-            IReadOnlyList<SourceToken<TData>>? after)
+            ContentPolicy<TData>? policy)
             where TData : class
         {
-            var primary = typeof(DelegateContentSource<TData>);
-            var edgeTypes = after?
-                .Select(t => t.EdgeType)
-                .Distinct()
-                .ToArray() ?? Array.Empty<Type>();
+            // Validate eagerly at composition time.
+            if (string.IsNullOrWhiteSpace(sourceName))
+                throw new ArgumentException("Source name is required.", nameof(sourceName));
+            if (load == null) throw new ArgumentNullException(nameof(load));
 
-            ContentEdgeRegistry.Set(primary, edgeTypes);
+            var primary = typeof(DelegateContentSource<TData>);
+
+            var source = new DelegateContentSource<TData>(sourceName, load);
+            if (policy != null)
+                source.Policy(policy.IsOptional, policy.Fallback);
 
             Step(b =>
             {
                 var concrete = (GameContextBuilder)b;
-                var source = new DelegateContentSource<TData>(sourceName, load);
-                if (policy != null)
-                    source.Policy(policy.IsOptional, policy.Fallback);
                 concrete.RegisterInstanceDeferredForDiscovery(
                     scope,
                     source,
@@ -308,7 +279,7 @@ namespace RuntimeFlow.Flow
                     extraExposedTypes: new[] { typeof(IContentSource<TData>), typeof(IContentSourceInfo) },
                     onContextAvailable: context => source.AttachResolver(t => context.Resolve(t)));
             });
-            return primary;
+            return this;
         }
 
         // ---------- plan tracking ----------
@@ -324,16 +295,6 @@ namespace RuntimeFlow.Flow
                 isDelegate: false));
         }
 
-        private void TrackPlanDelegate<TData>(GameContextType scope, string name, Type primary, ContentPolicy<TData>? policy, IReadOnlyList<SourceToken<TData>>? after)
-            where TData : class
-        {
-            _plan.Add(new ContentPlanEntryBuilder(
-                scope, name, primary, typeof(TData),
-                required: policy?.IsOptional != true,
-                dependsOn: after?.Select(t => t.SourceName).ToArray() ?? Array.Empty<string>(),
-                isDelegate: true));
-        }
-
         // ---------- plan inspection ----------
 
         /// <summary>
@@ -347,13 +308,15 @@ namespace RuntimeFlow.Flow
             foreach (var p in _plan)
                 dataToName[p.DataType] = p.Name;
 
-            // Merge implicit constructor data-flow edges into the declared ones.
+            // Merge implicit constructor data-flow edges and non-content [DependsOn] edges
+            // into the declared ones.
             var merged = new List<ContentPlanEntry>();
             foreach (var p in _plan)
             {
                 var dependsOn = new List<string>(p.DependsOn);
                 if (!p.IsDelegate && p.ImplType != null)
                 {
+                    // Closed-content constructor data-flow edges.
                     foreach (var dep in InitializationGraphRules.ResolveConstructorDependencies(p.ImplType))
                     {
                         if (!InitializationGraphRules.IsClosedContentSourceType(dep))
@@ -366,6 +329,15 @@ namespace RuntimeFlow.Flow
                                 "Add it via Config/Auth/Profile/Catalog.");
                         if (sourceName != p.Name && !dependsOn.Contains(sourceName))
                             dependsOn.Add(sourceName);
+                    }
+
+                    // Non-content [DependsOn] edges: include when the target is a known plan node.
+                    foreach (var attr in p.ImplType.GetCustomAttributes<DependsOnAttribute>())
+                    {
+                        var depName = attr.ServiceType.Name;
+                        var match = _plan.FirstOrDefault(x => x.Name == depName || x.ImplType?.Name == depName);
+                        if (match != null && match.Name != p.Name && !dependsOn.Contains(match.Name))
+                            dependsOn.Add(match.Name);
                     }
                 }
                 merged.Add(new ContentPlanEntry(p.Scope, p.Name, p.IsDelegate ? null : p.ImplType, p.Required, dependsOn));
@@ -472,19 +444,32 @@ namespace RuntimeFlow.Flow
             try
             {
                 var bootTask = BootAsync(pipeline, cancellationToken);
-                var completed = await Task.WhenAny(bootTask, Task.Delay(StartupTimeout, cancellationToken)).ConfigureAwait(false);
+                var timeoutTask = Task.Delay(StartupTimeout, CancellationToken.None);
+                var completed = await Task.WhenAny(bootTask, timeoutTask).ConfigureAwait(false);
+
                 if (completed != bootTask)
                 {
+                    // Genuine timeout (not caller cancellation — that token is not wired to the delay).
+                    if (cancellationToken.IsCancellationRequested)
+                        throw new OperationCanceledException(cancellationToken);
+
                     var status = pipeline.GetRuntimeStatus();
                     throw new TimeoutException(
                         $"GameFlow startup exceeded {StartupTimeout}. Last status: [{status.State}] " +
                         $"{status.CurrentOperationCode}: {status.Message}");
                 }
+
+                // Boot completed (or failed) before timeout; dispose only now.
                 await bootTask.ConfigureAwait(false);
             }
             catch
             {
-                await pipeline.DisposeAsync().ConfigureAwait(false);
+                // Dispose synchronously with a bounded wait to avoid racing a still-running boot.
+                var disposeTask = pipeline.DisposeAsync().AsTask();
+                if (!disposeTask.Wait(TimeSpan.FromSeconds(15)))
+                {
+                    // Disposal itself hung; rethrow original — the leaked pipeline is preferable to masking the cause.
+                }
                 throw;
             }
             return new GameHandle(pipeline);
@@ -496,7 +481,7 @@ namespace RuntimeFlow.Flow
 
             if (_entryResolverType != null)
             {
-                var resolver = (IEntryRouteResolver)Activator.CreateInstance(_entryResolverType)!;
+                var resolver = (IEntryRouteResolver)pipeline.SessionContext.Resolve(_entryResolverType);
                 var route = await resolver.ResolveAsync(ct).ConfigureAwait(false);
                 await pipeline.LoadSceneAsync(route.SceneType, cancellationToken: ct).ConfigureAwait(false);
             }
@@ -542,14 +527,14 @@ namespace RuntimeFlow.Flow
             bool required, IReadOnlyList<string> dependsOn)
         {
             Scope = scope; SourceName = sourceName; ImplementationType = implementationType;
-            Required = required; DependsOn = dependsOn;
+            Required = required; _deps = new List<string>(dependsOn);
         }
 
         public GameContextType Scope { get; }
         public string SourceName { get; }
         public Type? ImplementationType { get; }
         public bool Required { get; }
-        public IReadOnlyList<string> DependsOn { get; }
+        private readonly List<string> _deps; public IReadOnlyList<string> DependsOn => _deps;
     }
 
     internal sealed class ContentPlanEntryBuilder
@@ -559,7 +544,7 @@ namespace RuntimeFlow.Flow
             bool required, IReadOnlyList<string> dependsOn, bool isDelegate)
         {
             Scope = scope; Name = name; ImplType = implType; DataType = dataType;
-            Required = required; DependsOn = dependsOn; IsDelegate = isDelegate;
+            Required = required; _deps = new List<string>(dependsOn); IsDelegate = isDelegate;
         }
 
         public GameContextType Scope { get; }
@@ -567,7 +552,7 @@ namespace RuntimeFlow.Flow
         public Type? ImplType { get; }
         public Type DataType { get; }
         public bool Required { get; }
-        public IReadOnlyList<string> DependsOn { get; }
+        private readonly List<string> _deps; public IReadOnlyList<string> DependsOn => _deps;
         public bool IsDelegate { get; }
 
         public ContentPlanEntry Build()

@@ -146,15 +146,12 @@ namespace RuntimeFlow.Testing
 
             try
             {
-                UnityEngine.Debug.LogWarning("[tp] pipeline created; starting boot");
-                var bootTask = pipeline.InitializeAsync(cancellationToken: cancellationToken);
-                UnityEngine.Debug.LogWarning("[tp] boot task started; waiting (timeout 60s)");
-                var completed = await Task.WhenAny(bootTask, Task.Delay(StartupTimeout, cancellationToken)).ConfigureAwait(false);
+                                var bootTask = pipeline.InitializeAsync(cancellationToken: cancellationToken);
+                                var completed = await Task.WhenAny(bootTask, Task.Delay(StartupTimeout, cancellationToken)).ConfigureAwait(false);
                 if (completed != bootTask)
                 {
                     var status = pipeline.GetRuntimeStatus();
-                    UnityEngine.Debug.LogError($"[tp] TIMEOUT fired. Status=[{status.State}] {status.CurrentOperationCode}: {status.Message}");
-                    throw new TimeoutException(
+                                        throw new TimeoutException(
                         $"TestPipeline startup exceeded {StartupTimeout}. Last status: [{status.State}] " +
                         $"{status.CurrentOperationCode}: {status.Message}");
                 }

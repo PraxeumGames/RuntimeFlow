@@ -14,8 +14,8 @@ namespace RuntimeFlow.Content
     /// <paramref name="load"/> receives a <see cref="FlowLoadContext"/> for resolving other
     /// sources (data chaining) plus the cancellation token.
     ///
-    /// Ordering: pass <c>after:</c> tokens from previously registered sources, or chain via
-    /// class-based sources whose constructors inject <c>IContentSource&lt;TData&gt;</c>.
+    /// Ordering: chain via class-based sources whose constructors inject
+    /// <c>IContentSource&lt;TData&gt;</c>, or declare <c>[DependsOn]</c> edges.
     /// </summary>
     public sealed class DelegateContentSource<TData> : ContentSource<TData>
         where TData : class
@@ -44,7 +44,7 @@ namespace RuntimeFlow.Content
             if (_resolver == null)
                 throw new InvalidOperationException(
                     $"Delegate content source '{SourceName}' was not attached to a context.");
-            var flow = new FlowLoadContext(_resolver, cancellationToken);
+            var flow = new FlowLoadContext(_resolver, cancellationToken, SourceName);
             return await _load(flow, cancellationToken).ConfigureAwait(false);
         }
     }
