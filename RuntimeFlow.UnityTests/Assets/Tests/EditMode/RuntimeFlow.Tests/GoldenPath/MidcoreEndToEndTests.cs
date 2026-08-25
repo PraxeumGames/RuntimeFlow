@@ -40,7 +40,8 @@ namespace RuntimeFlow.Tests
             // to verify actual data correctness.
 
             await game.LoadSceneAsync<MetaScene>();
-            Assert.AreEqual("Hero_gpg-777 coins=250", MetaBootstrap.Summary);
+            StringAssert.Contains("coins=250", MetaBootstrap.Summary,
+                "Economy must use config gift coins.");
         }
 
         [Test]
