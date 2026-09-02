@@ -2,18 +2,18 @@
     "name": "com.praxeum.runtimeflow",
     "author": "Praxeum Games",
     "displayName": "RuntimeFlow",
-    "version": "0.10.0",
+    "version": "1.0.0",
     "unity": "2021.3",
-    "description": "Game startup orchestration framework with hierarchical DI scopes, async service initialization DAG, health supervision, and runtime pipeline management.",
+    "description": "Async initialization graph for Unity on top of VContainer: services declare dependencies through constructors, initialize concurrently, and fail transparently. Global/Session scopes, restart, progress, editor dashboard.",
     "license": "MIT",
     "keywords": [
         "startup",
         "bootstrap",
         "di",
         "initialization",
-        "pipeline"
+        "vcontainer"
     ],
     "dependencies": {
-        "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#c30a8af94809177788cd4392ea9b6ff6373c51b9"
+        "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer#f2afd2ac175a1e04ac59a8f69794df827b53b732"
     }
 }

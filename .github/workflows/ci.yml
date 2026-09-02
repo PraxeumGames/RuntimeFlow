@@ -18,81 +18,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  generator-build-and-test:
-    name: Generator Build & Test (.NET 9)
-    runs-on: ubuntu-latest
-    # Nightly runs exist for the Unity jobs; .NET gates already cover every push/PR.
-    if: ${{ github.event_name != 'schedule' }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 9.0.x
-
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
-
-      - name: Restore
-        run: |
-          dotnet restore ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --nologo
-
-      - name: Build
-        run: |
-          dotnet build ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --configuration Release --no-restore --nologo
-
-      - name: Build solution
-        run: |
-          dotnet build ./RuntimeFlow.sln --configuration Release --no-restore --nologo
-
-      - name: Validate packaged analyzer
-        run: |
-          dotnet build ./RuntimeFlow.Generators/RuntimeFlow.Generators.csproj --configuration Release --no-restore --nologo
-          cmp -s \
-            ./RuntimeFlow.Generators/bin/Release/netstandard2.0/RuntimeFlow.Generators.dll \
-            ./com.praxeum.runtimeflow/Analyzers/RuntimeFlow.Generators.dll \
-            || { echo "::error::Packaged RuntimeFlow.Generators.dll is stale. Rebuild and copy the Release analyzer into com.praxeum.runtimeflow/Analyzers/."; exit 1; }
-          if grep -a "GameBuilder.Generators" ./com.praxeum.runtimeflow/Analyzers/RuntimeFlow.Generators.dll; then
-            echo "::error::Packaged RuntimeFlow.Generators.dll still references GameBuilder.Generators."
-            exit 1
-          fi
-
-      - name: Test generator
-        run: |
-          dotnet test ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj \
-            --configuration Release \
-            --no-build \
-            --nologo \
-            --logger "trx;LogFileName=generator-test-results.trx" \
-            --results-directory ./TestResults
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: ./TestResults/**/*.trx
-          if-no-files-found: warn
-
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: ./TestResults/**/coverage.cobertura.xml
-          if-no-files-found: warn
-
   unity-editmode-runtime-tests:
     name: Unity EditMode Runtime Tests
     runs-on: ubuntu-latest
-    # Full Unity runs are nightly and manual; PRs run only the .NET gates unless
+    # Full Unity runs are nightly and manual; PRs run only the package gate unless
     # the repository variable RUNTIMEFLOW_RUN_UNITY_TESTS is set to '1'.
     if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
     steps:
