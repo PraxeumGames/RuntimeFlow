@@ -11,6 +11,7 @@ set -euo pipefail
 #   UNITY_BIN                       path to the Unity executable; when unset, the newest
 #                                   editor under /Applications/Unity/Hub/Editor is used (macOS)
 #   RUNTIMEFLOW_UNITY_TEST_PROJECT  project path (default: RuntimeFlow.UnityTests)
+#   RUNTIMEFLOW_TEST_FILTER         optional -testFilter value (namespace, class or test name)
 
 TEST_MODE="${1:-editmode}"
 case "$TEST_MODE" in
@@ -61,6 +62,11 @@ mkdir -p "$RESULTS_DIR" "$LOG_DIR"
 RESULTS_XML="$(cd "$(dirname "$PROJECT_PATH")" && pwd)/$(basename "$PROJECT_PATH")/TestResults/${TEST_MODE}-results.xml"
 LOG_FILE="$(cd "$(dirname "$PROJECT_PATH")" && pwd)/$(basename "$PROJECT_PATH")/Logs/${TEST_MODE}-tests.log"
 
+FILTER_ARGS=()
+if [[ -n "${RUNTIMEFLOW_TEST_FILTER:-}" ]]; then
+  FILTER_ARGS=(-testFilter "$RUNTIMEFLOW_TEST_FILTER")
+fi
+
 echo "Running Unity $TEST_MODE tests with: $UNITY_BIN"
 "$UNITY_BIN" \
   -batchmode \
@@ -69,6 +75,7 @@ echo "Running Unity $TEST_MODE tests with: $UNITY_BIN"
   -runTests \
   -testPlatform "$TEST_MODE" \
   -testResults "$RESULTS_XML" \
+  ${FILTER_ARGS[@]+"${FILTER_ARGS[@]}"} \
   -logFile "$LOG_FILE" || UNITY_EXIT_CODE=$?
 
 UNITY_EXIT_CODE=${UNITY_EXIT_CODE:-0}
@@ -88,7 +95,8 @@ if grep -qE "Scripts have compiler errors|Script Compilation Error" "$LOG_FILE";
   exit "${UNITY_EXIT_CODE:-1}"
 fi
 
-python3 - "$RESULTS_XML" <<'PYEOF'
+PY_EXIT=0
+python3 - "$RESULTS_XML" <<'PYEOF' || PY_EXIT=$?
 import sys
 import xml.etree.ElementTree as ET
 
@@ -110,10 +118,10 @@ for case in root.iter("test-case"):
                     print(f"    {line}")
 sys.exit(1 if failed > 0 else 0)
 PYEOF
-PY_EXIT=$?
 
+echo "Results: $RESULTS_XML"
 if [[ "$UNITY_EXIT_CODE" -ne 0 ]]; then
   echo "Unity exited with code $UNITY_EXIT_CODE" >&2
+  exit "$UNITY_EXIT_CODE"
 fi
-
-exit "$UNITY_EXIT_CODE"
+exit "$PY_EXIT"
