@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Load Graph rework
+
+### Planned (phased)
+- **Phase 1** — unified load-graph planning: single `LoadGraphNode` model and one
+  topological executor shared by scope waves, auto-service construction and
+  `DescribeStartupPlan()`; composition-time validation on `StartAsync` (duplicate data
+  producers, unknown dependencies, cycles) instead of opt-in plan inspection.
+- **Phase 2** — weighted progress (fractional percent instead of truncated whole steps)
+  and first-class user gates (`IUserGate` / awaiting-player-input status).
+- **Phase 3** — node-level resilience: per-node timeout/retry policy, optional degradation
+  groups, actionable wave-stall policy; operation-level retry parity for the direct
+  pipeline path (`InitializeAsync`/`LoadSceneAsync`).
+- **Phase 4** — F2P startup profiles (cold start / rejoin after disconnect / background
+  return), DI-based entry routing resolver, content freshness policies with skip-fresh
+  resume.
+
+### Fixed (0.10.0)
+- Removed accidentally committed Mono crash dumps from the Unity test project;
+  `mono_crash*.json` is now gitignored.
+- Dashboard diagnostics dump JSON is properly escaped (messages containing quotes or
+  newlines no longer produce invalid JSON).
+
 ## [0.9.0] - 2026-08-22
 
 ### Added

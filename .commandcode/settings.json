@@ -14,7 +14,8 @@
       "Shell(grep:*)",
       "Shell(cp:*)",
       "Shell(/Applications/Unity/Hub/Editor/2022.3.62f2/Unity.app/Contents/MacOS/Unity:*)",
-      "Shell(wc:*)"
+      "Shell(wc:*)",
+      "Shell(./scripts/run_unity_editmode_tests.sh:*)"
     ],
     "deny": [],
     "defaultMode": "default"

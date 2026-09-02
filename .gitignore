@@ -63,6 +63,9 @@ Asset[Ss]tore[Tt]ools/
 crashlytics-build.properties
 sysinfo.txt
 
+# Mono/Unity crash dumps
+mono_crash*.json
+
 # Unity code coverage
 CodeCoverage/
 

@@ -16,5 +16,6 @@ namespace RuntimeFlow.Pipeline
         public const string RestartSessionScope = "restart_session_scope";
         public const string RunFlow = "run_flow";
         public const string Recovery = "recovery";
+        public const string AwaitingPlayerInput = "awaiting_player_input";
     }
 }

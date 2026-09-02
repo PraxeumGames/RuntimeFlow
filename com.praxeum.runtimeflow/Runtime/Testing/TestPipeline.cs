@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Initialization.Planning;
 using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Testing
@@ -122,12 +123,32 @@ namespace RuntimeFlow.Testing
             return this;
         }
 
+        /// <summary>
+        /// Registers an additional progress observer for the whole startup: weighted
+        /// notifiers (<c>IWeightedInitializationProgressNotifier</c>) and gate observers
+        /// receive full fractional/waiting-for-player telemetry.
+        /// </summary>
+        public TestPipelineBuilder ObserveProgress(IInitializationProgressNotifier notifier)
+        {
+            if (notifier == null) throw new ArgumentNullException(nameof(notifier));
+            _progressNotifiers.Add(notifier);
+            if (notifier is IUserGateProgressNotifier gate)
+                UserGateProgress.Publish(gate);
+            return this;
+        }
+
+        private readonly List<IInitializationProgressNotifier> _progressNotifiers = new();
+
         /// <summary>Builds and initializes the pipeline (global + session scopes).</summary>
         /// <summary>Hard deadline for StartAsync; hangs surface as TimeoutException. Default: 60 seconds.</summary>
         public TimeSpan StartupTimeout { get; set; } = TimeSpan.FromSeconds(60);
 
         public async Task<TestPipeline> StartAsync(CancellationToken cancellationToken = default)
         {
+            IInitializationProgressNotifier? composite = null;
+            foreach (var n in _progressNotifiers)
+                composite = composite == null ? n : new CompositeInitializationProgressNotifier(composite, n);
+
             var pipeline = RuntimePipeline.Create(
                 builder =>
                 {
@@ -142,6 +163,7 @@ namespace RuntimeFlow.Testing
                     // main-thread captures), no supervision, no retries.
                     options.Health.Enabled = false;
                     options.RetryPolicy.MaxAttempts = 0;
+                    options.DefaultProgressNotifier = composite ?? options.DefaultProgressNotifier;
                 });
 
             try

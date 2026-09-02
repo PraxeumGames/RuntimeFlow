@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using RuntimeFlow.Content;
 using RuntimeFlow.Contexts;
 using RuntimeFlow.Initialization.Graph;
+using RuntimeFlow.Initialization.Planning;
 using RuntimeFlow.Pipeline;
 
 namespace RuntimeFlow.Flow
@@ -78,9 +79,10 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Config<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null)
+            ContentPolicy<TData>? policy = null,
+            double weight = 1.0)
             where TData : class
-            => RegisterDelegate(GameContextType.Global, sourceName, load, policy);
+            => RegisterDelegate(GameContextType.Global, sourceName, load, policy, weight);
 
         // ---------- vocabulary: auth ----------
 
@@ -102,9 +104,10 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Auth<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null)
+            ContentPolicy<TData>? policy = null,
+            double weight = 1.0)
             where TData : class
-            => RegisterDelegate(GameContextType.Session, sourceName, load, policy);
+            => RegisterDelegate(GameContextType.Session, sourceName, load, policy, weight);
 
         // ---------- vocabulary: profile ----------
 
@@ -127,9 +130,10 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Profile<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null)
+            ContentPolicy<TData>? policy = null,
+            double weight = 1.0)
             where TData : class
-            => RegisterDelegate(GameContextType.Session, sourceName, load, policy);
+            => RegisterDelegate(GameContextType.Session, sourceName, load, policy, weight);
 
         // ---------- vocabulary: catalog ----------
 
@@ -149,9 +153,10 @@ namespace RuntimeFlow.Flow
         public GameFlowBuilder Catalog<TData>(
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy = null)
+            ContentPolicy<TData>? policy = null,
+            double weight = 1.0)
             where TData : class
-            => RegisterDelegate(GameContextType.Session, sourceName, load, policy);
+            => RegisterDelegate(GameContextType.Session, sourceName, load, policy, weight);
 
         // ---------- vocabulary: scenes / ui / services ----------
 
@@ -252,12 +257,15 @@ namespace RuntimeFlow.Flow
             GameContextType scope,
             string sourceName,
             Func<FlowLoadContext, CancellationToken, Task<TData>> load,
-            ContentPolicy<TData>? policy)
+            ContentPolicy<TData>? policy,
+            double weight)
             where TData : class
         {
             if (string.IsNullOrWhiteSpace(sourceName))
                 throw new ArgumentException("Source name is required.", nameof(sourceName));
             if (load == null) throw new ArgumentNullException(nameof(load));
+            if (weight <= 0 || double.IsNaN(weight) || double.IsInfinity(weight))
+                throw new ArgumentOutOfRangeException(nameof(weight), weight, "Weight must be a positive finite number.");
 
             // Detect duplicate data producers at composition time (C1 fix).
             if (_plan.Any(p => p.DataType == typeof(TData)))
@@ -275,6 +283,7 @@ namespace RuntimeFlow.Flow
                 isDelegate: true));
 
             var source = new DelegateContentSource<TData>(sourceName, load);
+            ApplyDelegateWeight(source.GetType(), weight);
             if (policy != null)
                 source.Policy(policy.IsOptional, policy.Fallback);
 
@@ -290,6 +299,14 @@ namespace RuntimeFlow.Flow
             });
             return this;
         }
+
+        /// <summary>
+        /// Delegate sources are generated at runtime; their weight cannot come from an
+        /// attribute, so it is bound to the concrete closed type through the planner's
+        /// runtime-override map.
+        /// </summary>
+        internal static void ApplyDelegateWeight(Type delegateSourceType, double weight)
+            => LoadNodeWeights.RuntimeOverrides[delegateSourceType] = weight;
 
         // ---------- plan tracking ----------
 
@@ -310,8 +327,51 @@ namespace RuntimeFlow.Flow
         /// Static startup plan: nodes, dependency edges with origins, topological order per
         /// scope. Available before StartAsync; throws when the plan contains unresolvable
         /// content dependencies so misconfiguration surfaces at composition time.
+        ///
+        /// The ordering comes from the same unified load-graph planner that executes the
+        /// startup waves (RuntimeFlow.Initialization.Planning), so inspection and runtime
+        /// cannot diverge.
         /// </summary>
         public IReadOnlyList<ContentPlanEntry> DescribeStartupPlan()
+        {
+            var entries = ValidateAndMergeContentPlan().ToArray();
+
+            var result = new List<ContentPlanEntry>();
+            foreach (var scopeGroup in entries.GroupBy(e => e.Scope).OrderBy(g => g.Key))
+            {
+                var nodes = new List<LoadGraphNode>(scopeGroup.Count());
+                foreach (var e in scopeGroup)
+                {
+                    var depNames = e.DependsOn.Where(d => entries.Any(x => x.SourceName == d && x.Scope == e.Scope));
+                    var depKeys = depNames.Select(
+                        d => scopeGroup.First(x => x.SourceName == d)).Select(x => nodeKeyForPlanEntry(x));
+                    nodes.Add(new LoadGraphNode(
+                        nodeKeyForPlanEntry(e),
+                        e.SourceName,
+                        LoadGraphNodeKind.Initializer,
+                        dedupe(depKeys).ToList()));
+                }
+
+                result.AddRange(LoadGraphTopology.BuildLayers(nodes)
+                    .SelectMany(l => l)
+                    .Select(n => entries.First(x => nodeKeyForPlanEntry(x) == n.Key)));
+            }
+
+            static IEnumerable<Type> dedupe(IEnumerable<Type> keys)
+            {
+                var seen = new HashSet<Type>();
+                foreach (var k in keys) if (seen.Add(k)) yield return k;
+            }
+
+            return result;
+        }
+
+        private static Type nodeKeyForPlanEntry(ContentPlanEntry entry)
+            => entry.ImplementationType ?? typeof(DelegateContentSourcePlaceholder);
+
+        private sealed class DelegateContentSourcePlaceholder { }
+
+        private List<ContentPlanEntry> ValidateAndMergeContentPlan()
         {
             var dataToName = new Dictionary<Type, string>();
             foreach (var p in _plan)
@@ -358,50 +418,13 @@ namespace RuntimeFlow.Flow
                 merged.Add(new ContentPlanEntry(p.Scope, p.Name, p.IsDelegate ? null : p.ImplType, p.Required, dependsOn));
             }
 
-            var entries = merged.ToArray();
-
-            foreach (var e in entries)
+            foreach (var e in merged)
                 foreach (var depName in e.DependsOn)
-                    if (entries.All(x => x.SourceName != depName))
+                    if (merged.All(x => x.SourceName != depName))
                         throw new InvalidOperationException(
                             $"Startup plan error: '{e.SourceName}' declares After('{depName}'), but no source with that name is registered.");
 
-            // Topological order within each scope (Kahn, deterministic by declaration order).
-            var result = new List<ContentPlanEntry>();
-            foreach (var scopeGroup in entries.GroupBy(e => e.Scope).OrderBy(g => g.Key))
-            {
-                var pending = new Queue<ContentPlanEntry>(scopeGroup);
-                var placedNames = new HashSet<string>();
-                var guard = pending.Count + 1;
-                while (pending.Count > 0 && guard-- > 0)
-                {
-                    var progressed = false;
-                    var count = pending.Count;
-                    for (var i = 0; i < count; i++)
-                    {
-                        var candidate = pending.Dequeue();
-                        var satisfied = candidate.DependsOn.All(dep =>
-                            !entries.Any(x => x.SourceName == dep && x.Scope == scopeGroup.Key)
-                            || placedNames.Contains(dep));
-                        if (satisfied)
-                        {
-                            result.Add(candidate);
-                            placedNames.Add(candidate.SourceName);
-                            progressed = true;
-                        }
-                        else
-                        {
-                            pending.Enqueue(candidate);
-                        }
-                    }
-                    if (!progressed)
-                        throw new InvalidOperationException(
-                            $"Startup plan contains a content dependency cycle in scope {scopeGroup.Key}: " +
-                            string.Join(" -> ", pending.Select(p => p.SourceName)));
-                }
-            }
-
-            return result;
+            return merged;
         }
 
         public string DescribeStartupPlanText()
@@ -451,6 +474,11 @@ namespace RuntimeFlow.Flow
         /// </summary>
         public async Task<GameHandle> StartAsync(CancellationToken cancellationToken = default)
         {
+            // Composition-time validation: duplicate data producers, unknown content
+            // dependencies, cycles — everything the startup plan can detect statically is
+            // thrown here, before any pipeline machinery is built.
+            DescribeStartupPlan();
+
             var pipeline = RuntimePipeline.Create(BuildCore, options =>
             {
                 if (_deterministicScheduler)

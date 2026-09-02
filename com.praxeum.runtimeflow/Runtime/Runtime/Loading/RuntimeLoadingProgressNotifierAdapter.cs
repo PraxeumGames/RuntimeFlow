@@ -2,13 +2,16 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
+using RuntimeFlow.Initialization.Planning;
 
 namespace RuntimeFlow.Loading
 {
     public sealed class RuntimeLoadingProgressNotifierAdapter :
         IInitializationProgressNotifier,
         IRuntimeScopeLifecycleProgressNotifier,
-        IStartupOperationProgressNotifier
+        IStartupOperationProgressNotifier,
+        IWeightedInitializationProgressNotifier,
+        IUserGateProgressNotifier
     {
         private readonly IRuntimeLoadingProgressObserver _observer;
         private readonly RuntimeLoadingOperationKind _operationKind;
@@ -34,6 +37,7 @@ namespace RuntimeFlow.Loading
             _operationId = string.IsNullOrWhiteSpace(operationId) ? Guid.NewGuid().ToString("N") : operationId;
             _timestampProvider = timestampProvider ?? (() => DateTimeOffset.UtcNow);
             _splitOperationPerScope = splitOperationPerScope;
+            UserGateProgress.Publish(this);
         }
 
         public RuntimeStartupSnapshot? CurrentStartupOperation
@@ -153,6 +157,93 @@ namespace RuntimeFlow.Loading
         public Task OnSessionRestartTeardownCompletedAsync(CancellationToken cancellationToken)
         {
             return Task.CompletedTask;
+        }
+
+        // ---------- weighted progress (fractional percent) ----------
+
+        void IWeightedInitializationProgressNotifier.OnScopeStarted(GameContextType scope, double totalWeight, int totalServices)
+        {
+            OnScopeStarted(scope, totalServices);
+        }
+
+        void IWeightedInitializationProgressNotifier.OnServiceStarted(GameContextType scope, Type serviceType, double completedWeight, double totalWeight)
+        {
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+
+            var totalSteps = Math.Max(1d, totalWeight);
+            var operationId = ResolveScopeOperationId(scope);
+            PublishSnapshot(
+                operationId,
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: 0,
+                totalSteps: 0,
+                message: $"Service '{serviceType.Name}' initialization started.",
+                percentOverride: completedWeight * 100d / totalSteps);
+        }
+
+        void IWeightedInitializationProgressNotifier.OnServiceProgress(GameContextType scope, Type serviceType, float nodeProgress, string? message, double completedWeight, double nodeWeight, double totalWeight)
+        {
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+
+            var fraction = Math.Clamp(nodeProgress, 0f, 1f);
+            var percent = (completedWeight + nodeWeight * fraction) * 100d / Math.Max(1d, totalWeight);
+            var operationId = ResolveScopeOperationId(scope);
+            PublishSnapshot(
+                operationId,
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: 0,
+                totalSteps: 0,
+                message: message ?? $"Service '{serviceType.Name}' progress {(int)(fraction * 100)}%.",
+                percentOverride: percent);
+        }
+
+        void IWeightedInitializationProgressNotifier.OnServiceCompleted(GameContextType scope, Type serviceType, double completedWeight, double totalWeight)
+        {
+            if (serviceType == null) throw new ArgumentNullException(nameof(serviceType));
+
+            var totalSteps = Math.Max(1d, totalWeight);
+            var operationId = ResolveScopeOperationId(scope);
+            PublishSnapshot(
+                operationId,
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: 0,
+                totalSteps: 0,
+                message: $"Service '{serviceType.Name}' initialization completed.",
+                percentOverride: completedWeight * 100d / totalSteps);
+        }
+
+        // ---------- user-gate progress ----------
+
+        void IUserGateProgressNotifier.OnGateOpened(GameContextType scope, Type serviceType, string prompt)
+        {
+            var operationId = ResolveScopeOperationId(scope);
+            PublishSnapshot(
+                operationId,
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: 0,
+                totalSteps: 0,
+                message: $"Waiting for player input: {prompt}");
+        }
+
+        void IUserGateProgressNotifier.OnGateClosed(GameContextType scope, Type serviceType)
+        {
+            var operationId = ResolveScopeOperationId(scope);
+            PublishSnapshot(
+                operationId,
+                scope,
+                stage: RuntimeLoadingOperationStage.ScopeInitializing,
+                state: RuntimeLoadingOperationState.Running,
+                currentStep: 0,
+                totalSteps: 0,
+                message: $"Player input received; resuming '{serviceType.Name}'.");
         }
 
         public void OnScopeActivationStarted(GameContextType scope, int currentStep, int totalSteps)
@@ -383,8 +474,10 @@ namespace RuntimeFlow.Loading
             int currentStep,
             int totalSteps,
             string message,
-            Exception? error = null)
+            Exception? error = null,
+            double? percentOverride = null)
         {
+            var percent = percentOverride ?? CalculatePercent(currentStep, totalSteps, state);
             var snapshot = new RuntimeLoadingOperationSnapshot(
                 operationId: operationId,
                 operationKind: _operationKind,
@@ -392,7 +485,7 @@ namespace RuntimeFlow.Loading
                 state: state,
                 scopeKey: ResolveScopeKey(scope),
                 scopeName: scope.ToString(),
-                percent: CalculatePercent(currentStep, totalSteps, state),
+                percent: Math.Clamp(percent, 0d, 100d),
                 currentStep: currentStep,
                 totalSteps: totalSteps,
                 message: message,

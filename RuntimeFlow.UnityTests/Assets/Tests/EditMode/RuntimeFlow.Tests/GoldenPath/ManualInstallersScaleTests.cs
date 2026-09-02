@@ -239,7 +239,14 @@ namespace RuntimeFlow.Tests
             Array.Clear(Initialized, 0, Initialized.Length);
             Array.Clear(ObservedEnvironment, 0, ObservedEnvironment.Length);
 
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             await using var game = await BuildScaleFlow().StartAsync();
+            sw.Stop();
+
+            // Budget guard for the unified planner: layering 24 services + registration
+            // overhead must stay far below any real startup budget.
+            Assert.Less(sw.ElapsedMilliseconds, 2000,
+                $"Scale flow took {sw.ElapsedMilliseconds}ms — planner or discovery regression?");
 
             for (var i = 0; i < ServiceCount; i++)
                 Assert.IsNotNull(Initialized[i], $"Svc{i + 1:D2} must have initialized.");

@@ -1,2 +1,4 @@
 - When told to finish a task completely, keep working without pauses, clarifying questions, or proposing a partial/KISS stop; only stop once the issue is actually closed. Confidence: 0.98
 - After finishing a task, run a critic review of the result before declaring it done. Confidence: 0.95
+- The user communicates in Russian; responses and reports should be written in Russian. Confidence: 0.85
+- On code-review requests ("проведи ревью"), deliver a full branch-vs-main review: start with diff composition scanning for accidental/garbage committed files, walk the core modules, verify with a Release build and actual test runs (dotnet tests plus Unity EditMode suite), then finish with a report listing strengths plus findings graded by criticality (Must-fix / Should-fix / Nitpicks) and an explicit merge-or-not verdict. Confidence: 0.7

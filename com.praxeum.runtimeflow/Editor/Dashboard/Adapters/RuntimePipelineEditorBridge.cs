@@ -100,7 +100,7 @@ namespace RuntimeFlow.Editor.Dashboard.Adapters
 
             if (TryGetStaticGraph(out var ruleVersion, out var nodes))
             {
-                sb.AppendLine($"  \"graphRuleVersion\": \"{ruleVersion}\",");
+                sb.AppendLine($"  \"graphRuleVersion\": \"{JsonEscape(ruleVersion)}\",");
                 sb.AppendLine($"  \"staticNodeCount\": {nodes.Count},");
             }
 
@@ -111,8 +111,8 @@ namespace RuntimeFlow.Editor.Dashboard.Adapters
                 sb.AppendLine("  \"pipeline\": {");
                 sb.AppendLine($"    \"state\": \"{status.State}\",");
                 sb.AppendLine($"    \"phase\": \"{exec.Phase}\",");
-                sb.AppendLine($"    \"operationCode\": \"{status.CurrentOperationCode}\",");
-                sb.AppendLine($"    \"message\": \"{status.Message}\",");
+                sb.AppendLine($"    \"operationCode\": \"{JsonEscape(status.CurrentOperationCode)}\",");
+                sb.AppendLine($"    \"message\": \"{JsonEscape(status.Message)}\",");
                 sb.AppendLine($"    \"isReady\": {status.IsReady.ToString().ToLowerInvariant()}");
                 sb.AppendLine("  },");
 
@@ -124,8 +124,8 @@ namespace RuntimeFlow.Editor.Dashboard.Adapters
                 sb.AppendLine("  \"scopes\": {");
                 sb.AppendLine($"    \"globalInitialized\": {(global?.IsInitialized == true).ToString().ToLowerInvariant()},");
                 sb.AppendLine($"    \"sessionInitialized\": {(session?.IsInitialized == true).ToString().ToLowerInvariant()},");
-                sb.AppendLine($"    \"activeScene\": \"{pipeline.Builder.ActiveSceneScopeKey?.Name ?? "None"}\",");
-                sb.AppendLine($"    \"activeModule\": \"{pipeline.Builder.ActiveModuleScopeKey?.Name ?? "None"}\",");
+                sb.AppendLine($"    \"activeScene\": \"{JsonEscape(pipeline.Builder.ActiveSceneScopeKey?.Name ?? "None")}\",");
+                sb.AppendLine($"    \"activeModule\": \"{JsonEscape(pipeline.Builder.ActiveModuleScopeKey?.Name ?? "None")}\",");
                 sb.AppendLine($"    \"preloadedCount\": {pipeline.Builder.PreloadedContexts.Count},");
                 sb.AppendLine($"    \"additiveModulesCount\": {pipeline.Builder.AdditiveModuleContexts.Count}");
                 sb.AppendLine("  }");
@@ -136,6 +136,28 @@ namespace RuntimeFlow.Editor.Dashboard.Adapters
             }
 
             sb.AppendLine("}");
+            return sb.ToString();
+        }
+
+        private static string JsonEscape(string? value)
+        {
+            if (string.IsNullOrEmpty(value)) return string.Empty;
+            var sb = new System.Text.StringBuilder(value.Length + 8);
+            foreach (var c in value)
+            {
+                switch (c)
+                {
+                    case '"': sb.Append("\\\""); break;
+                    case '\\': sb.Append("\\\\"); break;
+                    case '\n': sb.Append("\\n"); break;
+                    case '\r': sb.Append("\\r"); break;
+                    case '\t': sb.Append("\\t"); break;
+                    default:
+                        if (c < ' ') sb.AppendFormat("\\u{0:x4}", (int)c);
+                        else sb.Append(c);
+                        break;
+                }
+            }
             return sb.ToString();
         }
     }

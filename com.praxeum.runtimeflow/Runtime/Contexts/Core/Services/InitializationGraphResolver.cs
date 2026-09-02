@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
 using System.Reflection;
+using RuntimeFlow.Initialization.Planning;
 using VContainer;
 using VContainer.Unity;
 
@@ -42,32 +43,28 @@ namespace RuntimeFlow.Contexts
             }
 
             var createdInstances = new Dictionary<Type, object>();
-            while (pending.Count > 0)
+            var graphNodes = pending.Select(b => new LoadGraphNode(
+                b.ServiceType, b.ServiceType.Name, LoadGraphNodeKind.AutoConstruct, b.Dependencies)).ToList();
+            var layers = LoadGraphTopology.BuildLayers(graphNodes);
+
+            foreach (var layer in layers)
             {
-                var ready = pending
-                    .Where(binding => binding.Dependencies.All(dependency =>
-                        availableServices.ContainsKey(dependency) || context.TryGetRegisteredInstance(dependency, out _)))
-                    .ToArray();
-
-                if (ready.Length == 0)
+                // Layer members are independent; construct the whole layer before advancing
+                // so later layers can resolve every dependency of the previous one.
+                foreach (var node in layer.GroupBy(n => n.Key).Select(g => g.First()))
                 {
-                    var unresolved = string.Join(", ", pending.Select(binding => binding.ServiceType.Name).Distinct());
-                    throw new InvalidOperationException($"Constructor dependency cycle detected. Remaining services: {unresolved}");
-                }
-
-                foreach (var group in ready.GroupBy(binding => binding.ImplementationType))
-                {
-                    var exemplar = group.First();
+                    var bindings = pending.Where(b => b.ServiceType == node.Key).ToArray();
+                    var exemplar = bindings[0];
                     if (!createdInstances.TryGetValue(exemplar.ImplementationType, out var instance))
                     {
                         instance = CreateServiceInstance(context, exemplar, availableServices);
                         createdInstances[exemplar.ImplementationType] = instance;
                     }
 
-                    var serviceTypes = group.Select(binding => binding.ServiceType).Distinct().ToArray();
+                    var serviceTypes = bindings.Select(b => b.ServiceType).Distinct().ToArray();
                     context.RegisterInstanceEx(exemplar.ImplementationType, instance, serviceTypes, ownsLifetime: true);
 
-                    foreach (var binding in group)
+                    foreach (var binding in bindings)
                     {
                         if (!availableServices.ContainsKey(binding.ServiceType))
                             availableServices[binding.ServiceType] = instance;

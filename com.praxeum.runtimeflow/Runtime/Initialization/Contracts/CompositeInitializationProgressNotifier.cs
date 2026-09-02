@@ -1,6 +1,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using RuntimeFlow.Initialization.Planning;
 using RuntimeFlow.Loading;
 
 namespace RuntimeFlow.Contexts
@@ -8,7 +9,9 @@ namespace RuntimeFlow.Contexts
     internal sealed class CompositeInitializationProgressNotifier :
         IInitializationProgressNotifier,
         IRuntimeScopeLifecycleProgressNotifier,
-        IStartupOperationProgressNotifier
+        IStartupOperationProgressNotifier,
+        IWeightedInitializationProgressNotifier,
+        IUserGateProgressNotifier
     {
         private readonly IInitializationProgressNotifier _first;
         private readonly IInitializationProgressNotifier _second;
@@ -61,6 +64,42 @@ namespace RuntimeFlow.Contexts
         {
             await _first.OnSessionRestartTeardownCompletedAsync(cancellationToken).ConfigureAwait(false);
             await _second.OnSessionRestartTeardownCompletedAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        void IWeightedInitializationProgressNotifier.OnScopeStarted(GameContextType scope, double totalWeight, int totalServices)
+        {
+            if (_first is IWeightedInitializationProgressNotifier first) first.OnScopeStarted(scope, totalWeight, totalServices);
+            if (_second is IWeightedInitializationProgressNotifier second) second.OnScopeStarted(scope, totalWeight, totalServices);
+        }
+
+        void IWeightedInitializationProgressNotifier.OnServiceStarted(GameContextType scope, Type serviceType, double completedWeight, double totalWeight)
+        {
+            if (_first is IWeightedInitializationProgressNotifier first) first.OnServiceStarted(scope, serviceType, completedWeight, totalWeight);
+            if (_second is IWeightedInitializationProgressNotifier second) second.OnServiceStarted(scope, serviceType, completedWeight, totalWeight);
+        }
+
+        void IWeightedInitializationProgressNotifier.OnServiceProgress(GameContextType scope, Type serviceType, float nodeProgress, string? message, double completedWeight, double nodeWeight, double totalWeight)
+        {
+            if (_first is IWeightedInitializationProgressNotifier first) first.OnServiceProgress(scope, serviceType, nodeProgress, message, completedWeight, nodeWeight, totalWeight);
+            if (_second is IWeightedInitializationProgressNotifier second) second.OnServiceProgress(scope, serviceType, nodeProgress, message, completedWeight, nodeWeight, totalWeight);
+        }
+
+        void IWeightedInitializationProgressNotifier.OnServiceCompleted(GameContextType scope, Type serviceType, double completedWeight, double totalWeight)
+        {
+            if (_first is IWeightedInitializationProgressNotifier first) first.OnServiceCompleted(scope, serviceType, completedWeight, totalWeight);
+            if (_second is IWeightedInitializationProgressNotifier second) second.OnServiceCompleted(scope, serviceType, completedWeight, totalWeight);
+        }
+
+        void IUserGateProgressNotifier.OnGateOpened(GameContextType scope, Type serviceType, string prompt)
+        {
+            if (_first is IUserGateProgressNotifier first) first.OnGateOpened(scope, serviceType, prompt);
+            if (_second is IUserGateProgressNotifier second) second.OnGateOpened(scope, serviceType, prompt);
+        }
+
+        void IUserGateProgressNotifier.OnGateClosed(GameContextType scope, Type serviceType)
+        {
+            if (_first is IUserGateProgressNotifier first) first.OnGateClosed(scope, serviceType);
+            if (_second is IUserGateProgressNotifier second) second.OnGateClosed(scope, serviceType);
         }
 
         public void OnScopeActivationStarted(GameContextType scope, int currentStep, int totalSteps)

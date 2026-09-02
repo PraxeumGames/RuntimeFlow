@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using RuntimeFlow.Events;
 using RuntimeFlow.Initialization.Graph;
+using RuntimeFlow.Initialization.Planning;
 using VContainer;
 using RuntimeFlow.Health;
 using RuntimeFlow.Pipeline;
@@ -181,15 +182,39 @@ namespace RuntimeFlow.Contexts
             var pending = plan.AsyncInitializers.ToDictionary(x => x.ServiceType);
             ValidateDependencies(scope, context, pending, initializedServices);
 
-            while (pending.Count > 0)
+            // Unified planning: the topological layering comes from LoadGraphTopology —
+            // the same planner DescribeStartupPlan uses — so inspection and execution agree.
+            var graphNodes = new List<LoadGraphNode>(pending.Count);
+            foreach (var kv in pending)
+                graphNodes.Add(new LoadGraphNode(kv.Key, kv.Key.Name, LoadGraphNodeKind.Initializer, kv.Value.Dependencies, LoadNodeWeights.Resolve(kv.Value.ImplementationType)));
+            var layers = LoadGraphTopology.BuildLayers(graphNodes);
+
+            var weighted = progressNotifier as IWeightedInitializationProgressNotifier;
+            double totalWeight = 0;
+            foreach (var layer in layers)
+                foreach (var node in layer)
+                    totalWeight += node.Weight;
+            weighted?.OnScopeStarted(scope, totalWeight, totalServices);
+
+            var completedWeightAccumulator = 0d;
+
+            foreach (var layer in layers)
             {
                 throwIfStale(generation, cancellationToken);
-                var ready = CollectReadyServices(pending, initializedServices);
-                if (ready.Count == 0)
-                    ThrowIfDependencyCycle(scope, pending);
+                var ready = new List<ServiceInitializerBinding>(layer.Count);
+                foreach (var node in layer)
+                    if (pending.TryGetValue(node.Key, out var binding))
+                        ready.Add(binding);
 
                 foreach (var init in ready)
+                {
                     progressNotifier.OnServiceStarted(scope, init.ServiceType, completedServices, totalServices);
+                    if (weighted != null)
+                    {
+                        var weight = LoadNodeWeights.Resolve(init.ImplementationType);
+                        weighted.OnServiceStarted(scope, init.ServiceType, completedWeightAccumulator, totalWeight);
+                    }
+                }
 
                 var unique = DedupeByImplementationType(ready);
                 await RunWaveAsync(scope, context, unique, progressNotifier, completedServices, totalServices, cancellationToken).ConfigureAwait(false);
@@ -201,42 +226,15 @@ namespace RuntimeFlow.Contexts
                     pending.Remove(init.ServiceType);
                     initializedServices.Add(init.ServiceType);
                     completedServices++;
+                    var weight = LoadNodeWeights.Resolve(init.ImplementationType);
+                    completedWeightAccumulator += weight;
                     progressNotifier.OnServiceCompleted(scope, init.ServiceType, completedServices, totalServices);
+                    weighted?.OnServiceCompleted(scope, init.ServiceType, completedWeightAccumulator, totalWeight);
                 }
             }
 
             await StartVContainerStartablesAsync(plan.EntryPoints, cancellationToken).ConfigureAwait(false);
             return totalServices;
-        }
-
-        private static List<ServiceInitializerBinding> CollectReadyServices(
-            IReadOnlyDictionary<Type, ServiceInitializerBinding> pending,
-            ISet<Type> initializedServices)
-        {
-            var ready = new List<ServiceInitializerBinding>();
-            foreach (var kv in pending.Values)
-            {
-                var allReady = true;
-                foreach (var dep in kv.Dependencies)
-                    if (!IsDependencyReady(dep, pending, initializedServices)) { allReady = false; break; }
-                if (allReady) ready.Add(kv);
-            }
-            return ready;
-        }
-
-        private static void ThrowIfDependencyCycle(GameContextType scope, IReadOnlyDictionary<Type, ServiceInitializerBinding> pending)
-        {
-            var graph = new Dictionary<Type, IReadOnlyCollection<Type>>(pending.Count);
-            foreach (var kv in pending)
-            {
-                var deps = new List<Type>();
-                foreach (var d in kv.Value.Dependencies) if (pending.ContainsKey(d)) deps.Add(d);
-                graph[kv.Key] = deps;
-            }
-            var cyclePath = DependencyCycleDetector.DetectCyclePath(graph);
-            var unresolved = string.Join(", ", pending.Keys.Select(t => t.Name));
-            var cycleDesc = cyclePath != null ? $"Cycle: {string.Join(" → ", cyclePath.Select(t => t.Name))}. " : string.Empty;
-            throw new InvalidOperationException($"Initialization dependency cycle detected in scope {scope}. {cycleDesc}Remaining services: {unresolved}");
         }
 
         private static List<ServiceInitializerBinding> DedupeByImplementationType(List<ServiceInitializerBinding> ready)
@@ -423,7 +421,6 @@ namespace RuntimeFlow.Contexts
         }
 
         private static string NormalizeName(string? name, Type t) => string.IsNullOrWhiteSpace(name) ? t.Name : name.Trim();
-        private static bool IsDependencyReady(Type dep, IReadOnlyDictionary<Type, ServiceInitializerBinding> pending, ISet<Type> init) => !pending.ContainsKey(dep) && init.Contains(dep);
 
         private async Task ExecuteInitializerWithHealthAsync(GameContextType scope, GameContext context, ServiceInitializerBinding init, IInitializationProgressNotifier notifier, int completed, int total, CancellationToken ct)
         {
