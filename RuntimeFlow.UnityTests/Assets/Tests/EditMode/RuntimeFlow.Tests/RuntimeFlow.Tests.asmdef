@@ -6,7 +6,9 @@
         "RuntimeFlow.Testing",
         "RuntimeFlow.Editor",
         "RuntimeFlow.Demo",
-        "VContainer"
+        "VContainer",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
     ],
     "includePlatforms": [
         "Editor"
@@ -15,13 +17,13 @@
     "allowUnsafeCode": false,
     "overrideReferences": true,
     "precompiledReferences": [
-        "Microsoft.Extensions.Logging.Abstractions.dll"
+        "Microsoft.Extensions.Logging.Abstractions.dll",
+        "nunit.framework.dll"
     ],
     "autoReferenced": false,
-    "defineConstraints": [],
-    "versionDefines": [],
-    "optionalUnityReferences": [
-        "TestAssemblies"
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
     ],
+    "versionDefines": [],
     "noEngineReferences": false
 }

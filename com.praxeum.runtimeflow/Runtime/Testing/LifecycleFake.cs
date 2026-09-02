@@ -8,19 +8,17 @@ using System.Threading.Tasks;
 namespace RuntimeFlow.Testing
 {
     /// <summary>
-    /// Builds a dispatch-proxy fake around a stub that participates in the RuntimeFlow
-    /// lifecycle: initialization attempts can fail N times before succeeding, disposal can
-    /// be observed or made to fail, and every intercepted call is recorded.
-    ///
-    /// Declare a test interface that combines your service contract with the lifecycle
-    /// contracts you care about (the standard RuntimeFlow test idiom), then:
+    /// Builds a dispatch-proxy fake around an optional stub that participates in the RuntimeFlow
+    /// lifecycle: initialization can fail N times, be delayed, or hang until cancelled, disposal can be
+    /// observed or made to fail, and every intercepted call is recorded.
     /// <code>
-    /// interface IFakePayments : IPaymentsService, ISessionInitializableService, IDisposable { }
+    /// interface IFakePayments : IPaymentsService, IAsyncInitializable, IAsyncDisposable { }
     /// var fake = LifecycleFake.Of&lt;IFakePayments&gt;(new StubPayments(), cfg =&gt; cfg.FailInitializeAttempts(2));
     /// </code>
     /// </summary>
     public static class LifecycleFake
     {
+        /// <summary>Creates a fake implementing <typeparamref name="TService"/>, optionally backed by a stub.</summary>
         public static TService Of<TService>(TService? stub = null, Action<FakeBehavior>? configure = null)
             where TService : class
             => OfHandle(stub, configure).Service;
@@ -40,27 +38,33 @@ namespace RuntimeFlow.Testing
         }
     }
 
+    /// <summary>A fake and the log of everything that was called on it.</summary>
     public sealed class LifecycleFakeHandle<TService> where TService : class
     {
-        public TService Service { get; }
-        public FakeInvocationLog Log { get; }
-
         internal LifecycleFakeHandle(TService service, FakeInvocationLog log)
         {
             Service = service;
             Log = log;
         }
 
+        /// <summary>The proxy, ready to be registered in a container.</summary>
+        public TService Service { get; }
+
+        /// <summary>Every intercepted call, in order.</summary>
+        public FakeInvocationLog Log { get; }
+
+        /// <summary>Lets a handle be used wherever the service interface is expected.</summary>
         public static implicit operator TService(LifecycleFakeHandle<TService> handle) => handle.Service;
     }
 
-    /// <summary>Failure/observation configuration for a lifecycle fake.</summary>
+    /// <summary>Failure, delay and observation configuration for a lifecycle fake.</summary>
     public sealed class FakeBehavior
     {
         internal int InitFailCount { get; private set; }
         internal Func<int, Exception>? InitializeExceptionFactory { get; private set; }
         internal int DisposeFailCount { get; private set; }
         internal TimeSpan InitDelay { get; private set; }
+        internal bool Hangs { get; private set; }
 
         /// <summary>The first N InitializeAsync attempts fail; attempt N+1 succeeds.</summary>
         public FakeBehavior FailInitializeAttempts(int attempts, Func<int, Exception>? exceptionFactory = null)
@@ -80,11 +84,18 @@ namespace RuntimeFlow.Testing
             return this;
         }
 
-        /// <summary>Adds a delay to every InitializeAsync attempt (uses Task.Delay; keep tiny in tests).</summary>
-        public FakeBehavior WithInitializeDelay(TimeSpan delay)
+        /// <summary>Delays every InitializeAsync attempt; keep it tiny in tests.</summary>
+        public FakeBehavior DelayInitialize(TimeSpan delay)
         {
             if (delay < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(delay));
             InitDelay = delay;
+            return this;
+        }
+
+        /// <summary>InitializeAsync never returns until its cancellation token fires.</summary>
+        public FakeBehavior Hang()
+        {
+            Hangs = true;
             return this;
         }
     }
@@ -92,34 +103,33 @@ namespace RuntimeFlow.Testing
     /// <summary>Call log of a lifecycle fake, exposed for assertions.</summary>
     public sealed class FakeInvocationLog
     {
-        private readonly List<string> _entries = new();
+        private readonly List<string> _entries = new List<string>();
 
+        /// <summary>Recorded calls in order; initialization entries look like "initialize#1".</summary>
         public IReadOnlyList<string> Invocations => _entries;
 
+        /// <summary>True when a method with that name (or an attempt-numbered variant) was called.</summary>
         public bool WasInvoked(string methodName)
-        {
-            lock (_entries) return _entries.Exists(entry => entry == methodName || entry.StartsWith(methodName + "#", StringComparison.Ordinal));
-        }
+            => _entries.Exists(entry => entry == methodName || entry.StartsWith(methodName + "#", StringComparison.Ordinal));
 
-        internal void Record(string entry)
-        {
-            lock (_entries) _entries.Add(entry);
-        }
+        internal void Record(string entry) => _entries.Add(entry);
     }
 
     internal sealed class FakeState
     {
         public object? Stub { get; set; }
-        public FakeBehavior Behavior { get; } = new();
-        public FakeInvocationLog Log { get; } = new();
+        public FakeBehavior Behavior { get; } = new FakeBehavior();
+        public FakeInvocationLog Log { get; } = new FakeInvocationLog();
         public int InitializeAttempts;
         public int DisposeAttempts;
     }
 
+    /// <summary>The DispatchProxy base that implements the fake's behaviour; created by <see cref="LifecycleFake"/>.</summary>
     public class FakeDispatchProxy : DispatchProxy
     {
-        private readonly FakeState _state = new();
+        private readonly FakeState _state = new FakeState();
 
+        /// <summary>Binds the optional stub and the configured behaviour to this proxy.</summary>
         public FakeDispatchProxy Bind(object? stub, FakeBehavior behavior)
         {
             _state.Stub = stub;
@@ -127,19 +137,10 @@ namespace RuntimeFlow.Testing
             return this;
         }
 
-        // Behavior is immutable after configure; copy fields onto the state's own behavior.
-        private void Apply(FakeBehavior behavior)
-        {
-            if (behavior.InitFailCount > 0)
-                _state.Behavior.FailInitializeAttempts(behavior.InitFailCount, behavior.InitializeExceptionFactory);
-            if (behavior.DisposeFailCount > 0)
-                _state.Behavior.FailDisposeAttempts(behavior.DisposeFailCount);
-            if (behavior.InitDelay > TimeSpan.Zero)
-                _state.Behavior.WithInitializeDelay(behavior.InitDelay);
-        }
-
+        /// <summary>The proxy's invocation log.</summary>
         public FakeInvocationLog Log => _state.Log;
 
+        /// <inheritdoc />
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
         {
             if (targetMethod == null) throw new ArgumentNullException(nameof(targetMethod));
@@ -157,34 +158,53 @@ namespace RuntimeFlow.Testing
             return InvokeStub(targetMethod, args);
         }
 
-        private static bool IsInitializeAsync(MethodInfo method)
-            => method.Name == "InitializeAsync"
-               && method.ReturnType == typeof(Task)
-               && method.GetParameters().Length == 1
-               && method.GetParameters()[0].ParameterType == typeof(CancellationToken);
-
-        private object? HandleInitializeAsync(object?[]? args)
+        private void Apply(FakeBehavior behavior)
         {
-            var attempt = Interlocked.Increment(ref _state.InitializeAttempts);
-            var cancellationToken = args is { Length: > 0 } ? (CancellationToken)args[0]! : default;
-            _state.Log.Record($"initialize#{attempt}");
-            return RunInitializeAsync(cancellationToken);
+            if (behavior.InitFailCount > 0)
+                _state.Behavior.FailInitializeAttempts(behavior.InitFailCount, behavior.InitializeExceptionFactory);
+            if (behavior.DisposeFailCount > 0)
+                _state.Behavior.FailDisposeAttempts(behavior.DisposeFailCount);
+            if (behavior.InitDelay > TimeSpan.Zero)
+                _state.Behavior.DelayInitialize(behavior.InitDelay);
+            if (behavior.Hangs)
+                _state.Behavior.Hang();
         }
 
-        private async Task RunInitializeAsync(CancellationToken cancellationToken)
+        private static bool IsInitializeAsync(MethodInfo method)
+        {
+            if (method.Name != "InitializeAsync" || method.ReturnType != typeof(Task)) return false;
+            var parameters = method.GetParameters();
+            return parameters.Length == 2
+                   && parameters[0].ParameterType == typeof(InitContext)
+                   && parameters[1].ParameterType == typeof(CancellationToken);
+        }
+
+        private object HandleInitializeAsync(object?[]? args)
+        {
+            var attempt = ++_state.InitializeAttempts;
+            var context = args is { Length: > 0 } ? args[0] as InitContext : null;
+            var cancellationToken = args is { Length: > 1 } ? (CancellationToken)args[1]! : default;
+            _state.Log.Record($"initialize#{attempt}");
+            return RunInitializeAsync(context, cancellationToken);
+        }
+
+        private async Task RunInitializeAsync(InitContext? context, CancellationToken cancellationToken)
         {
             if (_state.Behavior.InitDelay > TimeSpan.Zero)
-                await Task.Delay(_state.Behavior.InitDelay, cancellationToken).ConfigureAwait(false);
+                await Task.Delay(_state.Behavior.InitDelay, cancellationToken);
+
+            if (_state.Behavior.Hangs)
+                await Task.Delay(Timeout.Infinite, cancellationToken);
 
             if (_state.InitializeAttempts <= _state.Behavior.InitFailCount)
                 throw _state.Behavior.InitializeExceptionFactory!(_state.InitializeAttempts);
 
-            await InvokeStubLifecycleAsync("InitializeAsync", cancellationToken).ConfigureAwait(false);
+            await InvokeStubInitializeAsync(context, cancellationToken);
         }
 
-        private object? HandleValueTaskDispose()
+        private object HandleValueTaskDispose()
         {
-            var attempt = Interlocked.Increment(ref _state.DisposeAttempts);
+            var attempt = ++_state.DisposeAttempts;
             _state.Log.Record($"disposeAsync#{attempt}");
             if (attempt <= _state.Behavior.DisposeFailCount)
                 throw new InvalidOperationException($"LifecycleFake: dispose attempt {attempt} configured to fail.");
@@ -197,15 +217,14 @@ namespace RuntimeFlow.Testing
             return InvokeStub(targetMethod, Array.Empty<object?>());
         }
 
-        private async Task InvokeStubLifecycleAsync(string methodName, CancellationToken cancellationToken)
+        private async Task InvokeStubInitializeAsync(InitContext? context, CancellationToken cancellationToken)
         {
             var stub = _state.Stub;
             if (stub == null) return;
-            var method = stub.GetType().GetMethod(methodName, new[] { typeof(CancellationToken) });
+            var method = stub.GetType().GetMethod("InitializeAsync", new[] { typeof(InitContext), typeof(CancellationToken) });
             if (method == null) return;
-            var result = method.Invoke(stub, new object?[] { cancellationToken });
-            if (result is Task task)
-                await task.ConfigureAwait(false);
+            if (method.Invoke(stub, new object?[] { context, cancellationToken }) is Task task)
+                await task;
         }
 
         private object? InvokeStub(MethodInfo targetMethod, object?[]? args)
@@ -214,7 +233,7 @@ namespace RuntimeFlow.Testing
             if (stub == null)
             {
                 var returnType = targetMethod.ReturnType;
-                return returnType.IsValueType ? Activator.CreateInstance(returnType) : null;
+                return returnType.IsValueType && returnType != typeof(void) ? Activator.CreateInstance(returnType) : null;
             }
 
             try
