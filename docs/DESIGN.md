@@ -99,7 +99,11 @@ Phases are optional and off by default (`RuntimeFlowOptions.Phases` is empty). W
 phase gets a synthetic barrier node: barrier *i* depends on every service of phase *i* and on barrier
 *i-1*; every service of phase *i* depends on barrier *i-1*. Empty phases chain harmlessly.
 
-A service without `[Init(Phase = …)]` lands in the last phase, or in `RuntimeFlowOptions.DefaultPhase`
+Phases belong to the scopes that use them. `RuntimeFlowOptions.Phases` is shared by every scope, but a
+scope where no service carries `[Init(Phase = …)]` gets no barriers at all and its services report
+`Phase == null` — a Global container of unlabelled services is not swept into the last phase of a list
+the session declares. From the first labelled service of a scope on, that scope has barriers and a
+service without `[Init(Phase = …)]` lands in the last phase, or in `RuntimeFlowOptions.DefaultPhase`
 when one is set. This is deliberate: a forgotten label makes a service *late*, which is at worst slow,
 rather than *early*, which is a race.
 
@@ -143,7 +147,8 @@ initialization is cancelled by the next restart.
 | Event | Behaviour |
 |---|---|
 | Required service throws | Node `Failed`; the run token is cancelled; in-flight services are awaited up to `CancellationGrace` (5 s) so their failures are collected too; then one `RuntimeFlowException`. |
-| Optional service throws | Node `Degraded`, warning logged, dependents start anyway and see the name in `InitContext.DegradedServices`. |
+| Optional service throws | Node `Degraded`, warning logged, dependents start anyway and see the name in `InitContext.DegradedServices`. The name also travels down: a parent-scope node that degraded stays `Degraded` as an external node of every child scope, so the session's services and its `Describe()` see the global degradation. `StartupResult.Degraded` stays per scope for `ScopeRun.RunAsync`; `RuntimeFlowHost.StartAsync`/`RestartAsync` return the union, global names first. |
+| Required service fails behind a degraded one | Same failure handling, plus an annotation: every direct dependency of the failing service that is `Degraded` — own scope or parent — is named in the message as ` (after upstream X degraded)`. |
 | Timeout | Only from `[Init(TimeoutSeconds = n)]`, scaled by `TimeoutMultiplier` (`0` disables all timeouts). There is no default deadline — 0.x had a self-learning 5-second watchdog that tore down bundle downloads and produced restart storms. User-gated services are exempt. |
 | Stall | `StallWarningAfter` (10 s) of no service start, completion or `ReportProgress` call produces a warning naming what is running, what is awaiting the player and what is blocked. It never cancels anything. |
 | `Halt` | First call wins; run state `Halted`; unstarted nodes skipped, in-flight ones cancelled; the result is `StartupOutcome.Halted` and nothing throws. |
@@ -157,9 +162,12 @@ Initialization of scope 'session' failed: RemoteCatalog threw InvalidOperationEx
 phase 'content'. Completed (7): Config, Auth, …; unfinished (4): QuestsWarmup (running 3.1s),
 StartSession (blocked on RemoteCatalog), …. See InnerException.
 
+Initialization of scope 'session' failed: Profile threw NullReferenceException after 0.1s in phase
+'content' (after upstream Auth degraded). Completed (7): …; unfinished (4): …. See InnerException.
+
 Initialization of scope 'session' failed: 2 services failed — RemoteCatalog (InvalidOperationException
-after 3.2s), Telemetry (IOException after 3.3s). Completed (7): …; unfinished (4): ….
-InnerException is an AggregateException with the original exceptions.
+after 3.2s), Profile (NullReferenceException after 0.1s, after upstream Auth degraded). Completed (7):
+…; unfinished (4): …. InnerException is an AggregateException with the original exceptions.
 
 [RuntimeFlow] session: Telemetry is optional and failed after 1.2s (HttpRequestException: host
 unreachable); continuing degraded. Dependents: Analytics.
@@ -246,8 +254,8 @@ session and the session before the global run; a global container supplied throu
 
 - **`Describe()`** renders the graph as an aligned table: index, phase, name, flags
   (`required|optional`, `user-gated`, `timeout Ns`, `weight N`), one indented row per edge with its
-  origin (and `[global, initialized]` for external targets), the `lazy:` parameters, and a final line
-  listing the services inherited from parent scopes. It answers "why did this run in that order" without
+  origin (and `[global, initialized]` or `[global, degraded]` for external targets), the `lazy:`
+  parameters, and a final line listing the services inherited from parent scopes. It answers "why did this run in that order" without
   a debugger, and it is snapshot-tested.
 - **`GetStatus()`** returns immutable `RuntimeFlowStatus`/`ServiceStatus` snapshots: state, phase,
   elapsed (ticking while running), reported sub-progress, weight, dependencies, `WaitingOn`, error,

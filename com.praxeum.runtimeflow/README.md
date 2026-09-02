@@ -60,7 +60,8 @@ var result = await host.StartAsync();
 
 **Services.** A service is any VContainer registration that exposes `IAsyncInitializable` and is
 `Lifetime.Singleton`. Discovery is scope-local: each scope initializes only its own registrations;
-services inherited from parent scopes are treated as already initialized externals. A non-singleton
+services inherited from parent scopes are treated as already initialized externals (one that degraded
+there stays degraded here). A non-singleton
 registration is a graph error, because a scoped or transient service would be re-created uninitialized
 in a child scope.
 
@@ -77,16 +78,19 @@ a cycle, and `Describe()` lists them as `lazy:` rows. `IObjectResolver`, `IScope
 `IContainerBuilder`, `RuntimeFlowHost`, `ScopeRun`, `RuntimeFlowOptions`, `InitContext`, `ILogger`,
 `object`, `string`, primitives and enums are ignored as parameters.
 
-A service with no `[Init(Phase = …)]` lands in the **last** phase (or in
-`RuntimeFlowOptions.DefaultPhase` when you set one). A forgotten label therefore makes a service late,
-never early. Declaring a phase that is not in the list — or any phase at all while the list is empty —
-is a graph error.
+Phases apply per scope, to the scopes that use them: as soon as **one** service of a scope carries
+`[Init(Phase = …)]`, that scope gets the barriers and every unmarked service of it lands in the **last**
+phase (or in `RuntimeFlowOptions.DefaultPhase` when you set one) — a forgotten label makes a service
+late, never early. A scope where **no** service declares a phase runs without barriers and its services
+report `Phase == null`, so a Global container of unlabelled services is not swept into the last phase of
+a list the session declares. Declaring a phase that is not in the list — or any phase at all while the
+list is empty — is a graph error.
 
 **Policies** come from `[Init]` on the service class (read with inheritance):
 
 | Member | Effect |
 |---|---|
-| `Optional` | A failure degrades instead of failing the run: warning, state `Degraded`, dependents still start and see the name in `InitContext.DegradedServices`. |
+| `Optional` | A failure degrades instead of failing the run: warning, state `Degraded`, dependents still start and see the name in `InitContext.DegradedServices` — including dependents in child scopes, since a parent-scope service that degraded stays `Degraded` there. |
 | `UserGated` | The service is waiting for the player: reported as `AwaitingPlayer`, exempt from timeouts and from the stall warning (a run with only gated services in flight logs an informational line instead). Combining it with `TimeoutSeconds` is a graph error. |
 | `TimeoutSeconds` | Deadline in seconds, multiplied by `RuntimeFlowOptions.TimeoutMultiplier` (`1.0` by default, `0` disables every timeout). There is no default timeout: a service without the attribute is never killed. |
 | `Weight` | Relative share of `RuntimeFlowStatus.Percent`; `1.0` by default, `0` removes the service from the progress bar. |
@@ -122,7 +126,8 @@ and teardown problems.
 | Situation | Outcome | Message shape |
 |---|---|---|
 | Required service throws | Run fails. Token cancelled for everyone; in-flight services are awaited up to `RuntimeFlowOptions.CancellationGrace`; **all** failures collected, then one `RuntimeFlowException` (`Scope`, `Service`, `Phase`, `Elapsed`, `Completed`, `Unfinished`, `Failures`; `InnerException` is the original, or an `AggregateException` when two or more failed). | `Initialization of scope 'session' failed: RemoteCatalog threw InvalidOperationException after 3.2s in phase 'content'. Completed (7): Config, Auth, …; unfinished (4): QuestsWarmup (running 3.1s), StartSession (blocked on RemoteCatalog), …. See InnerException.` |
-| Optional service throws | State `Degraded`, run continues, dependents start. | `Telemetry is optional and failed after 1.2s (HttpRequestException: host unreachable); continuing degraded. Dependents: Analytics.` |
+| Optional service throws | State `Degraded`, run continues, dependents start. The name reaches `InitContext.DegradedServices` of every later service, this scope's and its children's, and `StartupResult.Degraded` — per scope from `ScopeRun.RunAsync`, both scopes (global first) from `RuntimeFlowHost.StartAsync`/`RestartAsync`. | `Telemetry is optional and failed after 1.2s (HttpRequestException: host unreachable); continuing degraded. Dependents: Analytics.` |
+| Required service fails behind a degraded one | Same as above, plus the likely cause in the message: every direct dependency that degraded, own scope or parent, is named. | `Initialization of scope 'session' failed: Profile threw NullReferenceException after 0.1s in phase 'content' (after upstream Auth degraded). …` |
 | Timeout elapses | The service's token is cancelled and it fails with a `TimeoutException` — required ones bring the run down, optional ones degrade. | `RemoteCatalog did not complete within 30.0s (limit 30s from [Init(TimeoutSeconds = 30)], multiplier 1.0).` |
 | User-gated service waits | Nothing happens: no timeout, no stall warning, `AwaitingPlayer` in the status. | `awaiting player: GdprConsent (12.4s).` (informational) |
 | No progress for `StallWarningAfter` (10 s) | Warning only, never a kill. Any `ReportProgress` call or service completion resets the timer. | `no progress for 10.0s. Running: RemoteCatalog (12.4s). Awaiting player: GdprConsent (12.4s). Blocked: StartSession (waits for RemoteCatalog) and 9 more.` |
@@ -164,7 +169,7 @@ scope 'session' — 3 services, phases: platform > content
       lazy: Func<IAnalytics> analytics
  3 [content]  Telemetry      optional, timeout 10s, weight 1
       after phase 'platform'  (phase barrier)
-external (initialized in parent scopes): GlobalConfig [global]
+external (from parent scopes): GlobalConfig [global, initialized]
 ```
 
 ## Restart

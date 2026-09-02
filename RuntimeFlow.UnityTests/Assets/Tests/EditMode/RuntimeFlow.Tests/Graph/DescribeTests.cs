@@ -91,7 +91,7 @@ namespace RuntimeFlow.Tests.Graph
                 "scope 'session' — 1 services",
                 " 1 [-] SessionUser  required, weight 1",
                 "      after GlobalConfig  (ctor: GlobalConfig config) [global, initialized]",
-                "external (initialized in parent scopes): GlobalConfig [global]",
+                "external (from parent scopes): GlobalConfig [global, initialized]",
                 ""
             })), describe);
         }

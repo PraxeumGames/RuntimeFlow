@@ -40,6 +40,7 @@ namespace RuntimeFlow
         private readonly Stopwatch _uptime = Stopwatch.StartNew();
         private readonly QuitHook _quitHook;
 
+        private IReadOnlyList<string> _globalDegraded = Array.Empty<string>();
         private IObjectResolver? _global;
         private IScopedObjectResolver? _session;
         private ScopeRun? _globalRun;
@@ -127,7 +128,10 @@ namespace RuntimeFlow
         /// creates the session scope and runs its graph. Calling it again returns the current run.
         /// </summary>
         /// <param name="cancellationToken">Cancels both runs.</param>
-        /// <returns>The result of the last run in the chain: a restart requested mid-startup redirects this awaiter.</returns>
+        /// <returns>
+        /// The result of the last run in the chain — a restart requested mid-startup redirects this awaiter.
+        /// <see cref="StartupResult.Degraded"/> covers both scopes, global services first.
+        /// </returns>
         public Task<StartupResult> StartAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -145,7 +149,9 @@ namespace RuntimeFlow
         /// </summary>
         /// <param name="reason">Short machine-readable reason, logged and listed in budget errors.</param>
         /// <param name="cancellationToken">Cancels the new session run.</param>
-        /// <returns>The result of the last run in the chain.</returns>
+        /// <returns>
+        /// The result of the last run in the chain; <see cref="StartupResult.Degraded"/> covers both scopes.
+        /// </returns>
         /// <exception cref="RuntimeFlowException">More restarts than <see cref="RuntimeFlowOptions.MaxRestartsPerWindow"/>.</exception>
         public Task<StartupResult> RestartAsync(string reason, CancellationToken cancellationToken = default)
         {
@@ -322,7 +328,8 @@ namespace RuntimeFlow
                     }
 
                     _globalRun = ScopeRun.Create(_global!, "global", _options, null, _ownsGlobal);
-                    await _globalRun.RunAsync(false, 0, cancellationToken);
+                    var globalResult = await _globalRun.RunAsync(false, 0, cancellationToken);
+                    _globalDegraded = globalResult.Degraded;
                 }
                 catch (Exception)
                 {
@@ -386,7 +393,22 @@ namespace RuntimeFlow
                 _startedGeneration = Generation;
             }
 
-            return await run;
+            return WithGlobalDegraded(await run);
+        }
+
+        /// <summary>
+        /// Widens the session result to both scopes: <see cref="StartupResult.Degraded"/> lists the global
+        /// services that degraded first, then the session's own. Everything else stays the session run's.
+        /// </summary>
+        private StartupResult WithGlobalDegraded(StartupResult session)
+        {
+            if (_globalDegraded.Count == 0) return session;
+
+            var degraded = new List<string>(_globalDegraded.Count + session.Degraded.Count);
+            degraded.AddRange(_globalDegraded);
+            degraded.AddRange(session.Degraded);
+            return new StartupResult(session.Outcome, session.Scope, session.Elapsed, degraded,
+                session.HaltReason, session.HaltedBy);
         }
 
         private void Compose(IContainerBuilder builder, Action<IContainerBuilder> installer)

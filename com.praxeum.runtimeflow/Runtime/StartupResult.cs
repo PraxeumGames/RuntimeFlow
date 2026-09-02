@@ -41,7 +41,11 @@ namespace RuntimeFlow
         /// <summary>Wall-clock duration of the run.</summary>
         public TimeSpan Elapsed { get; }
 
-        /// <summary>Names of optional services that failed; the run continued without them.</summary>
+        /// <summary>
+        /// Names of optional services that failed; the run continued without them. A result of
+        /// <see cref="ScopeRun.RunAsync"/> lists that scope only; one of <see cref="RuntimeFlowHost.StartAsync"/>
+        /// or <see cref="RuntimeFlowHost.RestartAsync"/> lists both scopes, global services first.
+        /// </summary>
         public IReadOnlyList<string> Degraded { get; }
 
         /// <summary>Reason passed to <see cref="InitContext.Halt"/>, or null when the run completed.</summary>

@@ -55,11 +55,11 @@ namespace RuntimeFlow.Internal
             RuntimeFlowOptions options,
             IReadOnlyList<ServiceGraph>? parents)
         {
-            var phases = options.Phases ?? Array.Empty<string>();
-            if (options.DefaultPhase != null && !Contains(phases, options.DefaultPhase))
+            var declaredPhases = options.Phases ?? Array.Empty<string>();
+            if (options.DefaultPhase != null && !Contains(declaredPhases, options.DefaultPhase))
             {
                 throw new InitGraphException(name,
-                    $"RuntimeFlowOptions.DefaultPhase is '{options.DefaultPhase}', but RuntimeFlowOptions.Phases is {Bracket(phases)}.");
+                    $"RuntimeFlowOptions.DefaultPhase is '{options.DefaultPhase}', but RuntimeFlowOptions.Phases is {Bracket(declaredPhases)}.");
             }
 
             var registrations = LocalRegistrations(scope, name);
@@ -107,6 +107,11 @@ namespace RuntimeFlow.Internal
             var all = new List<ServiceNode>(services.Count + externals.Count);
             all.AddRange(services);
             all.AddRange(externals);
+
+            // Phases are declared globally but belong to the scopes that actually label a service: a scope
+            // whose services carry no [Init(Phase = …)] runs without barriers instead of being swept into
+            // the last phase. The "unmarked lands in the last phase" rule applies from the first label on.
+            var phases = AnyPhaseDeclared(services, sources) ? declaredPhases : Array.Empty<string>();
 
             for (var i = 0; i < services.Count; i++)
                 ReadAttributes(services[i], sources[i], name, phases, options.DefaultPhase);
@@ -156,7 +161,7 @@ namespace RuntimeFlow.Internal
                         externals.Add(new ServiceNode(index--, NodeKind.External, node.Name, node.Type, parent.Scope)
                         {
                             Instance = node.Instance,
-                            State = ServiceState.Completed
+                            State = ExternalState(node)
                         });
                     }
                 }
@@ -181,6 +186,14 @@ namespace RuntimeFlow.Internal
             }
             return externals;
         }
+
+        /// <summary>
+        /// State an external node inherits from its parent-scope node: a service that degraded there stays
+        /// degraded here, so this scope's services see it in <see cref="InitContext.DegradedServices"/> and
+        /// in <c>Describe()</c>. Everything else counts as initialized — externals are never scheduled.
+        /// </summary>
+        private static ServiceState ExternalState(ServiceNode node)
+            => node.State == ServiceState.Degraded ? ServiceState.Degraded : ServiceState.Completed;
 
         private static void Disambiguate(List<ServiceNode> services, List<ServiceNode> externals)
         {
@@ -216,6 +229,19 @@ namespace RuntimeFlow.Internal
             }
         }
 
+        private static bool AnyPhaseDeclared(List<ServiceNode> services, List<Type> sources)
+        {
+            for (var i = 0; i < services.Count; i++)
+            {
+                if (InitAttributeOf(services[i], sources[i])?.Phase != null) return true;
+            }
+            return false;
+        }
+
+        private static InitAttribute? InitAttributeOf(ServiceNode node, Type registeredType)
+            => node.Type.GetCustomAttribute<InitAttribute>(true)
+               ?? registeredType.GetCustomAttribute<InitAttribute>(true);
+
         private static void ReadAttributes(
             ServiceNode node,
             Type registeredType,
@@ -223,8 +249,7 @@ namespace RuntimeFlow.Internal
             IReadOnlyList<string> phases,
             string? defaultPhase)
         {
-            var attribute = node.Type.GetCustomAttribute<InitAttribute>(true)
-                            ?? registeredType.GetCustomAttribute<InitAttribute>(true);
+            var attribute = InitAttributeOf(node, registeredType);
             if (attribute != null)
             {
                 node.Optional = attribute.Optional;

@@ -47,7 +47,7 @@ namespace RuntimeFlow.Internal
                     text.Append("      after ").Append(edge.Target.DisplayName.PadRight(afterWidth))
                         .Append("  (").Append(edge.Origin).Append(')');
                     if (edge.Target.Kind == NodeKind.External)
-                        text.Append(" [").Append(edge.Target.Scope).Append(", initialized]");
+                        text.Append(' ').Append(ExternalTag(edge.Target));
                     text.AppendLine();
                 }
 
@@ -57,13 +57,17 @@ namespace RuntimeFlow.Internal
 
             if (graph.Externals.Count > 0)
             {
-                text.Append("external (initialized in parent scopes): ")
-                    .Append(string.Join(", ", graph.Externals.Select(n => $"{n.Name} [{n.Scope}]")))
+                text.Append("external (from parent scopes): ")
+                    .Append(string.Join(", ", graph.Externals.Select(n => $"{n.Name} {ExternalTag(n)}")))
                     .AppendLine();
             }
 
             return text.ToString();
         }
+
+        /// <summary>Scope and state of an external node, for example "[global, initialized]" or "[global, degraded]".</summary>
+        private static string ExternalTag(ServiceNode node)
+            => "[" + node.Scope + ", " + (node.State == ServiceState.Degraded ? "degraded" : "initialized") + "]";
 
         private static string PhaseCell(ServiceNode node) => node.Phase == null ? "[-]" : "[" + node.Phase + "]";
 

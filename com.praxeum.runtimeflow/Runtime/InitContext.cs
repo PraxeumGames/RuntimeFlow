@@ -38,7 +38,10 @@ namespace RuntimeFlow
         /// <summary>Zero for the first run of a scope, incremented by one per restart.</summary>
         public int Generation { get; }
 
-        /// <summary>Names of optional services that have failed so far in this run; a live view.</summary>
+        /// <summary>
+        /// Names of optional services that have degraded, as a live view: the ones that failed so far in
+        /// this run plus the ones a parent scope (global, typically) already reported.
+        /// </summary>
         public IReadOnlyCollection<string> DegradedServices { get; }
 
         /// <summary>

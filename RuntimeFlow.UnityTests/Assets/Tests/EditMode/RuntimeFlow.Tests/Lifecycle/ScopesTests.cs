@@ -99,7 +99,7 @@ namespace RuntimeFlow.Tests.Lifecycle
                 "the parent service is an ordering edge, not a scheduled node");
             Assert.That(_recorder.Initialized,
                 Is.EqualTo(new[] { nameof(SessionService), $"{nameof(ScreenService)}:lobby" }));
-            Assert.That(run.Describe(), Does.Contain("external (initialized in parent scopes)"));
+            Assert.That(run.Describe(), Does.Contain("external (from parent scopes)"));
             Assert.That(screen.Resolve<ScreenService>().Session, Is.SameAs(host.Session.Resolve<SessionService>()));
         }
 

@@ -136,5 +136,92 @@ namespace RuntimeFlow.Tests.Failure
             Assert.That(message, Is.Not.Null, _log.Dump());
             Assert.That(message, Does.EndWith("(1 services, 1 degraded: RemoteConfig)"));
         }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AFailureBehindADegradedUpstreamIsAnnotatedWithIt()
+        {
+            var container = TestScope.Build(b =>
+            {
+                b.Add<RemoteConfig>();
+                b.Add<Catalog>();
+            });
+            var config = container.Resolve<RemoteConfig>();
+            var catalog = container.Resolve<Catalog>();
+            catalog.AutoComplete = true;
+            catalog.Throw = new NullReferenceException("no catalog without a config");
+            var run = ScopeRun.Create(container, "session", _options);
+
+            var running = run.RunAsync();
+            await config.Started;
+            config.Fail(new TimeoutException("config timed out"));
+
+            var failure = await AsyncTestAssert.ThrowsAsync<RuntimeFlowException>(() => running);
+
+            Assert.That(failure.Message, Does.StartWith(
+                "Initialization of scope 'session' failed: Catalog threw NullReferenceException after "));
+            Assert.That(failure.Message, Does.Contain("s (after upstream RemoteConfig degraded). Completed (0): none;"));
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AFailureWithoutADegradedUpstreamIsNotAnnotated()
+        {
+            var container = TestScope.Build(b =>
+            {
+                b.Add<RemoteConfig>();
+                b.Add<Catalog>();
+            });
+            var config = container.Resolve<RemoteConfig>();
+            var catalog = container.Resolve<Catalog>();
+            catalog.AutoComplete = true;
+            catalog.Throw = new NullReferenceException("no catalog at all");
+            var run = ScopeRun.Create(container, "session", _options);
+
+            var running = run.RunAsync();
+            await config.Started;
+            config.Release();
+
+            var failure = await AsyncTestAssert.ThrowsAsync<RuntimeFlowException>(() => running);
+
+            Assert.That(failure.Message, Does.Contain("Catalog threw NullReferenceException after "));
+            Assert.That(failure.Message, Does.Not.Contain("after upstream"));
+            Assert.That(failure.Message, Does.Contain("Completed (1): RemoteConfig;"));
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task TheMultiFailureFormAnnotatesEachServiceThatFollowedTheDegradation()
+        {
+            var container = TestScope.Build(b =>
+            {
+                b.Add<RemoteConfig>();
+                b.Add<Catalog>();
+                b.Add<Profile>();
+            });
+            var config = container.Resolve<RemoteConfig>();
+            var catalog = container.Resolve<Catalog>();
+            var profile = container.Resolve<Profile>();
+            var run = ScopeRun.Create(container, "session", _options);
+
+            var running = run.RunAsync();
+            await config.Started;
+            config.Fail(new TimeoutException("config timed out"));
+            await catalog.Started;
+            await profile.Started;
+            catalog.Fail(new NullReferenceException("no catalog"));
+            profile.Fail(new NullReferenceException("no profile"));
+
+            var failure = await AsyncTestAssert.ThrowsAsync<RuntimeFlowException>(() => running);
+
+            Assert.That(failure.Message, Does.StartWith("Initialization of scope 'session' failed: 2 services failed — "));
+            Assert.That(failure.Message,
+                Does.Match(@"Catalog \(NullReferenceException after \d+\.\ds, after upstream RemoteConfig degraded\)"),
+                failure.Message);
+            Assert.That(failure.Message,
+                Does.Match(@"Profile \(NullReferenceException after \d+\.\ds, after upstream RemoteConfig degraded\)"),
+                failure.Message);
+            Assert.That(failure.Message, Does.Contain("InnerException is an AggregateException with the original exceptions."));
+        }
     }
 }

@@ -31,8 +31,8 @@ namespace RuntimeFlow.Internal
         private readonly List<ServiceNode> _completionOrder = new List<ServiceNode>();
         private readonly List<string> _degraded = new List<string>();
         private readonly ReadOnlyCollection<string> _degradedView;
-        private readonly List<(string Service, Exception Error, TimeSpan Elapsed)> _failures =
-            new List<(string, Exception, TimeSpan)>();
+        private readonly List<(ServiceNode Node, Exception Error, TimeSpan Elapsed)> _failures =
+            new List<(ServiceNode, Exception, TimeSpan)>();
         private readonly Stopwatch _clock = new Stopwatch();
 
         private CancellationTokenSource? _runCts;
@@ -45,6 +45,7 @@ namespace RuntimeFlow.Internal
         private bool _finished;
         private bool _isRestart;
         private int _generation;
+        private int _externalDegraded;
         private string? _haltReason;
         private string? _haltedBy;
         private string? _currentPhase;
@@ -89,6 +90,15 @@ namespace RuntimeFlow.Internal
             _runCts = new CancellationTokenSource();
             _clock.Restart();
             _lastProgress = TimeSpan.Zero;
+
+            // Services of parent scopes that degraded stay degraded here: seeding them makes them visible
+            // through InitContext.DegradedServices and annotates the failures they precede. They are not
+            // part of this run's StartupResult.Degraded, which stays per scope.
+            foreach (var external in _graph.Externals)
+            {
+                if (external.State == ServiceState.Degraded) _degraded.Add(external.Name);
+            }
+            _externalDegraded = _degraded.Count;
 
             _observers.RunStarted(isRestart);
             _logger.Info(StartMessage(isRestart));
@@ -324,7 +334,7 @@ namespace RuntimeFlow.Internal
             }
 
             node.State = ServiceState.Failed;
-            _failures.Add((node.Name, error, elapsed));
+            _failures.Add((node, error, elapsed));
             _observers.ServiceFailed(Snapshot(node), error);
             BeginStop(StopKind.Failure);
         }
@@ -442,7 +452,7 @@ namespace RuntimeFlow.Internal
                 if (node.State == ServiceState.Pending) node.State = ServiceState.Skipped;
             }
 
-            var degraded = _degraded.ToList();
+            var degraded = _degraded.GetRange(_externalDegraded, _degraded.Count - _externalDegraded);
             switch (_stop)
             {
                 case StopKind.None:
@@ -466,10 +476,11 @@ namespace RuntimeFlow.Internal
                 {
                     var completed = _completionOrder.Where(n => n.State == ServiceState.Completed)
                         .Select(n => n.Name).ToList();
-                    var phase = _failures.Count > 0
-                        ? _graph.Services.FirstOrDefault(n => n.Name == _failures[0].Service)?.Phase
-                        : null;
-                    var error = RuntimeFlowException.Create(_scope, phase, elapsed, completed, unfinished, _failures);
+                    var phase = _failures.Count > 0 ? _failures[0].Node.Phase : null;
+                    var failures = new List<(string Service, Exception Error, TimeSpan Elapsed, IReadOnlyList<string> DegradedUpstreams)>(_failures.Count);
+                    foreach (var failure in _failures)
+                        failures.Add((failure.Node.Name, failure.Error, failure.Elapsed, DegradedUpstreams(failure.Node)));
+                    var error = RuntimeFlowException.Create(_scope, phase, elapsed, completed, unfinished, failures);
                     Error = error;
                     _logger.Error($"[RuntimeFlow] {_scope}: {error.Message}");
                     _observers.RunFailed(error);
@@ -480,6 +491,21 @@ namespace RuntimeFlow.Internal
                     _done!.TrySetCanceled(_callerToken.IsCancellationRequested ? _callerToken : CancellationToken.None);
                     break;
             }
+        }
+
+        /// <summary>
+        /// Direct dependencies of <paramref name="node"/> that degraded, own or external, in edge order:
+        /// the most likely explanation of why this service failed.
+        /// </summary>
+        private static List<string> DegradedUpstreams(ServiceNode node)
+        {
+            var result = new List<string>();
+            foreach (var edge in node.Deps)
+            {
+                if (edge.Target.State == ServiceState.Degraded && !result.Contains(edge.Target.Name))
+                    result.Add(edge.Target.Name);
+            }
+            return result;
         }
 
         private List<string> Unfinished()

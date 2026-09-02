@@ -224,7 +224,7 @@ namespace RuntimeFlow.Tests.VContainerIntegration
             var run = ScopeRun.Create(session, "session", _options);
 
             Assert.That(Dependencies(run, "SessionUser"), Is.EqualTo(new[] { "GlobalConfig" }));
-            Assert.That(run.Describe(), Does.Contain("external (initialized in parent scopes): GlobalConfig [parent]"));
+            Assert.That(run.Describe(), Does.Contain("external (from parent scopes): GlobalConfig [parent, initialized]"));
         }
 
         private sealed class LazyBox<T> : ILazy<T>

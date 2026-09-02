@@ -94,9 +94,9 @@ namespace RuntimeFlow.Tests.Demo
             Assert.That(profile!.PlayerId, Is.EqualTo(PlatformAuthService.AnonymousPlayerId));
             Assert.That(profile.DisplayName, Is.EqualTo("Guest"));
 
-            // StartupResult.Degraded is per scope run and StartAsync returns the session's result, so a
-            // global service that degraded shows up in the merged status snapshot, not in that result.
-            Assert.That(app.Result.Degraded, Is.Empty);
+            // StartAsync returns the session run's outcome widened to both scopes, so a global service
+            // that degraded is listed there as well as in the merged status snapshot.
+            Assert.That(app.Result.Degraded, Is.EqualTo(new[] { "PlatformAuthService" }));
             Assert.That(status.Names(ServiceState.Degraded), Is.EqualTo(new[] { "PlatformAuthService" }));
         }
 

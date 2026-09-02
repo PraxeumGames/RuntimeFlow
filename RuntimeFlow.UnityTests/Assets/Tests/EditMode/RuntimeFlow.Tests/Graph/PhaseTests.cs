@@ -23,6 +23,8 @@ namespace RuntimeFlow.Tests.Graph
 
         public sealed class Unmarked : AutoService { }
 
+        public sealed class AlsoUnmarked : AutoService { }
+
         [Init(Phase = "assets")]
         public sealed class UnknownPhase : AutoService { }
 
@@ -89,11 +91,16 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void AnUnmarkedServiceLandsInTheLastPhase()
         {
-            var container = TestScope.Build(b => b.Add<Unmarked>());
+            var container = TestScope.Build(b =>
+            {
+                b.Add<PlatformOne>();
+                b.Add<Unmarked>();
+            });
 
             var run = ScopeRun.Create(container, "session", Options("platform", "content"));
 
             Assert.That(run.GetStatus().Service("Unmarked").Phase, Is.EqualTo("content"));
+            Assert.That(run.GetStatus().Service("PlatformOne").Phase, Is.EqualTo("platform"));
         }
 
         [Test]
@@ -101,11 +108,78 @@ namespace RuntimeFlow.Tests.Graph
         {
             var options = Options("platform", "content");
             options.DefaultPhase = "platform";
-            var container = TestScope.Build(b => b.Add<Unmarked>());
+            var container = TestScope.Build(b =>
+            {
+                b.Add<ContentOne>();
+                b.Add<Unmarked>();
+            });
 
             var run = ScopeRun.Create(container, "session", options);
 
             Assert.That(run.GetStatus().Service("Unmarked").Phase, Is.EqualTo("platform"));
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AScopeWithoutASingleMarkedServiceRunsWithoutPhases()
+        {
+            var observer = new CollectingObserver();
+            var options = Options("platform", "content");
+            options.Observers.Add(observer);
+            var container = TestScope.Build(b =>
+            {
+                b.Add<Unmarked>();
+                b.Add<AlsoUnmarked>();
+            });
+
+            var run = ScopeRun.Create(container, "session", options);
+            await run.RunAsync();
+
+            var status = run.GetStatus();
+            Assert.That(status.Service("Unmarked").Phase, Is.Null);
+            Assert.That(status.Service("AlsoUnmarked").Phase, Is.Null);
+            Assert.That(status.Phase, Is.Null);
+            Assert.That(run.Describe(), Is.EqualTo(string.Join(Environment.NewLine, new[]
+            {
+                "scope 'session' — 2 services",
+                " 1 [-] Unmarked      required, weight 1",
+                " 2 [-] AlsoUnmarked  required, weight 1",
+                ""
+            })), run.Describe());
+            Assert.That(observer.Events, Is.EqualTo(new List<string>
+            {
+                "run-started:session:start",
+                "started:session:Unmarked",
+                "completed:session:Unmarked",
+                "started:session:AlsoUnmarked",
+                "completed:session:AlsoUnmarked",
+                "run-completed:session:Completed"
+            }));
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task PhasesApplyPerScopeSoAnUnmarkedGlobalStaysWithoutOne()
+        {
+            var options = Options("platform", "content");
+            await using var host = new RuntimeFlowHost(
+                builder => builder.Add<Unmarked>(),
+                builder =>
+                {
+                    builder.Add<PlatformOne>();
+                    builder.Add<AlsoUnmarked>();
+                },
+                options);
+
+            await host.StartAsync();
+
+            var status = host.GetStatus();
+            Assert.That(status.Service("Unmarked").Scope, Is.EqualTo("global"));
+            Assert.That(status.Service("Unmarked").Phase, Is.Null, "no global service declares a phase");
+            Assert.That(status.Service("PlatformOne").Phase, Is.EqualTo("platform"));
+            Assert.That(status.Service("AlsoUnmarked").Phase, Is.EqualTo("content"),
+                "one marked service is enough to put the unmarked ones of that scope in the last phase");
+            Assert.That(host.Describe(), Does.Not.Contain("scope 'global' — 1 services, phases"));
         }
 
         [Test]

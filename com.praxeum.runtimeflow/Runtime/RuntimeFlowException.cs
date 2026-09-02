@@ -67,7 +67,7 @@ namespace RuntimeFlow
             TimeSpan elapsed,
             IReadOnlyList<string> completed,
             IReadOnlyList<string> unfinished,
-            IReadOnlyList<(string Service, Exception Error, TimeSpan Elapsed)> failures)
+            IReadOnlyList<(string Service, Exception Error, TimeSpan Elapsed, IReadOnlyList<string> DegradedUpstreams)> failures)
         {
             var text = new StringBuilder();
             text.Append("Initialization of scope '").Append(scope).Append("' failed: ");
@@ -75,10 +75,12 @@ namespace RuntimeFlow
             string? service = failures.Count > 0 ? failures[0].Service : null;
             if (failures.Count == 1)
             {
-                var (name, error, at) = failures[0];
+                var (name, error, at, upstreams) = failures[0];
                 text.Append(name).Append(" threw ").Append(error.GetType().Name)
                     .Append(" after ").Append(Seconds(at));
                 if (phase != null) text.Append(" in phase '").Append(phase).Append('\'');
+                if (upstreams != null && upstreams.Count > 0)
+                    text.Append(" (after upstream ").Append(Upstreams(upstreams)).Append(" degraded)");
                 text.Append(". ");
             }
             else
@@ -88,7 +90,11 @@ namespace RuntimeFlow
                 {
                     if (i > 0) text.Append(", ");
                     text.Append(failures[i].Service).Append(" (").Append(failures[i].Error.GetType().Name)
-                        .Append(" after ").Append(Seconds(failures[i].Elapsed)).Append(')');
+                        .Append(" after ").Append(Seconds(failures[i].Elapsed));
+                    var upstreams = failures[i].DegradedUpstreams;
+                    if (upstreams != null && upstreams.Count > 0)
+                        text.Append(", after upstream ").Append(Upstreams(upstreams)).Append(" degraded");
+                    text.Append(')');
                 }
                 text.Append(". ");
             }
@@ -119,6 +125,8 @@ namespace RuntimeFlow
             return new RuntimeFlowException(text.ToString(), scope, service, phase,
                 elapsed, completed, unfinished, plain, inner);
         }
+
+        private static string Upstreams(IReadOnlyList<string> names) => string.Join(", ", names);
 
         private static string Seconds(TimeSpan value)
             => value.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s";
