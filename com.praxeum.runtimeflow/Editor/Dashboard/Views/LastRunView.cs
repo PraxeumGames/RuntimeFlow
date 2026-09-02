@@ -7,7 +7,7 @@ namespace RuntimeFlow.Editor
     /// The snapshot persisted when Play Mode ended: the same rows in their final states, the failure
     /// cards, and the graph description. Falls back to an explainer when nothing has run yet.
     /// </summary>
-    public sealed class LastRunView : VisualElement
+    internal sealed class LastRunView : VisualElement
     {
         private readonly ScrollView _content;
         private string _signature = string.Empty;
@@ -121,13 +121,8 @@ namespace RuntimeFlow.Editor
 
         private static VisualElement FailureBox(DashboardService service)
         {
-            var box = new VisualElement();
-            box.AddToClassList("rf-card");
+            var box = ViewHelpers.Card(service.Name + " — " + service.ErrorType);
             box.AddToClassList(service.State == ServiceState.Failed ? "rf-card--failed" : "rf-card--degraded");
-
-            var title = new Label(service.Name + " — " + service.ErrorType);
-            title.AddToClassList("rf-card-title");
-            box.Add(title);
 
             var message = new Label(service.ErrorMessage);
             message.AddToClassList("rf-error-message");

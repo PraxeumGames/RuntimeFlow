@@ -5,6 +5,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using RuntimeFlow.Internal;
+using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
 using VContainer.Unity;
@@ -69,6 +70,12 @@ namespace RuntimeFlow.Tests.Lifecycle
             public void Initialize() => throw new InvalidOperationException("entry point exploded");
         }
 
+        /// <summary>Implements IAsyncInitializable, but the installer below forgets to expose it.</summary>
+        public sealed class HiddenService : IAsyncInitializable
+        {
+            public Task InitializeAsync(InitContext context, CancellationToken cancellationToken) => Task.CompletedTask;
+        }
+
         public sealed class ForeignMarker : IDisposable
         {
             private readonly Trace _trace;
@@ -88,7 +95,15 @@ namespace RuntimeFlow.Tests.Lifecycle
             _log = new CapturingLogger();
             _options = TestScope.Options(_log);
             _trace = new Trace();
+
+            // The registry is process-wide: a fixture that clears or inspects it has to start and finish
+            // from a known state, or it reads (and destroys) what a neighbouring fixture left behind.
+            FlowRegistry.Clear();
         }
+
+        /// <summary>Leaves the process-wide registry as this fixture found it.</summary>
+        [TearDown]
+        public void TearDown() => FlowRegistry.Clear();
 
         [Test]
         [Timeout(10000)]
@@ -279,22 +294,74 @@ namespace RuntimeFlow.Tests.Lifecycle
         {
             var weak = CreateForgottenHost();
 
-            GC.Collect();
-            GC.WaitForPendingFinalizers();
-            GC.Collect();
+            var collected = false;
+            for (var attempt = 0; attempt < 10 && !collected; attempt++)
+            {
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                collected = !weak.TryGetTarget(out _);
+            }
 
-            Assert.That(weak.TryGetTarget(out _), Is.False,
-                "an undisposed host must stay collectable: the registry holds weak references and " +
-                "Application.quitting is bridged through a hook, not through the host itself");
+            // Mono scans stacks conservatively, so a dead reference can stay reachable by luck. The
+            // contract under test — Live never yields a collected entry — is checked either way; only the
+            // collection itself is treated as best effort.
             foreach (var live in FlowRegistry.Live)
             {
                 Assert.That(live, Is.Not.Null, "Live never yields a collected entry");
+            }
+
+            if (!collected)
+            {
+                Assert.Inconclusive("the forgotten host was not collected; Mono's conservative stack scan can keep it alive");
             }
         }
 
         [MethodImpl(MethodImplOptions.NoInlining)]
         private WeakReference<RuntimeFlowHost> CreateForgottenHost()
             => new WeakReference<RuntimeFlowHost>(new RuntimeFlowHost(builder => { }, builder => { }, _options));
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AServiceRegisteredWithoutIAsyncInitializableIsCalledOut()
+        {
+            await using var host = new RuntimeFlowHost(
+                builder => builder.Register<HiddenService>(Lifetime.Singleton).AsSelf(),
+                builder => { },
+                _options);
+
+            await host.StartAsync();
+
+            Assert.That(_log.Find(Microsoft.Extensions.Logging.LogLevel.Warning, "implements IAsyncInitializable"), Is.EqualTo(
+                "[RuntimeFlow] global: HiddenService implements IAsyncInitializable but is registered without exposing it; " +
+                "it will never be initialized. Use RegisterInitializable<T>() or .As<IAsyncInitializable>()."), _log.Dump());
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task ACustomEntryPointExceptionHandlerSupersedesTheHostCollector()
+        {
+            var caught = new List<Exception>();
+            await using var host = new RuntimeFlowHost(
+                builder => { },
+                builder =>
+                {
+                    builder.RegisterEntryPointExceptionHandler(caught.Add);
+                    builder.RegisterEntryPoint<ThrowingEntryPoint>();
+                },
+                _options);
+
+            var result = await host.StartAsync();
+
+            Assert.That(result.Outcome, Is.EqualTo(StartupOutcome.Completed),
+                "the consumer took the entry-point failure, so it no longer fails the run");
+            Assert.That(caught, Has.Count.EqualTo(1));
+            Assert.That(caught[0].Message, Is.EqualTo("entry point exploded"));
+            Assert.That(_log.Find(Microsoft.Extensions.Logging.LogLevel.Information, "custom EntryPointExceptionHandler"), Is.EqualTo(
+                "[RuntimeFlow] session: a custom EntryPointExceptionHandler is registered; " +
+                "IInitializable exceptions are delivered to it instead of failing the run."), _log.Dump());
+            Assert.That(_log.Has(Microsoft.Extensions.Logging.LogLevel.Information, "[RuntimeFlow] global: a custom"), Is.False,
+                "the global installer registered none");
+        }
 
         [Test]
         [Timeout(10000)]

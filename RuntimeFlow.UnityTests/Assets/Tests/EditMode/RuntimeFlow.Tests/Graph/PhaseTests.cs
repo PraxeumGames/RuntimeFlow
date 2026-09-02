@@ -41,6 +41,8 @@ namespace RuntimeFlow.Tests.Graph
 
         private CapturingLogger _log = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp() => _log = new CapturingLogger();
 
@@ -51,6 +53,10 @@ namespace RuntimeFlow.Tests.Graph
             return options;
         }
 
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         [Timeout(10000)]
         public async Task ServicesOfALaterPhaseWaitForTheBarrier()
@@ -59,14 +65,14 @@ namespace RuntimeFlow.Tests.Graph
             var options = Options("platform", "content");
             options.Observers.Add(observer);
 
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<ContentOne>();
                 b.Add<PlatformOne>();
                 b.Add<PlatformTwo>();
             });
 
-            await ScopeRun.Create(container, "session", options).RunAsync();
+            await _tracker.Create(container, "session", options).RunAsync();
 
             var events = observer.Events;
             Assert.That(observer.IndexOf("completed:session:PlatformOne"), Is.LessThan(observer.IndexOf("started:session:ContentOne")));
@@ -91,13 +97,13 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void AnUnmarkedServiceLandsInTheLastPhase()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<PlatformOne>();
                 b.Add<Unmarked>();
             });
 
-            var run = ScopeRun.Create(container, "session", Options("platform", "content"));
+            var run = _tracker.Create(container, "session", Options("platform", "content"));
 
             Assert.That(run.GetStatus().Service("Unmarked").Phase, Is.EqualTo("content"));
             Assert.That(run.GetStatus().Service("PlatformOne").Phase, Is.EqualTo("platform"));
@@ -108,13 +114,13 @@ namespace RuntimeFlow.Tests.Graph
         {
             var options = Options("platform", "content");
             options.DefaultPhase = "platform";
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<ContentOne>();
                 b.Add<Unmarked>();
             });
 
-            var run = ScopeRun.Create(container, "session", options);
+            var run = _tracker.Create(container, "session", options);
 
             Assert.That(run.GetStatus().Service("Unmarked").Phase, Is.EqualTo("platform"));
         }
@@ -126,13 +132,13 @@ namespace RuntimeFlow.Tests.Graph
             var observer = new CollectingObserver();
             var options = Options("platform", "content");
             options.Observers.Add(observer);
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Unmarked>();
                 b.Add<AlsoUnmarked>();
             });
 
-            var run = ScopeRun.Create(container, "session", options);
+            var run = _tracker.Create(container, "session", options);
             await run.RunAsync();
 
             var status = run.GetStatus();
@@ -185,10 +191,10 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void AnUnknownPhaseIsRejected()
         {
-            var container = TestScope.Build(b => b.Add<UnknownPhase>());
+            var container = _tracker.Build(b => b.Add<UnknownPhase>());
 
             var error = Assert.Throws<InitGraphException>(
-                () => ScopeRun.Create(container, "session", Options("platform", "content", "session", "ui")));
+                () => _tracker.Create(container, "session", Options("platform", "content", "session", "ui")));
 
             Assert.That(error!.Message, Is.EqualTo(
                 "UnknownPhase declares phase 'assets', but RuntimeFlowOptions.Phases is [platform, content, session, ui]."));
@@ -197,9 +203,9 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void APhaseWithoutADeclaredPhaseListIsRejected()
         {
-            var container = TestScope.Build(b => b.Add<UnknownPhase>());
+            var container = _tracker.Build(b => b.Add<UnknownPhase>());
 
-            var error = Assert.Throws<InitGraphException>(() => ScopeRun.Create(container, "session", Options()));
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", Options()));
 
             Assert.That(error!.Message, Is.EqualTo(
                 "UnknownPhase declares phase 'assets', but RuntimeFlowOptions.Phases is empty. " +
@@ -209,14 +215,14 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void InjectingAServiceOfALaterPhaseIsACycle()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<EarlyService>();
                 b.Add<LateService>();
             });
 
             var error = Assert.Throws<InitGraphException>(
-                () => ScopeRun.Create(container, "session", Options("content", "session")));
+                () => _tracker.Create(container, "session", Options("content", "session")));
 
             Assert.That(error!.Message, Does.StartWith(
                 "Initialization graph of scope 'session' has a cycle: EarlyService -> LateService -> phase 'content' -> EarlyService. " +
@@ -231,9 +237,9 @@ namespace RuntimeFlow.Tests.Graph
         {
             var options = Options("platform", "content");
             options.DefaultPhase = "nope";
-            var container = TestScope.Build(b => b.Add<Unmarked>());
+            var container = _tracker.Build(b => b.Add<Unmarked>());
 
-            var error = Assert.Throws<InitGraphException>(() => ScopeRun.Create(container, "session", options));
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", options));
 
             Assert.That(error!.Message, Is.EqualTo(
                 "RuntimeFlowOptions.DefaultPhase is 'nope', but RuntimeFlowOptions.Phases is [platform, content]."));

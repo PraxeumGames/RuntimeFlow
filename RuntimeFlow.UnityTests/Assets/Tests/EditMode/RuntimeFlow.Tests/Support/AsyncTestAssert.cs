@@ -31,6 +31,28 @@ namespace RuntimeFlow.Tests.Support
             throw new InvalidOperationException("unreachable");
         }
 
+        /// <summary>
+        /// Polls <paramref name="condition"/> until it holds, and fails the test when it never does. Use it
+        /// instead of a fixed delay whenever a test waits for something the framework produces on its own
+        /// schedule (a stall warning, a watch tick): the delay would either race or be needlessly slow.
+        /// </summary>
+        /// <param name="condition">Checked once per poll; must eventually become true.</param>
+        /// <param name="timeout">How long to keep polling before failing.</param>
+        /// <param name="because">Text added to the failure message.</param>
+        public static async Task Until(Func<bool> condition, TimeSpan timeout, string because = "")
+        {
+            var deadline = DateTime.UtcNow + timeout;
+            while (!condition())
+            {
+                if (DateTime.UtcNow > deadline)
+                {
+                    Assert.Fail($"The condition was still false after {timeout.TotalSeconds:0.0}s. {because}");
+                    return;
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(10));
+            }
+        }
+
         /// <summary>Awaits the action and fails the test if it throws.</summary>
         public static async Task DoesNotThrowAsync(Func<Task> action)
         {

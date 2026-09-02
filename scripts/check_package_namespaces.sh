@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 # Package layout guard for com.praxeum.runtimeflow (runs in CI and locally, no Unity needed).
 #  1. namespace == folder:  Runtime/*.cs -> RuntimeFlow, Runtime/Internal -> RuntimeFlow.Internal,
-#     Runtime/Testing -> RuntimeFlow.Testing, Editor/** -> RuntimeFlow.Editor. No other Runtime subfolders.
-#  2. forbidden tokens: VContainer internals, Reflection.Emit, ConfigureAwait(false), resurrected 0.x names.
+#     Runtime/Testing -> RuntimeFlow.Testing, Editor/** -> RuntimeFlow.Editor. No other Runtime
+#     subfolders. Runtime/Properties and Editor/Properties hold assembly attributes and no namespace.
+#     The rule covers the package only; the test and demo assemblies use their asmdef root namespace.
+#  2. forbidden tokens: VContainer internals, Reflection.Emit, ConfigureAwait(false), resurrected 0.x
+#     names — in every text file of the package, not only sources: an asmdef reference, a USS class, a
+#     package.json keyword or an rsp flag can resurrect a name just as well.
 #  3. binaries only under Runtime/Plugins; no Analyzers/; no mono crash dumps anywhere.
 #  4. csc.rsp with -nullable:enable next to every asmdef.
 set -uo pipefail
@@ -15,7 +19,7 @@ err() { echo "::error::$*"; fail=1; }
 while IFS= read -r f; do
   rel=${f#"$PKG/"}
   case "$rel" in
-    Runtime/Properties/*) continue ;;
+    Runtime/Properties/*|Editor/Properties/*) continue ;;
     Runtime/Plugins/*) err "$rel: no sources allowed under Runtime/Plugins"; continue ;;
     Runtime/Internal/*/*) err "$rel: Runtime/Internal must be flat"; continue ;;
     Runtime/Internal/*) expected=RuntimeFlow.Internal ;;
@@ -33,7 +37,9 @@ done < <(find "$PKG" -name '*.cs' | sort)
 
 # 2. forbidden tokens
 forbidden='VContainer\.Internal|System\.Reflection\.Emit|ConfigureAwait\(false\)|\bGameContext\b|\bRuntimePipeline\b|\bGameFlow\b|\bContentSource\b|\bActivePipeline\b|RuntimeFlowInstallerModules|GenerateRuntimeFlowInitializationGraph|IUserInteractionGatedInitializableService'
-if hits=$(grep -rnE "$forbidden" --include='*.cs' "$PKG"); then
+if hits=$(grep -rnE "$forbidden" \
+  --include='*.cs' --include='*.asmdef' --include='*.uss' --include='*.json' --include='*.rsp' \
+  --exclude='*.meta' "$PKG"); then
   while IFS= read -r h; do err "forbidden token: $h"; done <<< "$hits"
 fi
 

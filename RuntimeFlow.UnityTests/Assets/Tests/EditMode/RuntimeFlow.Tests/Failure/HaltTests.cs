@@ -35,6 +35,8 @@ namespace RuntimeFlow.Tests.Failure
         private CollectingObserver _observer = null!;
         private RuntimeFlowOptions _options = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp()
         {
@@ -43,16 +45,20 @@ namespace RuntimeFlow.Tests.Failure
             _options = TestScope.Options(_log, _observer);
         }
 
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         [Timeout(10000)]
         public async Task HaltCompletesTheRunWithoutThrowing()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.RegisterInstance(new UserUpdateCheck()).AsImplementedInterfaces();
                 b.Add<Never>();
             });
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var result = await run.RunAsync();
 
@@ -68,13 +74,13 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task HaltCancelsWorkThatIsAlreadyInFlight()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Busy>();
                 b.RegisterInstance(new UserUpdateCheck()).AsImplementedInterfaces();
             });
             var busy = container.Resolve<Busy>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var result = await run.RunAsync();
 
@@ -88,8 +94,8 @@ namespace RuntimeFlow.Tests.Failure
         public async Task TheFirstHaltWins()
         {
             var check = new UserUpdateCheck { Halts = 3, Reason = "first" };
-            var container = TestScope.Build(b => b.RegisterInstance(check).AsImplementedInterfaces());
-            var run = ScopeRun.Create(container, "session", _options);
+            var container = _tracker.Build(b => b.RegisterInstance(check).AsImplementedInterfaces());
+            var run = _tracker.Create(container, "session", _options);
 
             var result = await run.RunAsync();
 
@@ -102,13 +108,13 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task TheHaltIsLoggedWithWhatWasCompletedAndCancelled()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Busy>();
                 b.RegisterInstance(new UserUpdateCheck()).AsImplementedInterfaces();
                 b.Add<Never>();
             });
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             await run.RunAsync();
 
@@ -122,8 +128,8 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task TheScopeStaysUsableAfterAHalt()
         {
-            var container = TestScope.Build(b => b.RegisterInstance(new UserUpdateCheck()).AsImplementedInterfaces());
-            var run = ScopeRun.Create(container, "session", _options);
+            var container = _tracker.Build(b => b.RegisterInstance(new UserUpdateCheck()).AsImplementedInterfaces());
+            var run = _tracker.Create(container, "session", _options);
 
             await run.RunAsync();
 

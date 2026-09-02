@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
+using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
 
@@ -46,6 +47,12 @@ namespace RuntimeFlow.Tests.Graph
         [DependsOn(typeof(SessionOnly))]
         public sealed class GlobalNeedsSession : AutoService { }
 
+        /// <summary>Implements IAsyncInitializable, but a registration may still forget to expose it.</summary>
+        public sealed class HiddenInitializable : AutoService { }
+
+        [DependsOn(typeof(HiddenInitializable))]
+        public sealed class NeedsHidden : AutoService { }
+
         public interface IDupA : IAsyncInitializable { }
 
         public interface IDupB : IAsyncInitializable { }
@@ -55,6 +62,8 @@ namespace RuntimeFlow.Tests.Graph
         private CapturingLogger _log = null!;
         private RuntimeFlowOptions _options = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp()
         {
@@ -62,12 +71,16 @@ namespace RuntimeFlow.Tests.Graph
             _options = TestScope.Options(_log);
         }
 
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         public void NonSingletonServiceIsRejected()
         {
-            var container = TestScope.Build(b => b.Register<ScopedService>(Lifetime.Scoped).AsImplementedInterfaces());
+            var container = _tracker.Build(b => b.Register<ScopedService>(Lifetime.Scoped).AsImplementedInterfaces());
 
-            var error = Assert.Throws<InitGraphException>(() => ScopeRun.Create(container, "session", _options));
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
 
             Assert.That(error!.Scope, Is.EqualTo("session"));
             Assert.That(error.Message, Is.EqualTo(
@@ -76,15 +89,28 @@ namespace RuntimeFlow.Tests.Graph
         }
 
         [Test]
+        public void TransientServiceIsRejectedToo()
+        {
+            var container = _tracker.Build(b => b.Register<ScopedService>(Lifetime.Transient).AsImplementedInterfaces());
+
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
+
+            Assert.That(error!.Scope, Is.EqualTo("session"));
+            Assert.That(error.Message, Is.EqualTo(
+                "ScopedService is registered with Lifetime.Transient in scope 'session'; initializable services must be " +
+                "Lifetime.Singleton (a Scoped/Transient service would be re-created uninitialized in child scopes)."));
+        }
+
+        [Test]
         public void TwoRegistrationsOfTheSameImplementationWarn()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Register<IDupA>(_ => new Dup(), Lifetime.Singleton).As<IAsyncInitializable>();
                 b.Register<IDupB>(_ => new Dup(), Lifetime.Singleton).As<IAsyncInitializable>();
             });
 
-            ScopeRun.Create(container, "session", _options);
+            _tracker.Create(container, "session", _options);
 
             Assert.That(_log.Messages(LogLevel.Warning), Does.Contain(
                 "[RuntimeFlow] session: Dup is registered as IAsyncInitializable 2 times; each registration will be initialized."));
@@ -93,14 +119,14 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void UnknownDependsOnTargetListsKnownServices()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<RemoteCatalog>();
                 b.Add<Auth>();
                 b.Add<Config>();
             });
 
-            var error = Assert.Throws<InitGraphException>(() => ScopeRun.Create(container, "session", _options));
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
 
             Assert.That(error!.Message, Is.EqualTo(
                 "RemoteCatalog declares [DependsOn(typeof(IMirrorSelector))], but no initializable service assignable to " +
@@ -110,15 +136,49 @@ namespace RuntimeFlow.Tests.Graph
         }
 
         [Test]
+        public void ADependsOnTargetRegisteredWithoutIAsyncInitializableSaysSo()
+        {
+            var container = _tracker.Build(b =>
+            {
+                b.Add<NeedsHidden>();
+                b.Register<HiddenInitializable>(Lifetime.Singleton).AsSelf();
+            });
+
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
+
+            Assert.That(error!.Message, Is.EqualTo(
+                "NeedsHidden declares [DependsOn(typeof(HiddenInitializable))]; HiddenInitializable implements " +
+                "IAsyncInitializable but is not registered as one, so it is never initialized. Register it with " +
+                "RegisterInitializable<T>() or add .As<IAsyncInitializable>() to its registration."));
+        }
+
+        [Test]
+        public void UnknownDependsOnInAChildScopeGroupsTheKnownServicesByScope()
+        {
+            var global = _tracker.Build(b => b.Add<Config>());
+            var globalRun = _tracker.Create(global, "global", _options);
+            var session = _tracker.Track(global.CreateScope(b =>
+            {
+                b.Add<RemoteCatalog>();
+                b.Add<Auth>();
+            }));
+
+            var error = Assert.Throws<InitGraphException>(
+                () => _tracker.Create(session, "session", _options, new[] { globalRun }));
+
+            Assert.That(error!.Message, Does.EndWith("Known services — session: Auth, RemoteCatalog; global: Config."));
+        }
+
+        [Test]
         public void CycleIsReportedWithItsPathAndEdgeOrigins()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<CycleA>();
                 b.Add<CycleB>();
             });
 
-            var error = Assert.Throws<InitGraphException>(() => ScopeRun.Create(container, "session", _options));
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
 
             Assert.That(error!.Message, Is.EqualTo(
                 "Initialization graph of scope 'session' has a cycle: CycleA -> CycleB -> CycleA. " +
@@ -129,9 +189,9 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void UserGatedServiceMayNotDeclareATimeout()
         {
-            var container = TestScope.Build(b => b.Add<GdprConsent>());
+            var container = _tracker.Build(b => b.Add<GdprConsent>());
 
-            var error = Assert.Throws<InitGraphException>(() => ScopeRun.Create(container, "session", _options));
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
 
             Assert.That(error!.Message, Is.EqualTo(
                 "GdprConsent is user-gated and declares TimeoutSeconds = 5; user-gated services never time out. Remove one of them."));
@@ -141,13 +201,13 @@ namespace RuntimeFlow.Tests.Graph
         [Timeout(10000)]
         public async Task ConstructionFailureFailsOnlyItsOwnNode()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<NeedsMissing>();
                 b.Add<Config>();
             });
 
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
             Assert.That(run.GetStatus().Service("NeedsMissing").State, Is.EqualTo(ServiceState.Pending));
 
             var error = await AsyncTestAssert.ThrowsAsync<RuntimeFlowException>(() => run.RunAsync());
@@ -162,12 +222,12 @@ namespace RuntimeFlow.Tests.Graph
         [Test]
         public void AParentScopeCannotDependOnAChildScope()
         {
-            var global = TestScope.Build(b => b.Add<GlobalNeedsSession>());
+            var global = _tracker.Build(b => b.Add<GlobalNeedsSession>());
             using (global)
             {
                 global.CreateScope(b => b.Add<SessionOnly>());
 
-                var error = Assert.Throws<InitGraphException>(() => ScopeRun.Create(global, "global", _options));
+                var error = Assert.Throws<InitGraphException>(() => _tracker.Create(global, "global", _options));
 
                 Assert.That(error!.Message, Does.Contain("a parent scope can never depend on a child scope"));
                 Assert.That(error.Message, Does.Contain("Known services — global: GlobalNeedsSession."));
@@ -178,8 +238,8 @@ namespace RuntimeFlow.Tests.Graph
         [Timeout(10000)]
         public async Task AnEmptyScopeCompletesImmediately()
         {
-            var container = TestScope.Build(_ => { });
-            var run = ScopeRun.Create(container, "session", _options);
+            var container = _tracker.Build(_ => { });
+            var run = _tracker.Create(container, "session", _options);
 
             var result = await run.RunAsync();
 

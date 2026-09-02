@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using NUnit.Framework;
+using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
 
@@ -44,15 +45,21 @@ namespace RuntimeFlow.Tests.Graph
 
         private CapturingLogger _log = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp() => _log = new CapturingLogger();
+
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
 
         [Test]
         public void DescribeRendersServicesFlagsAndEdges()
         {
             var options = TestScope.Options(_log);
             options.Phases = new[] { "platform", "content" };
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Mirrors>();
                 b.Add<RemoteCatalog>();
@@ -60,7 +67,7 @@ namespace RuntimeFlow.Tests.Graph
                 b.RegisterFactory<IAnalytics>(() => new Analytics());
             });
 
-            var describe = ScopeRun.Create(container, "session", options).Describe();
+            var describe = _tracker.Create(container, "session", options).Describe();
 
             Assert.That(describe, Is.EqualTo(string.Join(Environment.NewLine, new[]
             {
@@ -80,11 +87,11 @@ namespace RuntimeFlow.Tests.Graph
         public void DescribeListsParentScopeServicesAsExternal()
         {
             var options = TestScope.Options(_log);
-            var global = TestScope.Build(b => b.Add<GlobalConfig>());
-            var globalRun = ScopeRun.Create(global, "global", options);
+            var global = _tracker.Build(b => b.Add<GlobalConfig>());
+            var globalRun = _tracker.Create(global, "global", options);
             var session = global.CreateScope(b => b.Add<SessionUser>());
 
-            var describe = ScopeRun.Create(session, "session", options, new List<ScopeRun> { globalRun }).Describe();
+            var describe = _tracker.Create(session, "session", options, new List<ScopeRun> { globalRun }).Describe();
 
             Assert.That(describe, Is.EqualTo(string.Join(Environment.NewLine, new[]
             {

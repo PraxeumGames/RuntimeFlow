@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
+using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
 

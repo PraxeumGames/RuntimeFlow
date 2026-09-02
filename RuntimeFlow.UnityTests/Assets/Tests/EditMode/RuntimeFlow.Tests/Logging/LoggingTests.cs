@@ -1,3 +1,5 @@
+using System;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
 using RuntimeFlow.Internal;
@@ -63,9 +65,31 @@ namespace RuntimeFlow.Tests.Logging
         }
 
         [Test]
+        public void AnErrorWithAnExceptionKeepsTheClickableStackTrace()
+        {
+            LogAssert.Expect(LogType.Error, "[RuntimeFlow] session: Alpha failed");
+            LogAssert.Expect(LogType.Exception, new Regex("^InvalidOperationException: boom"));
+
+            new UnityConsoleLogger().Error("[RuntimeFlow] session: Alpha failed", new InvalidOperationException("boom"));
+
+            LogAssert.NoUnexpectedReceived();
+        }
+
+        [Test]
+        public void AWarningWithAnExceptionStaysOneConsoleLine()
+        {
+            LogAssert.Expect(LogType.Warning, new Regex("^\\[RuntimeFlow\\] careful[\\s\\S]*InvalidOperationException"));
+
+            new UnityConsoleLogger().Log(LogLevel.Warning, default, "careful",
+                new InvalidOperationException("boom"), (state, _) => state);
+
+            LogAssert.NoUnexpectedReceived();
+        }
+
+        [Test]
         public void MinLevelSuppressesLowerLevels()
         {
-            var logger = new UnityConsoleLogger { MinLevel = LogLevel.Warning };
+            var logger = new UnityConsoleLogger(LogLevel.Warning);
             Assert.That(logger.IsEnabled(LogLevel.Debug), Is.False);
             Assert.That(logger.IsEnabled(LogLevel.Warning), Is.True);
             logger.Debug("must not reach the console");
@@ -75,7 +99,7 @@ namespace RuntimeFlow.Tests.Logging
         [Test]
         public void NoneIsNeverEnabled()
         {
-            Assert.That(new UnityConsoleLogger { MinLevel = LogLevel.Trace }.IsEnabled(LogLevel.None), Is.False);
+            Assert.That(new UnityConsoleLogger(LogLevel.Trace).IsEnabled(LogLevel.None), Is.False);
         }
     }
 }

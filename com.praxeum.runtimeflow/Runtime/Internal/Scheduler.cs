@@ -38,6 +38,7 @@ namespace RuntimeFlow.Internal
         private CancellationTokenSource? _runCts;
         private CancellationTokenRegistration _callerRegistration;
         private CancellationToken _callerToken;
+        private SynchronizationContext? _context;
         private TaskCompletionSource<StartupResult>? _done;
         private StallWatch? _watch;
         private StopKind _stop = StopKind.None;
@@ -79,7 +80,8 @@ namespace RuntimeFlow.Internal
             if (State != RunState.NotStarted)
                 throw new InvalidOperationException($"The '{_scope}' run has already been started; create a new ScopeRun for another run.");
 
-            if (SynchronizationContext.Current == null)
+            _context = SynchronizationContext.Current;
+            if (_context == null)
                 _logger.Warn($"[RuntimeFlow] {_scope}: SynchronizationContext.Current is null; continuations run inline on the calling thread.");
 
             _isRestart = isRestart;
@@ -109,7 +111,17 @@ namespace RuntimeFlow.Internal
                 return _done.Task;
             }
             if (cancellationToken.CanBeCanceled)
-                _callerRegistration = cancellationToken.Register(() => BeginStop(StopKind.Cancel));
+            {
+                // The caller's token can be cancelled from any thread (CancelAfter uses a timer thread),
+                // but every scheduler mutation must happen on the run's own context. Posting keeps the
+                // single-threaded contract; with no context there is no other thread to hand off to.
+                var context = _context;
+                _callerRegistration = cancellationToken.Register(() =>
+                {
+                    if (context == null) BeginStop(StopKind.Cancel);
+                    else context.Post(_ => BeginStop(StopKind.Cancel), null);
+                });
+            }
 
             if (_graph.Phases.Count > 0)
             {
@@ -120,6 +132,14 @@ namespace RuntimeFlow.Internal
             _watch = new StallWatch(StallWatch.IntervalFor(_options, _graph.Services), OnWatchTick);
             _watch.Start(_runCts.Token);
 
+            // The ready queue is seeded before construction errors are replayed: a node that degrades at
+            // construction releases its dependents immediately, and those must queue behind the roots that
+            // were already schedulable instead of jumping ahead of them.
+            foreach (var node in _graph.Nodes)
+            {
+                if (node.State == ServiceState.Pending && node.PendingDeps == 0) Enqueue(node);
+            }
+
             foreach (var node in _graph.Services)
             {
                 if (node.ConstructionError == null || _stop != StopKind.None) continue;
@@ -127,14 +147,7 @@ namespace RuntimeFlow.Internal
                 FailNode(node, node.ConstructionError, TimeSpan.Zero);
             }
 
-            if (_stop == StopKind.None)
-            {
-                foreach (var node in _graph.Nodes)
-                {
-                    if (node.State == ServiceState.Pending && node.PendingDeps == 0) _ready.Add(node);
-                }
-                Pump();
-            }
+            if (_stop == StopKind.None) Pump();
 
             return _done.Task;
         }
@@ -208,7 +221,6 @@ namespace RuntimeFlow.Internal
             {
                 while (_stop == StopKind.None && _ready.Count > 0)
                 {
-                    _ready.Sort((a, b) => a.Index.CompareTo(b.Index));
                     var node = _ready[0];
                     _ready.RemoveAt(0);
                     if (node.State != ServiceState.Pending) continue;
@@ -260,20 +272,44 @@ namespace RuntimeFlow.Internal
             }
             catch (OperationCanceledException cancelled)
             {
-                if (node.State != ServiceState.Running) return;
+                if (node.State != ServiceState.Running)
+                {
+                    ReportLateOutcome(node, cancelled);
+                    return;
+                }
                 if (_stop != StopKind.None || node.Cts == null || node.Cts.IsCancellationRequested) CancelNode(node);
                 else FailNode(node, cancelled, node.Clock.Elapsed);
                 return;
             }
             catch (Exception exception)
             {
-                if (node.State != ServiceState.Running) return;
+                if (node.State != ServiceState.Running)
+                {
+                    ReportLateOutcome(node, exception);
+                    return;
+                }
                 FailNode(node, exception, node.Clock.Elapsed);
                 return;
             }
 
             if (node.State != ServiceState.Running) return;
             CompleteNode(node);
+        }
+
+        /// <summary>
+        /// Reports the outcome of a node that finished after the run stopped waiting for it. Dropping it
+        /// silently hides the very bug that made the run abandon the service in the first place.
+        /// </summary>
+        private void ReportLateOutcome(ServiceNode node, Exception error)
+        {
+            if (error is OperationCanceledException)
+            {
+                _logger.Debug($"[RuntimeFlow] {_scope}: {node.Name} completed cancellation after it was abandoned.");
+                return;
+            }
+
+            _logger.Warn($"[RuntimeFlow] {_scope}: {node.Name} threw {error.GetType().Name} after it was abandoned; " +
+                         "it did not observe its CancellationToken.");
         }
 
         private void CompleteNode(ServiceNode node)
@@ -344,8 +380,19 @@ namespace RuntimeFlow.Internal
             foreach (var dependent in node.Dependents)
             {
                 if (--dependent.PendingDeps == 0 && dependent.State == ServiceState.Pending)
-                    _ready.Add(dependent);
+                    Enqueue(dependent);
             }
+        }
+
+        /// <summary>
+        /// Adds a node to the ready queue keeping it ordered by node index, so <see cref="Pump"/> can take
+        /// the head without sorting the queue again on every iteration.
+        /// </summary>
+        private void Enqueue(ServiceNode node)
+        {
+            var at = _ready.Count;
+            while (at > 0 && _ready[at - 1].Index > node.Index) at--;
+            _ready.Insert(at, node);
         }
 
         private void RequestHalt(ServiceNode node, string reason)

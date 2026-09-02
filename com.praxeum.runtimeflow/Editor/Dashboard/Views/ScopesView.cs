@@ -8,7 +8,7 @@ namespace RuntimeFlow.Editor
     /// One card per scope of the selected host — global, session, then every child run — with its
     /// counters and services. Clicking a card filters the Graph tab to that scope.
     /// </summary>
-    public sealed class ScopesView : VisualElement
+    internal sealed class ScopesView : VisualElement
     {
         private readonly ScrollView _content;
         private DashboardSnapshot? _snapshot;

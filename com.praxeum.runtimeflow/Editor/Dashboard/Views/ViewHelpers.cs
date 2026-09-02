@@ -5,7 +5,7 @@ using UnityEngine.UIElements;
 namespace RuntimeFlow.Editor
 {
     /// <summary>Small builders every dashboard view shares: cards, property rows, state badges, formats.</summary>
-    public static class ViewHelpers
+    internal static class ViewHelpers
     {
         /// <summary>A card with a title label; add the content to the returned element.</summary>
         /// <param name="title">Text of the card header.</param>

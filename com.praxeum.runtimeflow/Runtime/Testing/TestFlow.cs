@@ -4,9 +4,7 @@ using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-using Microsoft.Extensions.Logging;
 using VContainer;
-using ILogger = Microsoft.Extensions.Logging.ILogger;
 
 namespace RuntimeFlow.Testing
 {
@@ -28,7 +26,7 @@ namespace RuntimeFlow.Testing
         private readonly List<ServiceOverride> _overrides = new List<ServiceOverride>();
         private readonly List<string> _visitedScopes = new List<string>();
         private readonly RuntimeFlowOptions _options;
-        private readonly CapturingTestLogger _log = new CapturingTestLogger();
+        private readonly CapturingLogger _log = new CapturingLogger();
 
         private RuntimeFlowHost? _host;
         private TimeSpan _startupTimeout = TimeSpan.FromSeconds(30);
@@ -41,7 +39,11 @@ namespace RuntimeFlow.Testing
             {
                 Logger = _log,
                 TimeoutMultiplier = 0,
-                StallWarningAfter = TimeSpan.FromSeconds(2)
+                StallWarningAfter = TimeSpan.FromSeconds(2),
+
+                // Tests must not sit for the production five seconds while an abandoned service drains;
+                // a fake that ignores its token should cost a test 200 ms, not a timed-out fixture.
+                CancellationGrace = TimeSpan.FromMilliseconds(200)
             };
         }
 
@@ -120,23 +122,33 @@ namespace RuntimeFlow.Testing
                 builder => Install(builder, _sessionInstaller, "session"),
                 _options);
 
-            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            try
             {
-                var startup = _host.StartAsync(deadline.Token);
-                var expiry = Task.Delay(_startupTimeout, deadline.Token);
-                var finished = await Task.WhenAny(startup, expiry);
-                if (!ReferenceEquals(finished, startup))
+                using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
                 {
-                    var status = _host.GetStatus();
-                    deadline.Cancel();
-                    Forget(startup);
-                    throw new TimeoutException(
-                        $"Startup did not finish within {Seconds(_startupTimeout)}. {Render(status)}");
-                }
+                    var startup = _host.StartAsync(deadline.Token);
+                    var expiry = Task.Delay(_startupTimeout, deadline.Token);
+                    var finished = await Task.WhenAny(startup, expiry);
+                    if (!ReferenceEquals(finished, startup))
+                    {
+                        var status = _host.GetStatus();
+                        deadline.Cancel();
+                        Forget(startup);
+                        throw new TimeoutException(
+                            $"Startup did not finish within {Seconds(_startupTimeout)}. {Render(status)}");
+                    }
 
-                deadline.Cancel();
-                Forget(expiry);
-                Result = await startup;
+                    deadline.Cancel();
+                    Forget(expiry);
+                    Result = await startup;
+                }
+            }
+            catch (Exception)
+            {
+                // A failed startup still built containers, and an override mismatch throws before the
+                // global scope was ever handed back: without this the test would leak both.
+                await _host.DisposeAsync();
+                throw;
             }
 
             return this;
@@ -184,7 +196,7 @@ namespace RuntimeFlow.Testing
         {
             if (!_visitedScopes.Contains(scope)) _visitedScopes.Add(scope);
 
-            var wrapper = new OverridingContainerBuilder(builder, _overrides, scope);
+            var wrapper = new OverridingContainerBuilder(builder, _overrides, _options.Logger, scope);
             installer(wrapper);
             wrapper.Flush();
 
@@ -237,28 +249,5 @@ namespace RuntimeFlow.Testing
 
         private static string Seconds(TimeSpan value)
             => value.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s";
-
-        /// <summary>Keeps every framework log line so a test can assert on the diagnostics.</summary>
-        private sealed class CapturingTestLogger : ILogger
-        {
-            private readonly List<string> _lines = new List<string>();
-
-            public IReadOnlyList<string> Lines => _lines;
-
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(
-                LogLevel logLevel,
-                EventId eventId,
-                TState state,
-                Exception? exception,
-                Func<TState, Exception?, string> formatter)
-            {
-                var message = formatter != null ? formatter(state, exception) : state?.ToString() ?? string.Empty;
-                _lines.Add($"{logLevel}: {message}");
-            }
-        }
     }
 }

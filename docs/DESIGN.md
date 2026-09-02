@@ -48,6 +48,22 @@ Services of parent scopes become **external** nodes: they take part in edges and
 as already completed, and are never scheduled. That is what makes a session graph able to depend on
 global services without re-initializing them.
 
+Because discovery goes through the registration's *exposed* types, a class that implements
+`IAsyncInitializable` but is registered without exposing it — `Register<Catalog>(Lifetime.Singleton)`,
+or `.As<ICatalog>()` and nothing else — is invisible to the graph. Nothing throws: the service is
+constructed on demand, `InitializeAsync` is never called, and the run reports success over a half-built
+object. This is the one failure mode of the design that is silent by construction, so after the
+consumer installer has run the host inspects the composed builder's registrations and warns:
+
+```text
+[RuntimeFlow] session: Catalog implements IAsyncInitializable but is registered without exposing it; it
+will never be initialized. Use RegisterInitializable<T>() or .As<IAsyncInitializable>().
+```
+
+A `[DependsOn(typeof(T))]` whose only candidate is such a registration is an error rather than a
+warning: an ordering constraint that cannot be honoured must not be dropped silently — that is exactly
+how 0.x produced a production restart loop.
+
 Validation performed at build time:
 
 | Problem | Message |
@@ -72,7 +88,7 @@ registered as `Register<I>(resolver => new Decorator(inner))` still contributes 
 |---|---|
 | Another service's type or an interface it exposes | Edge. An interface with several implementations produces an edge to each of them. |
 | `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `IList<T>`, `ICollection<T>`, `List<T>`, `T[]` | Edges to every service assignable to `T`, excluding the node itself — the barrier idiom for "after all background tasks". |
-| `Func<…>`, `Lazy<T>`, `ILazy<T>` | **Not** an edge. The documented way to break a cycle; listed in `Describe()` as a `lazy:` row. |
+| `Func<…>`, `Lazy<T>`, `ILazy<T>`, `LazyDependency<T>` | **Not** an edge. The documented way to break a cycle; listed in `Describe()` as a `lazy:` row. |
 | `IObjectResolver`, `IScopedObjectResolver`, `IContainerBuilder`, `RuntimeFlowHost`, `ScopeRun`, `RuntimeFlowOptions`, `InitContext`, `ILogger`, `object`, `string`, primitives, enums, `decimal` | Ignored. |
 | Anything resolving to a parent registration | Edge to the external node. |
 
@@ -137,6 +153,13 @@ affinity checks, no scheduler abstraction. A null context is a one-line warning
 (`SynchronizationContext.Current is null; continuations run inline on the calling thread.`) rather than
 a failure.
 
+"Single-threaded" describes where the framework's own code runs, not where its inputs come from. A
+caller's `CancellationToken` may be cancelled from any thread — a network callback, a `Task.Run`
+worker, Unity's background loader; the registration reacts on that thread, and the framework marshals
+the reaction back through the captured `SynchronizationContext` before it touches any run state. Every
+observer callback, log line and status mutation therefore still happens on the run's thread, and a
+service that cancels from a worker thread sees no difference from one that cancels on the main thread.
+
 One periodic loop per run (`StallWatch`, at most 1 Hz, faster when a configured threshold demands it)
 drives both timeout enforcement and the stall warning. Each service gets a `CancellationToken` linked
 to the run's; it stays valid after `InitializeAsync` returns, so background work started during
@@ -199,17 +222,29 @@ logger adds it when a message does not already carry it.
 
 ### Entry points
 
-`RuntimeFlowHost` composes each scope as: register itself → register an entry-point exception handler
-(first, so a consumer registration overrides it) → the consumer installer → ensure the entry-point
-dispatcher is registered (without which `IInitializable` never runs in a plain `ContainerBuilder`).
-VContainer runs `IInitializable` inside `Build()`, before the asynchronous graph, in registration order,
-and swallows exceptions unless a handler is installed — hence the handler, which turns a swallowed
-throw into a failed run:
+`RuntimeFlowHost` composes each scope as: register itself → the consumer installer → inspect what the
+installer left behind → register the host's entry-point exception handler unless the consumer already
+registered one → ensure the entry-point dispatcher is registered (without which `IInitializable` never
+runs in a plain `ContainerBuilder`). VContainer runs `IInitializable` inside `Build()`, before the
+asynchronous graph, in registration order, and swallows exceptions unless a handler is installed —
+hence the handler, which turns a swallowed throw into a failed run:
 
 ```text
 Initialization of scope 'session' failed: SaveMigration threw IOException while VContainer was running
 the IInitializable entry points of the scope: disk full. See InnerException.
 ```
+
+VContainer allows a single entry-point exception handler per scope and refuses a second registration of
+the same implementation type, so the inspection pass exists for two reasons. It lets a consumer
+registration of `RegisterEntryPointExceptionHandler` **supersede** the host's collector — the host then
+registers nothing, and an `IInitializable` that throws is routed to the consumer's handler instead of
+failing the run. That is a legitimate choice (a game may want to swallow a non-fatal migration error),
+so it is allowed rather than blocked, but it changes a documented semantic, hence one informational
+line: `a custom EntryPointExceptionHandler is registered; IInitializable exceptions are delivered to it
+instead of failing the run.` The same pass is what finds a service registered without exposing
+`IAsyncInitializable` (above); it inspects registration builders through the public `Build()`, registers
+nothing and never aborts composition — a registration that cannot be inspected this early (a component
+builder needing a `LifetimeScope`) is skipped.
 
 `IStartable` and `ITickable` are frame-driven and unordered with respect to asynchronous
 initialization; that is a documented contract, not an oversight.
@@ -229,7 +264,10 @@ request ─▶ quitting?            ─ yes ▶ refuse (warning + InvalidOperati
 ```
 
 The whole sequence starts after a `Task.Yield`, so a service can request a restart from inside its own
-`InitializeAsync`. `Generation` is stamped as started *before* the first `InitializeAsync` of the new
+`InitializeAsync` — as `_ = host.RestartAsync("reason")`, never awaited. Awaiting it there deadlocks by
+construction until the grace expires: the returned task completes only once the current run is torn
+down, and teardown waits up to `CancellationGrace` for the in-flight services, one of which is the
+awaiting service itself. `Generation` is stamped as started *before* the first `InitializeAsync` of the new
 run, so a synchronous restart request from within it opens a new generation instead of joining the one
 it is running in. Both `StartAsync` and `RestartAsync` follow the chain and return the result of the
 **last** run, which is why an awaiter that started before a restart still observes the final outcome.
@@ -291,6 +329,25 @@ session and the session before the global run; a global container supplied throu
   No reflection, no internals. An override matching nothing fails the test by name.
 - **Exact messages.** Tests assert on the strings in this document, because a diagnostic that is not
   pinned degrades silently.
+- **`LifecycleFake` needs a JIT.** It builds its fakes with `DispatchProxy`, which emits IL at runtime,
+  so it runs in the Editor and in Mono players and throws under IL2CPP. Nothing in the runtime package
+  depends on it and it never reaches a player build (`RuntimeFlow.Testing` is constrained to
+  `UNITY_INCLUDE_TESTS`); an IL2CPP test writes a hand-rolled stub instead.
+
+### Layout and namespaces
+
+`scripts/check_package_namespaces.sh` enforces "namespace follows folder" **for the package only**, and
+the mapping is exactly four cases: `Runtime/*.cs` → `RuntimeFlow`, `Runtime/Internal/*.cs` (flat) →
+`RuntimeFlow.Internal`, `Runtime/Testing/*.cs` (flat) → `RuntimeFlow.Testing`, and `Editor/**` (any
+depth) → `RuntimeFlow.Editor`. `Runtime/Properties/` and `Runtime/Plugins/` are exempt, and no other
+`Runtime/` subfolder is allowed.
+
+The rule stops at the package boundary. The Unity test project's assemblies are organised by subject,
+not by namespace: every file of `RuntimeFlow.Tests` lives in some `Assets/Tests/EditMode/…/<Area>/`
+folder and declares `RuntimeFlow.Tests.<Area>`, which is the asmdef's root namespace plus its folder;
+`RuntimeFlow.Demo` is flat — `Assets/Demo/Global/` and `Assets/Demo/Session/` both declare
+`RuntimeFlow.Demo`, because they are one assembly with one root namespace and the folders only group
+the two scopes for a reader. The guard never looks at them.
 
 ## 6. Requirements from a real free-to-play client
 

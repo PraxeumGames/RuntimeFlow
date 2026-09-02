@@ -33,10 +33,14 @@ namespace RuntimeFlow.Demo
         /// <inheritdoc />
         public async Task InitializeAsync(InitContext context, CancellationToken cancellationToken)
         {
-            if (_chaos.TimeoutInCatalog) _backend.Slow(FakeBackend.Endpoints.Catalog, 10000);
+            // The slow answer is a property of this call, not of the backend: mutating the shared
+            // endpoint would leave /catalog slow for every later session, restart included.
+            var latency = _chaos.TimeoutInCatalog
+                ? ChaosToggles.SlowCatalogMilliseconds
+                : FakeBackend.NoLatencyOverride;
 
             RequestedVersion = _config.Config.CatalogVersion;
-            Catalog = await _backend.GetAsync<Catalog>(FakeBackend.Endpoints.Catalog, cancellationToken);
+            Catalog = await _backend.GetAsync<Catalog>(FakeBackend.Endpoints.Catalog, latency, cancellationToken);
         }
     }
 }

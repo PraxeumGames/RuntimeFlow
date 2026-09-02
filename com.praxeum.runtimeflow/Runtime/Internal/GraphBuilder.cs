@@ -120,7 +120,7 @@ namespace RuntimeFlow.Internal
                 AddConstructorEdges(services[i], sources[i], all);
 
             for (var i = 0; i < services.Count; i++)
-                AddDependsOnEdges(services[i], sources[i], name, all, services, externals);
+                AddDependsOnEdges(services[i], sources[i], scope, name, all, services, externals);
 
             var nodes = new List<ServiceNode>(services);
             if (phases.Count > 0) AddPhaseBarriers(nodes, services, phases, name, ref index);
@@ -327,6 +327,7 @@ namespace RuntimeFlow.Internal
         private static void AddDependsOnEdges(
             ServiceNode node,
             Type registeredType,
+            IObjectResolver resolver,
             string scope,
             List<ServiceNode> all,
             List<ServiceNode> services,
@@ -346,15 +347,28 @@ namespace RuntimeFlow.Internal
                     matched = true;
                 }
 
-                if (!matched)
+                if (matched) continue;
+
+                // The target resolves but is not part of any graph: the registration simply forgot to
+                // expose IAsyncInitializable. That is a far more common mistake than a missing service,
+                // and it deserves the fix rather than the generic "nothing is registered" text.
+                if (resolver.TryGetRegistration(attribute.ServiceType, out var registration)
+                    && registration != null
+                    && typeof(IAsyncInitializable).IsAssignableFrom(registration.ImplementationType))
                 {
                     throw new InitGraphException(scope,
-                        $"{node.Name} declares [DependsOn(typeof({attribute.ServiceType.Name}))], but no initializable service " +
-                        $"assignable to {attribute.ServiceType.Name} is registered in scope '{scope}' or its parents. " +
-                        "A target must implement IAsyncInitializable and live in the same scope or a parent scope; " +
-                        "a parent scope can never depend on a child scope. " +
-                        KnownServices(scope, services, externals));
+                        $"{node.Name} declares [DependsOn(typeof({attribute.ServiceType.Name}))]; " +
+                        $"{registration.ImplementationType.Name} implements IAsyncInitializable but is not registered as one, " +
+                        "so it is never initialized. Register it with RegisterInitializable<T>() or add " +
+                        ".As<IAsyncInitializable>() to its registration.");
                 }
+
+                throw new InitGraphException(scope,
+                    $"{node.Name} declares [DependsOn(typeof({attribute.ServiceType.Name}))], but no initializable service " +
+                    $"assignable to {attribute.ServiceType.Name} is registered in scope '{scope}' or its parents. " +
+                    "A target must implement IAsyncInitializable and live in the same scope or a parent scope; " +
+                    "a parent scope can never depend on a child scope. " +
+                    KnownServices(scope, services, externals));
             }
         }
 

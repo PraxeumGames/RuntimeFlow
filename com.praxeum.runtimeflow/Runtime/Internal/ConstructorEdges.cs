@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Reflection;
 using Microsoft.Extensions.Logging;
@@ -13,8 +12,9 @@ namespace RuntimeFlow.Internal
     /// </summary>
     internal static class ConstructorEdges
     {
-        private static readonly ConcurrentDictionary<Type, ParameterInfo[]> Cache =
-            new ConcurrentDictionary<Type, ParameterInfo[]>();
+        // RuntimeFlow builds graphs on the Unity main thread only, so a plain dictionary is enough;
+        // a concurrent one would only advertise a threading model the rest of the framework does not have.
+        private static readonly Dictionary<Type, ParameterInfo[]> Cache = new Dictionary<Type, ParameterInfo[]>();
 
         private static readonly Type[] IgnoredTypes =
         {
@@ -31,7 +31,14 @@ namespace RuntimeFlow.Internal
         };
 
         /// <summary>Parameters of the constructor VContainer would inject, cached per type.</summary>
-        public static ParameterInfo[] Parameters(Type type) => Cache.GetOrAdd(type, Select);
+        public static ParameterInfo[] Parameters(Type type)
+        {
+            if (Cache.TryGetValue(type, out var cached)) return cached;
+
+            var parameters = Select(type);
+            Cache.Add(type, parameters);
+            return parameters;
+        }
 
         /// <summary>True when the parameter deliberately breaks an edge (Func, Lazy, ILazy).</summary>
         public static bool IsLazy(Type type)

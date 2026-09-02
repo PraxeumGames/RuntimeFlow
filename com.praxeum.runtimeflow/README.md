@@ -5,8 +5,10 @@ Asynchronous initialization graph for Unity, built on stock VContainer. A servic
 derives the startup order from the container itself: constructor parameters are edges, the graph is
 validated before anything runs, and services start as soon as their own dependencies are done.
 
-Repository-level layout and development commands: [`../README.md`](../README.md).
-Design rationale, algorithms and the complete message catalogue: [`../docs/DESIGN.md`](../docs/DESIGN.md).
+Repository-level layout and development commands:
+[`README.md`](https://github.com/PraxeumGames/RuntimeFlow/blob/main/README.md).
+Design rationale, algorithms and the complete message catalogue:
+[`docs/DESIGN.md`](https://github.com/PraxeumGames/RuntimeFlow/blob/main/docs/DESIGN.md).
 
 ## Install
 
@@ -15,7 +17,8 @@ Design rationale, algorithms and the complete message catalogue: [`../docs/DESIG
 ```json
 {
   "dependencies": {
-    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#1.0.0"
+    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#1.0.0",
+    "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer#f2afd2ac175a1e04ac59a8f69794df827b53b732"
   },
   "testables": [
     "com.praxeum.runtimeflow"
@@ -23,11 +26,19 @@ Design rationale, algorithms and the complete message catalogue: [`../docs/DESIG
 }
 ```
 
-VContainer is a declared dependency and resolves automatically (upstream `hadashiA/VContainer`, tag
-1.15.3, pinned by SHA). The `testables` entry defines `UNITY_INCLUDE_TESTS` for the package, which is
-what compiles the `RuntimeFlow.Testing` assembly; omit it if you do not want the harness.
+Both entries are needed. RuntimeFlow lists `jp.hadashikick.vcontainer` in its own `package.json`, but
+UPM never resolves a git-URL dependency declared inside a package — only the project manifest fetches
+git packages — so the declaration documents the requirement and is satisfied only when your manifest
+names the same package. Skip the second line and the project stops compiling on unresolved
+`VContainer` references. The pin is upstream `hadashiA/VContainer`, tag 1.15.3, by commit SHA; if your
+project already ships VContainer (a fork, a registry copy, an embedded one), keep yours and omit the
+line, as long as it is a superset of 1.15.3.
 
-Requires Unity 2021.3+ (validated on 2022.3.62f2).
+The `testables` entry defines `UNITY_INCLUDE_TESTS` for the package, which is what compiles the
+`RuntimeFlow.Testing` assembly; omit it if you do not want the harness.
+
+Requires Unity 2022.3+ (validated on 2022.3.62f2). 2022.2 is the floor for the UI Toolkit API the
+dashboard uses.
 
 ## Quick start
 
@@ -58,12 +69,25 @@ var result = await host.StartAsync();
 
 ## Concepts
 
-**Services.** A service is any VContainer registration that exposes `IAsyncInitializable` and is
+**Services.** A service is any VContainer registration that **exposes** `IAsyncInitializable` and is
 `Lifetime.Singleton`. Discovery is scope-local: each scope initializes only its own registrations;
 services inherited from parent scopes are treated as already initialized externals (one that degraded
-there stays degraded here). A non-singleton
-registration is a graph error, because a scoped or transient service would be re-created uninitialized
-in a child scope.
+there stays degraded here). A non-singleton registration is a graph error, because a scoped or
+transient service would be re-created uninitialized in a child scope.
+
+*The trap.* Implementing `IAsyncInitializable` is not enough — the registration has to expose it.
+`builder.Register<Catalog>(Lifetime.Singleton)` (or `.As<ICatalog>()` alone) registers a class the
+graph never sees, so its `InitializeAsync` is simply never called and nothing else goes wrong: the run
+succeeds with a half-built service. The host detects the case and warns:
+
+```text
+[RuntimeFlow] session: Catalog implements IAsyncInitializable but is registered without exposing it;
+it will never be initialized. Use RegisterInitializable<T>() or .As<IAsyncInitializable>().
+```
+
+Use `builder.RegisterInitializable<Catalog>()`, or add `.As<IAsyncInitializable>()` /
+`.AsImplementedInterfaces()` to your own registration. A `[DependsOn(typeof(T))]` pointing at such a
+type is an error rather than a warning, because the ordering it asks for cannot be honoured at all.
 
 **Edges.** Three sources, all rendered by `Describe()` with their origin:
 
@@ -73,10 +97,11 @@ in a child scope.
 | `[DependsOn(typeof(T))]` | An ordering edge to every service assignable to `T`, in this scope or a parent. A target that matches nothing is a graph error listing the known services per scope. |
 | Phases | `RuntimeFlowOptions.Phases` is an ordered name list, empty by default. Each phase gets a synthetic barrier: every service of phase *i* must finish before any service of phase *i+1* starts. |
 
-`Func<T>`, `Lazy<T>` and `ILazy<T>` parameters are **not** edges — that is the documented way to break
-a cycle, and `Describe()` lists them as `lazy:` rows. `IObjectResolver`, `IScopedObjectResolver`,
-`IContainerBuilder`, `RuntimeFlowHost`, `ScopeRun`, `RuntimeFlowOptions`, `InitContext`, `ILogger`,
-`object`, `string`, primitives and enums are ignored as parameters.
+`Func<T>`, `Lazy<T>`, `ILazy<T>` and VContainer's `LazyDependency<T>` parameters are **not** edges —
+that is the documented way to break a cycle, and `Describe()` lists them as `lazy:` rows.
+`IObjectResolver`, `IScopedObjectResolver`, `IContainerBuilder`, `RuntimeFlowHost`, `ScopeRun`,
+`RuntimeFlowOptions`, `InitContext`, `ILogger`, `object`, `string`, primitives, enums and `decimal` are
+ignored as parameters.
 
 Phases apply per scope, to the scopes that use them: as soon as **one** service of a scope carries
 `[Init(Phase = …)]`, that scope gets the barriers and every unmarked service of it lands in the **last**
@@ -105,9 +130,10 @@ a container somebody else built and never disposes it.
 
 **VContainer stays yours.** The framework never wraps `IContainerBuilder`: installers receive the real
 builder and the whole VContainer API — factories, `RegisterInstance`, decorators through
-`Register<I>(resolver => …)`, entry points, build callbacks, `CreateScope`. The host adds exactly three
-registrations of its own to each scope it composes: itself, an entry-point exception handler
-(registered first, so yours overrides it) and the entry-point dispatcher. Consequences worth knowing:
+`Register<I>(resolver => …)`, entry points, build callbacks, `CreateScope`. The host adds at most three
+registrations of its own to each scope it composes: itself, an entry-point exception handler and the
+entry-point dispatcher. The handler is registered after your installer has run and only if you did not
+register one yourself, so yours always wins. Consequences worth knowing:
 
 - `IInitializable` and `IPostInitializable` entry points run **inside** `Build()`, before the first
   `InitializeAsync` of the scope. Their order is the registration order. An exception thrown by one of
@@ -116,6 +142,13 @@ registrations of its own to each scope it composes: itself, an entry-point excep
   initialization, and in EditMode they never tick at all.
 - VContainer disposes `IDisposable` registrations when the scope is disposed, in reverse creation
   order. RuntimeFlow additionally calls `IAsyncDisposable.DisposeAsync` on the services it started.
+- Registering your own entry-point exception handler (`builder.RegisterEntryPointExceptionHandler(…)`)
+  **supersedes** the host's collector: VContainer allows one handler per scope, so the host steps aside
+  and does not register its own. From then on an `IInitializable` that throws is routed to your handler
+  and no longer fails the run — the exception is yours to rethrow or to swallow. The host logs one
+  informational line when it notices, so the change of semantics is never silent:
+  `a custom EntryPointExceptionHandler is registered; IInitializable exceptions are delivered to it
+  instead of failing the run.`
 
 ## Failure semantics
 
@@ -178,7 +211,11 @@ external (from parent scopes): GlobalConfig [global, initialized]
 services stay warm and are never initialized twice.
 
 - **Deferred.** The work starts after a yield, so a service may request a restart from inside its own
-  `InitializeAsync` without re-entrancy.
+  `InitializeAsync` without re-entrancy. Request it as `_ = host.RestartAsync("reason")` and do **not**
+  await it there: the returned task completes only after the current run has been cancelled and torn
+  down, and teardown waits out `CancellationGrace` for the very service that is awaiting — the service
+  would be waiting for itself. Fire it and return; observers and `InitContext.IsRestart` report the new
+  generation.
 - **Coalesced.** Requests arriving while a restart is already pending join it; ten clicks produce one
   rebuild. `StartAsync` and `RestartAsync` both return the result of the *last* run in the chain, so an
   awaiter started before a restart still sees the final outcome.
@@ -221,6 +258,9 @@ Assert.That(app.Resolve<PlayerProfile>().Coins, Is.EqualTo(10));
 - `LifecycleFake.Of<TService>(stub, cfg => …)` builds a `DispatchProxy` fake that takes part in the
   lifecycle: `FailInitializeAttempts(n)`, `FailDisposeAttempts(n)`, `DelayInitialize(span)`, `Hang()`.
   `OfHandle` also returns a `FakeInvocationLog` recording every call (`initialize#1`, `disposeAsync#1`).
+  `DispatchProxy` emits IL at runtime, so `LifecycleFake` works in the Editor and in Mono players only;
+  under IL2CPP it throws. Nothing else in `RuntimeFlow.Testing` needs it, and no player build ships it —
+  write a hand-rolled stub class for an IL2CPP test.
 - `CollectingObserver` records callbacks as `"started:session:Catalog"`-style strings for order
   assertions.
 
@@ -238,7 +278,8 @@ JSON or as `Describe()` text.
 
 ## Demo
 
-`RuntimeFlow.UnityTests/Assets/Demo` is a runnable startup flow with a fake backend and chaos toggles —
+[`RuntimeFlow.UnityTests/Assets/Demo`](https://github.com/PraxeumGames/RuntimeFlow/blob/main/RuntimeFlow.UnityTests/Assets/Demo)
+is a runnable startup flow with a fake backend and chaos toggles —
 throw in a profile service, hang a warmup, trip a catalog timeout, trigger a maintenance halt, skip the
 consent gate — so every failure path in the table above can be watched in the dashboard.
 
@@ -261,7 +302,8 @@ otherwise report it as a missing dependency.
 | `Runtime/` | Public API: `IAsyncInitializable`, `InitContext`, `InitAttribute`, `DependsOnAttribute`, `RuntimeFlowHost`, `RuntimeFlowOptions`, `ScopeRun`, `StartupResult`/`StartupOutcome`, `RuntimeFlowException`, `InitGraphException`, `IRuntimeFlowObserver`, `RuntimeFlowStatus`/`ServiceStatus`/`ServiceState`/`RunState`, `UnityConsoleLogger`, `RuntimeFlowRegistrationExtensions`. |
 | `Runtime/Internal/` | `GraphBuilder`, `ConstructorEdges`, `GraphDescriber`, `ServiceNode`, `Scheduler`, `StallWatch`, `ObserverList`, `FlowRegistry`. |
 | `Runtime/Testing/` | `TestFlow`, `LifecycleFake`, `CollectingObserver` (assembly `RuntimeFlow.Testing`, constrained to `UNITY_INCLUDE_TESTS`). |
+| `Runtime/Properties/` | `AssemblyInfo.cs` — the `InternalsVisibleTo` grants for `RuntimeFlow.Editor`, `RuntimeFlow.Testing` and the two test assemblies. |
 | `Runtime/Plugins/` | Microsoft.Extensions.Logging.Abstractions. |
-| `Editor/` | `RuntimeFlowDashboardWindow` and its stylesheet (assembly `RuntimeFlow.Editor`). |
+| `Editor/` | `RuntimeFlowDashboardWindow` and its stylesheet (assembly `RuntimeFlow.Editor`). It is the assembly's only public type; the snapshot model, the JSON dump and the three views are internal, visible to the test assembly through `Editor/Properties/AssemblyInfo.cs`. |
 
 MIT licensed; see LICENSE.md and Third Party Notices.md in the package root.

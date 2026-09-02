@@ -13,6 +13,10 @@ on:
 permissions:
   contents: read
 
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -38,6 +42,22 @@ jobs:
           python3 -m json.tool RuntimeFlow.UnityTests/Packages/manifest.json >/dev/null
           find com.praxeum.runtimeflow RuntimeFlow.UnityTests/Assets -name '*.asmdef' -print0 \
             | xargs -0 -n1 sh -c 'python3 -m json.tool "$0" >/dev/null || { echo "::error::invalid JSON: $0"; exit 1; }'
+
+      - name: VContainer pin matches between package.json and the test project manifest
+        run: |
+          python3 - <<'PY'
+          import json, sys
+          key = "jp.hadashikick.vcontainer"
+          pkg = json.load(open("com.praxeum.runtimeflow/package.json"))["dependencies"].get(key)
+          project = json.load(open("RuntimeFlow.UnityTests/Packages/manifest.json"))["dependencies"].get(key)
+          if pkg is None:
+              sys.exit("::error::com.praxeum.runtimeflow/package.json declares no %s dependency" % key)
+          if project is None:
+              sys.exit("::error::RuntimeFlow.UnityTests/Packages/manifest.json declares no %s dependency" % key)
+          if pkg != project:
+              sys.exit("::error::VContainer pin drift: package.json has %s but the test project manifest has %s" % (pkg, project))
+          print("VContainer pin: %s" % pkg)
+          PY
 
       - name: package.json version matches CHANGELOG
         run: |

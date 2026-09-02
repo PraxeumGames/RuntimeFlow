@@ -36,7 +36,7 @@ namespace RuntimeFlow.Tests.Demo
             => TestFlow
                 .Create(
                     builder => DemoGame.ConfigureGlobal(builder, _backend, _chaos),
-                    builder => DemoGame.ConfigureSession(builder, _backend, _chaos))
+                    DemoGame.ConfigureSession)
                 .Configure(options => options.Phases = DemoGame.Phases);
 
         /// <summary>A host built exactly the way the scene builds it, for the tests that need it mid-run.</summary>

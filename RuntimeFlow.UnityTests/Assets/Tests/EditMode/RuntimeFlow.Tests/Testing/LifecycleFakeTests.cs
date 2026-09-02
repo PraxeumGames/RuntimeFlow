@@ -24,10 +24,22 @@ namespace RuntimeFlow.Tests.Testing
                 return Task.CompletedTask;
             }
 
-            public ValueTask DisposeAsync() => new ValueTask();
+            public int Disposals { get; private set; }
+
+            public ValueTask DisposeAsync()
+            {
+                Disposals++;
+                return new ValueTask();
+            }
         }
 
         private static InitContext? NoContext => null;
+
+        private readonly RunTracker _tracker = new RunTracker();
+
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
 
         [Test]
         [Timeout(10000)]
@@ -92,10 +104,42 @@ namespace RuntimeFlow.Tests.Testing
         {
             var handle = LifecycleFake.OfHandle<IFakeService>(configure: cfg => cfg.FailDisposeAttempts(1));
 
-            Assert.Throws<InvalidOperationException>(() => { handle.Service.DisposeAsync(); });
+            // The failure travels in the returned ValueTask, not out of the call: a synchronous throw
+            // would escape every `await service.DisposeAsync()` the framework itself writes.
+            await AsyncTestAssert.ThrowsAsync<InvalidOperationException>(
+                async () => await handle.Service.DisposeAsync());
             await handle.Service.DisposeAsync();
 
             Assert.That(handle.Log.Invocations, Is.EqualTo(new[] { "disposeAsync#1", "disposeAsync#2" }));
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task DisposeAsyncIsForwardedToTheStub()
+        {
+            var stub = new Stub();
+            var handle = LifecycleFake.OfHandle<IFakeService>(stub);
+
+            await handle.Service.DisposeAsync();
+
+            Assert.That(stub.Disposals, Is.EqualTo(1), "the stub observes its own disposal");
+            Assert.That(handle.Log.Invocations, Is.EqualTo(new[] { "disposeAsync#1" }));
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AFailedDisposalNeverReachesTheStub()
+        {
+            var stub = new Stub();
+            var handle = LifecycleFake.OfHandle<IFakeService>(stub, cfg => cfg.FailDisposeAttempts(1));
+
+            await AsyncTestAssert.ThrowsAsync<InvalidOperationException>(
+                async () => await handle.Service.DisposeAsync());
+
+            Assert.That(stub.Disposals, Is.Zero);
+
+            await handle.Service.DisposeAsync();
+            Assert.That(stub.Disposals, Is.EqualTo(1));
         }
 
         [Test]
@@ -117,9 +161,9 @@ namespace RuntimeFlow.Tests.Testing
         {
             var handle = LifecycleFake.OfHandle<IFakeService>();
             var log = new CapturingLogger();
-            var container = TestScope.Build(b => b.RegisterInstance(handle.Service).As<IAsyncInitializable>());
+            var container = _tracker.Build(b => b.RegisterInstance(handle.Service).As<IAsyncInitializable>());
 
-            var run = ScopeRun.Create(container, "session", TestScope.Options(log));
+            var run = _tracker.Create(container, "session", TestScope.Options(log));
             var result = await run.RunAsync();
             await run.DisposeAsync();
 

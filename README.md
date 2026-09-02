@@ -33,7 +33,8 @@ In the consuming project's `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#1.0.0"
+    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#1.0.0",
+    "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer#f2afd2ac175a1e04ac59a8f69794df827b53b732"
   },
   "testables": [
     "com.praxeum.runtimeflow"
@@ -41,11 +42,17 @@ In the consuming project's `Packages/manifest.json`:
 }
 ```
 
-VContainer is declared as a dependency of the package and is resolved automatically by UPM — do not
-add it by hand. The pin is upstream `hadashiA/VContainer`, tag 1.15.3, referenced by commit SHA
+**Both lines are required.** The package declares `jp.hadashikick.vcontainer` in its own
+`package.json`, but UPM does not resolve a git-URL dependency that is declared *inside* a package: git
+dependencies are only fetched from the project manifest. The declaration in the package documents the
+requirement and is satisfied when the project manifest names the same package; without the second line
+above the project fails to compile with unresolved `VContainer` references. The pin is upstream
+`hadashiA/VContainer`, tag 1.15.3, referenced by commit SHA
 (`f2afd2ac175a1e04ac59a8f69794df827b53b732`) so the resolved API is exactly the one the suite runs
-against. A project that already ships its own VContainer fork keeps it, as long as it is a superset of
-1.15.3.
+against. A project that already ships its own VContainer — a fork, a registry copy or an embedded one —
+keeps it and omits the second line, as long as it is a superset of 1.15.3. CI asserts that the SHA in
+`com.praxeum.runtimeflow/package.json` and the one in `RuntimeFlow.UnityTests/Packages/manifest.json`
+never drift apart.
 
 The `testables` entry is what makes Unity define `UNITY_INCLUDE_TESTS` for the package, which is the
 constraint that compiles the `RuntimeFlow.Testing` assembly (`TestFlow`, `LifecycleFake`,
@@ -124,19 +131,23 @@ Results land in `RuntimeFlow.UnityTests/TestResults/`, the editor log in `Runtim
 
 - **Package gate** runs on every push and pull request and needs no Unity: the namespace/layout guard,
   the docs-reference guard, JSON validity of `package.json`, the manifest and every assembly
-  definition, and a check that the package version has a matching changelog section.
-- **Unity EditMode and PlayMode suites** run nightly and on manual dispatch. They also run on a push or
-  pull request when the repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS` is set to `1` and the Unity
-  license secrets are configured.
+  definition, a check that the package version has a matching changelog section, and a check that the
+  VContainer pin is identical in `package.json` and in the test project's manifest.
+- **Unity EditMode and PlayMode suites** run nightly and on manual dispatch. They additionally run on a
+  push or pull request when the repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS` is set to `1`; the
+  Unity license secrets (`UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD`) are what those jobs need to
+  pass, not part of the trigger condition.
 
 ## Supported versions
 
-- Unity `2021.3` or newer is declared in `package.json`; the suite is validated on 2022.3.62f2 locally
-  and in CI. Other editor versions are untested, not unsupported.
-- VContainer 1.15.3 or newer (upstream, or a fork that is a superset of it).
+- Unity `2022.3` or newer is declared in `package.json`; the suite is validated on 2022.3.62f2 locally
+  and in CI. 2022.2 is the floor for the UI Toolkit API the dashboard uses; older editors are not
+  supported.
+- VContainer 1.15.3 or newer (upstream, or a fork that is a superset of it), declared in the consuming
+  project's own `Packages/manifest.json` — see [Install](#install).
 - The package is compiled with nullable reference types enabled and uses default interface members
-  (`IRuntimeFlowObserver`), so the consuming project must use Unity's ".NET Standard" API compatibility
-  level (2.1), which is the default; ".NET Standard 2.0" is not enough.
+  (`IRuntimeFlowObserver`). On Unity 2022.3+ both API compatibility levels — ".NET Standard" (2.1) and
+  ".NET Framework" — support them, so no project setting has to change.
 
 ## License
 

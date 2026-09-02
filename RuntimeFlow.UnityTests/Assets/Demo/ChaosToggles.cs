@@ -6,13 +6,23 @@ namespace RuntimeFlow.Demo
     /// </summary>
     public sealed class ChaosToggles
     {
+        /// <summary>
+        /// Latency <see cref="CatalogService"/> asks the backend for when <see cref="TimeoutInCatalog"/>
+        /// is on: far past the service's own two-second deadline. It is a per-call value, so nothing
+        /// about the backend stays slow once the toggle goes off again.
+        /// </summary>
+        public const int SlowCatalogMilliseconds = 10000;
+
         /// <summary>Makes <see cref="PlayerProfileService"/> throw: a required service failing mid-run.</summary>
         public bool ThrowInProfile { get; set; }
 
         /// <summary>Makes <see cref="QuestWarmupService"/> await the token forever: a stall warning, then a deadline.</summary>
         public bool HangInQuestWarmup { get; set; }
 
-        /// <summary>Makes <c>/catalog</c> answer after ten seconds, so <see cref="CatalogService"/> hits its own timeout.</summary>
+        /// <summary>
+        /// Makes <see cref="CatalogService"/> ask <c>/catalog</c> for a
+        /// <see cref="SlowCatalogMilliseconds"/> answer, so it hits its own timeout.
+        /// </summary>
         public bool TimeoutInCatalog { get; set; }
 
         /// <summary>Makes <see cref="MaintenanceGateService"/> halt the run without an exception.</summary>

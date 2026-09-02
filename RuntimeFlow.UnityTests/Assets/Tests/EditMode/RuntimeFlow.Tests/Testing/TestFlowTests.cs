@@ -107,6 +107,15 @@ namespace RuntimeFlow.Tests.Testing
         [SetUp]
         public void SetUp() => _probe = new Probe();
 
+        private static bool Logged(IReadOnlyList<string> log, string fragment)
+        {
+            foreach (var line in log)
+            {
+                if (line.Contains(fragment)) return true;
+            }
+            return false;
+        }
+
         private static void AssertLogged(IReadOnlyList<string> log, string fragment)
         {
             foreach (var line in log)
@@ -253,13 +262,27 @@ namespace RuntimeFlow.Tests.Testing
             var fake = LifecycleFake.Of<IFakeBackend>(configure: behavior => behavior.Hang());
             var flow = TestFlow.Create(Nothing, SessionWithRealBackend)
                 .Override<IBackend>(fake)
-                .Configure(options => options.StallWarningAfter = TimeSpan.FromMilliseconds(150))
-                .WithStartupTimeout(TimeSpan.FromMilliseconds(700));
+                .Configure(options => options.StallWarningAfter = TimeSpan.FromMilliseconds(100));
 
-            await AsyncTestAssert.ThrowsAsync<TimeoutException>(() => flow.StartAsync());
+            // The warning is awaited through the log rather than through a startup deadline: a deadline
+            // long enough to be reliable is time this test would spend doing nothing.
+            var starting = flow.StartAsync();
+            await AsyncTestAssert.Until(
+                () => Logged(flow.Log, "Warning: [RuntimeFlow] session: no progress for"),
+                TimeSpan.FromSeconds(5),
+                string.Join(Environment.NewLine, flow.Log));
 
             AssertLogged(flow.Log, "Warning: [RuntimeFlow] session: no progress for");
+
             await flow.DisposeAsync();
+            try
+            {
+                await starting;
+            }
+            catch (Exception)
+            {
+                // Disposing the flow cancels the hanging run; the startup task is observed, not asserted.
+            }
         }
 
         [Test]

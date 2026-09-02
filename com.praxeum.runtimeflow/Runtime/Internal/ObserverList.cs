@@ -43,95 +43,46 @@ namespace RuntimeFlow.Internal
             _scope = scope;
         }
 
-        public bool IsEmpty => _observers.Count == 0;
-
         public void RunStarted(bool isRestart)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnRunStarted(_scope, isRestart); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnRunStarted), e); }
-            }
-        }
+            => Fan(o => o.OnRunStarted(_scope, isRestart), nameof(IRuntimeFlowObserver.OnRunStarted));
 
         public void PhaseStarted(string phase)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnPhaseStarted(_scope, phase); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnPhaseStarted), e); }
-            }
-        }
+            => Fan(o => o.OnPhaseStarted(_scope, phase), nameof(IRuntimeFlowObserver.OnPhaseStarted));
 
         public void PhaseCompleted(string phase)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnPhaseCompleted(_scope, phase); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnPhaseCompleted), e); }
-            }
-        }
+            => Fan(o => o.OnPhaseCompleted(_scope, phase), nameof(IRuntimeFlowObserver.OnPhaseCompleted));
 
         public void ServiceStarted(ServiceStatus service)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnServiceStarted(service); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnServiceStarted), e); }
-            }
-        }
+            => Fan(o => o.OnServiceStarted(service), nameof(IRuntimeFlowObserver.OnServiceStarted));
 
         public void ServiceAwaitingPlayer(ServiceStatus service)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnServiceAwaitingPlayer(service); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnServiceAwaitingPlayer), e); }
-            }
-        }
+            => Fan(o => o.OnServiceAwaitingPlayer(service), nameof(IRuntimeFlowObserver.OnServiceAwaitingPlayer));
 
         public void ServiceCompleted(ServiceStatus service)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnServiceCompleted(service); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnServiceCompleted), e); }
-            }
-        }
+            => Fan(o => o.OnServiceCompleted(service), nameof(IRuntimeFlowObserver.OnServiceCompleted));
 
         public void ServiceFailed(ServiceStatus service, Exception error)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnServiceFailed(service, error); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnServiceFailed), e); }
-            }
-        }
+            => Fan(o => o.OnServiceFailed(service, error), nameof(IRuntimeFlowObserver.OnServiceFailed));
 
         public void RunCompleted(StartupResult result)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnRunCompleted(_scope, result); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnRunCompleted), e); }
-            }
-        }
+            => Fan(o => o.OnRunCompleted(_scope, result), nameof(IRuntimeFlowObserver.OnRunCompleted));
 
         public void RunHalted(StartupResult result)
-        {
-            for (var i = 0; i < _observers.Count; i++)
-            {
-                try { _observers[i].OnRunHalted(_scope, result); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnRunHalted), e); }
-            }
-        }
+            => Fan(o => o.OnRunHalted(_scope, result), nameof(IRuntimeFlowObserver.OnRunHalted));
 
         public void RunFailed(RuntimeFlowException error)
+            => Fan(o => o.OnRunFailed(_scope, error), nameof(IRuntimeFlowObserver.OnRunFailed));
+
+        /// <summary>
+        /// Delivers one event to every observer in registration order; an observer that throws is reported
+        /// and skipped, so a broken listener can never take the run down with it.
+        /// </summary>
+        private void Fan(Action<IRuntimeFlowObserver> call, string method)
         {
             for (var i = 0; i < _observers.Count; i++)
             {
-                try { _observers[i].OnRunFailed(_scope, error); }
-                catch (Exception e) { Report(_observers[i], nameof(IRuntimeFlowObserver.OnRunFailed), e); }
+                try { call(_observers[i]); }
+                catch (Exception e) { Report(_observers[i], method, e); }
             }
         }
 

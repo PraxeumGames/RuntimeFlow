@@ -118,7 +118,7 @@ namespace RuntimeFlow.Testing
     internal sealed class FakeState
     {
         public object? Stub { get; set; }
-        public FakeBehavior Behavior { get; } = new FakeBehavior();
+        public FakeBehavior Behavior { get; set; } = new FakeBehavior();
         public FakeInvocationLog Log { get; } = new FakeInvocationLog();
         public int InitializeAttempts;
         public int DisposeAttempts;
@@ -133,7 +133,11 @@ namespace RuntimeFlow.Testing
         public FakeDispatchProxy Bind(object? stub, FakeBehavior behavior)
         {
             _state.Stub = stub;
-            Apply(behavior);
+
+            // The configured behaviour is taken as it is instead of being replayed through its own
+            // setters: replaying dropped everything whose value happened to be the default, so
+            // FailInitializeAttempts(0) — "never fail, but use my exception factory" — was silently lost.
+            _state.Behavior = behavior ?? new FakeBehavior();
             return this;
         }
 
@@ -149,25 +153,13 @@ namespace RuntimeFlow.Testing
                 return HandleInitializeAsync(args);
 
             if (targetMethod.Name == "DisposeAsync" && targetMethod.ReturnType.Name.StartsWith("ValueTask", StringComparison.Ordinal))
-                return HandleValueTaskDispose();
+                return HandleValueTaskDispose(targetMethod);
 
             if (targetMethod.Name == nameof(IDisposable.Dispose) && targetMethod.GetParameters().Length == 0)
                 return HandleSyncDispose(targetMethod);
 
             _state.Log.Record(targetMethod.Name);
             return InvokeStub(targetMethod, args);
-        }
-
-        private void Apply(FakeBehavior behavior)
-        {
-            if (behavior.InitFailCount > 0)
-                _state.Behavior.FailInitializeAttempts(behavior.InitFailCount, behavior.InitializeExceptionFactory);
-            if (behavior.DisposeFailCount > 0)
-                _state.Behavior.FailDisposeAttempts(behavior.DisposeFailCount);
-            if (behavior.InitDelay > TimeSpan.Zero)
-                _state.Behavior.DelayInitialize(behavior.InitDelay);
-            if (behavior.Hangs)
-                _state.Behavior.Hang();
         }
 
         private static bool IsInitializeAsync(MethodInfo method)
@@ -202,13 +194,32 @@ namespace RuntimeFlow.Testing
             await InvokeStubInitializeAsync(context, cancellationToken);
         }
 
-        private object HandleValueTaskDispose()
+        private object HandleValueTaskDispose(MethodInfo targetMethod)
         {
             var attempt = ++_state.DisposeAttempts;
             _state.Log.Record($"disposeAsync#{attempt}");
+            return DisposeStubAsync(targetMethod, attempt);
+        }
+
+        /// <summary>
+        /// Fails the configured number of attempts through the returned <see cref="ValueTask"/> — a
+        /// synchronous throw would escape the caller's await — then forwards to the stub like every other
+        /// intercepted call, so a stub can observe its own disposal.
+        /// </summary>
+        private async ValueTask DisposeStubAsync(MethodInfo targetMethod, int attempt)
+        {
             if (attempt <= _state.Behavior.DisposeFailCount)
                 throw new InvalidOperationException($"LifecycleFake: dispose attempt {attempt} configured to fail.");
-            return new ValueTask();
+
+            switch (InvokeStub(targetMethod, Array.Empty<object?>()))
+            {
+                case ValueTask pending:
+                    await pending;
+                    break;
+                case Task task:
+                    await task;
+                    break;
+            }
         }
 
         private object? HandleSyncDispose(MethodInfo targetMethod)

@@ -9,7 +9,7 @@ namespace RuntimeFlow.Editor
     /// The service list of every scope of the selected host: state, phase, elapsed and weight per row,
     /// a detail card with dependencies and failures for the selected row, and a timeline of the run.
     /// </summary>
-    public sealed class GraphView : VisualElement
+    internal sealed class GraphView : VisualElement
     {
         private const float RowHeight = 22f;
 

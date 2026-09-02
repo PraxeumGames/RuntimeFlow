@@ -3,6 +3,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using RuntimeFlow.Editor;
+using RuntimeFlow.Internal;
 using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
@@ -48,11 +49,26 @@ namespace RuntimeFlow.Tests.Editor
                 => throw new InvalidOperationException(NastyMessage);
         }
 
+        /// <summary>
+        /// Both the stored snapshot and the host registry are process-wide, so every test starts from an
+        /// empty pair and leaves one behind: otherwise a host leaked by another fixture (or by an earlier
+        /// test here) would change the labels and the membership assertions, and the order fixtures run
+        /// in would decide whether this one passes.
+        /// </summary>
         [SetUp]
-        public void ForgetStoredSnapshot() => DashboardData.ClearLastRun();
+        public void ForgetPreviousRuns()
+        {
+            DashboardData.ClearLastRun();
+            FlowRegistry.Clear();
+        }
 
+        /// <inheritdoc cref="ForgetPreviousRuns" />
         [TearDown]
-        public void ClearStoredSnapshot() => DashboardData.ClearLastRun();
+        public void ForgetThisRun()
+        {
+            DashboardData.ClearLastRun();
+            FlowRegistry.Clear();
+        }
 
         private static Task<TestFlow> StartAsync()
             => TestFlow
@@ -67,6 +83,7 @@ namespace RuntimeFlow.Tests.Editor
                 .StartAsync();
 
         [Test]
+        [Timeout(10000)]
         public async Task Registry_lists_a_live_host_and_drops_it_after_disposal()
         {
             var app = await StartAsync();
@@ -83,6 +100,7 @@ namespace RuntimeFlow.Tests.Editor
         }
 
         [Test]
+        [Timeout(10000)]
         public async Task Snapshot_lists_global_and_session_scopes_with_their_services()
         {
             await using var app = await StartAsync();
@@ -120,54 +138,57 @@ namespace RuntimeFlow.Tests.Editor
         }
 
         [Test]
+        [Timeout(10000)]
         public async Task Diagnostics_json_lists_every_service_with_state_elapsed_and_phase()
         {
             await using var app = await StartAsync();
             var json = DiagnosticsJson.Build(DashboardData.Capture(app.Host, 0));
 
             AssertWellFormed(json);
-            Assert.That(json, Does.Contain("\"packageVersion\""));
-            Assert.That(json, Does.Contain("\"scopes\""));
-            Assert.That(json, Does.Contain("\"name\": \"global\""));
-            Assert.That(json, Does.Contain("\"name\": \"session\""));
+            Assert.That(json, Does.Contain("\"PackageVersion\""));
+            Assert.That(json, Does.Contain("\"Scopes\""));
+            Assert.That(json, Does.Contain("\"Name\": \"global\""));
+            Assert.That(json, Does.Contain("\"Name\": \"session\""));
 
             foreach (var name in new[] { nameof(ConfigService), nameof(ProfileService), nameof(FlakyService) })
             {
-                Assert.That(json, Does.Contain("\"name\": \"" + name + "\""), name + " is missing from the JSON.");
+                Assert.That(json, Does.Contain("\"Name\": \"" + name + "\""), name + " is missing from the JSON.");
             }
 
-            Assert.That(json, Does.Contain("\"state\": \"Completed\""));
-            Assert.That(json, Does.Contain("\"state\": \"Degraded\""));
-            Assert.That(json, Does.Contain("\"phase\": \"platform\""));
-            Assert.That(json, Does.Contain("\"phase\": \"content\""));
-            Assert.That(json, Does.Contain("\"elapsedMs\""));
-            Assert.That(json, Does.Contain("\"weight\": 2"));
-            Assert.That(json, Does.Contain("\"dependencies\": ["));
-            Assert.That(json, Does.Contain("\"waitingOn\": []"));
-            Assert.That(json, Does.Contain("\"type\": \"" + nameof(InvalidOperationException) + "\""));
-            Assert.That(json, Does.Contain("\"describe\": \""));
+            // States travel as the enum ordinal and as text; the text is what a bug report is read from.
+            Assert.That(json, Does.Contain("\"StateName\": \"Completed\""));
+            Assert.That(json, Does.Contain("\"StateName\": \"Degraded\""));
+            Assert.That(json, Does.Contain("\"Phase\": \"platform\""));
+            Assert.That(json, Does.Contain("\"Phase\": \"content\""));
+            Assert.That(json, Does.Contain("\"ElapsedMs\""));
+            Assert.That(json, Does.Contain("\"Weight\": 2"));
+            Assert.That(json, Does.Contain("\"Dependencies\": ["));
+            Assert.That(json, Does.Contain("\"WaitingOn\": []"));
+            Assert.That(json, Does.Contain("\"ErrorType\": \"" + nameof(InvalidOperationException) + "\""));
+            Assert.That(json, Does.Contain("\"ErrorMessage\": \""));
+            Assert.That(json, Does.Contain("\"Describe\": \""));
         }
 
+        /// <summary>
+        /// The document is produced by <c>JsonUtility</c>, so escaping is Unity's job rather than the
+        /// dashboard's; what this pins is that an exception message full of quotes, backslashes and
+        /// control characters still comes out as one well-formed JSON string.
+        /// </summary>
         [Test]
+        [Timeout(10000)]
         public async Task Diagnostics_json_escapes_quotes_backslashes_and_newlines()
         {
             await using var app = await StartAsync();
             var json = DiagnosticsJson.Build(DashboardData.Capture(app.Host, 0));
 
             AssertWellFormed(json);
-            Assert.That(json, Does.Contain("profile \\\"api\\\" broke: C:\\\\tmp\\\\log.txt\\nsecond line\\tafter a tab"));
+            Assert.That(json, Does.Contain("profile \\\"api\\\" broke: C:\\\\tmp\\\\log.txt"));
             Assert.That(json, Does.Not.Contain(NastyMessage), "the raw message must never reach the document");
+            Assert.That(json, Does.Not.Contain("second line\tafter"), "the tab must be escaped, not literal");
         }
 
         [Test]
-        public void Escape_encodes_control_characters()
-        {
-            Assert.That(DiagnosticsJson.Escape("a\u0001b"), Is.EqualTo("a\\u0001b"));
-            Assert.That(DiagnosticsJson.Escape(null), Is.EqualTo(string.Empty));
-            Assert.That(DiagnosticsJson.Escape("plain"), Is.EqualTo("plain"));
-        }
-
-        [Test]
+        [Timeout(10000)]
         public async Task Describe_text_is_part_of_the_snapshot_and_of_the_document()
         {
             await using var app = await StartAsync();
@@ -178,6 +199,7 @@ namespace RuntimeFlow.Tests.Editor
         }
 
         [Test]
+        [Timeout(10000)]
         public async Task Last_run_snapshot_round_trips_through_session_state()
         {
             await using var app = await StartAsync();
@@ -206,6 +228,7 @@ namespace RuntimeFlow.Tests.Editor
         }
 
         [Test]
+        [Timeout(10000)]
         public async Task Views_bind_a_snapshot_without_throwing()
         {
             await using var app = await StartAsync();
@@ -256,9 +279,10 @@ namespace RuntimeFlow.Tests.Editor
         }
 
         /// <summary>
-        /// Minimal structural validation: JsonUtility cannot parse an arbitrary document, so the test
-        /// walks the text itself and checks that strings are terminated, braces and brackets balance,
-        /// and no comma is left dangling before a closing token.
+        /// Minimal structural validation: <c>JsonUtility</c> can only parse into a known type, so the
+        /// test walks the text itself and checks that strings are terminated, braces and brackets
+        /// balance, no comma dangles before a closing token, and no raw control character (an
+        /// unescaped newline or tab out of an exception message) sits inside a string.
         /// </summary>
         private static void AssertWellFormed(string json)
         {

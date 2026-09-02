@@ -26,7 +26,6 @@ namespace RuntimeFlow.Editor
         private VisualElement? _tabBar;
         private VisualElement? _viewContainer;
         private Label? _statusLabel;
-        private Label? _versionLabel;
         private Button[] _tabButtons = Array.Empty<Button>();
 
         private GraphView? _graphView;
@@ -146,9 +145,11 @@ namespace RuntimeFlow.Editor
             _statusLabel = new Label("No host is running.");
             bar.Add(_statusLabel);
 
-            _versionLabel = new Label("RuntimeFlow " + DashboardData.PackageVersion);
-            _versionLabel.AddToClassList("rf-version-label");
-            bar.Add(_versionLabel);
+            // The package version cannot change while the window is open, so it is written once here
+            // rather than on every one of the four refreshes a second.
+            var version = new Label("RuntimeFlow " + DashboardData.PackageVersion);
+            version.AddToClassList("rf-version-label");
+            bar.Add(version);
 
             root.Add(bar);
         }
@@ -319,8 +320,6 @@ namespace RuntimeFlow.Editor
                 "{0} · {1} · {2} · {3} · {4} service(s) · {5} restart(s)",
                 _snapshot.HostLabel, _snapshot.State, ViewHelpers.Percent(_snapshot.Percent),
                 ViewHelpers.Seconds(_snapshot.ElapsedMs), _snapshot.ServiceCount, _snapshot.RestartCount);
-
-            if (_versionLabel != null) _versionLabel.text = "RuntimeFlow " + DashboardData.PackageVersion;
         }
 
         private void CopyDiagnostics()

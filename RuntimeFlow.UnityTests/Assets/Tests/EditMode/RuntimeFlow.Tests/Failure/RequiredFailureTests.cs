@@ -32,6 +32,8 @@ namespace RuntimeFlow.Tests.Failure
         private CollectingObserver _observer = null!;
         private RuntimeFlowOptions _options = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp()
         {
@@ -40,11 +42,15 @@ namespace RuntimeFlow.Tests.Failure
             _options = TestScope.Options(_log, _observer);
         }
 
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         [Timeout(10000)]
         public async Task ASingleFailureCarriesTheOriginalAsInnerException()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Alpha>();
                 b.Add<Boom>();
@@ -52,7 +58,7 @@ namespace RuntimeFlow.Tests.Failure
                 b.Add<Dependent>();
             });
             var boom = container.Resolve<Boom>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await boom.Started;
@@ -77,7 +83,7 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task SiblingsAreCancelledAndDependentsSkipped()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Boom>();
                 b.Add<Sibling>();
@@ -85,7 +91,7 @@ namespace RuntimeFlow.Tests.Failure
             });
             var boom = container.Resolve<Boom>();
             var sibling = container.Resolve<Sibling>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await boom.Started;
@@ -108,14 +114,14 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task EveryFailureIsCollectedIntoAnAggregateException()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Boom>();
                 b.Add<AlsoBoom>();
             });
             var boom = container.Resolve<Boom>();
             var alsoBoom = container.Resolve<AlsoBoom>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await boom.Started;
@@ -140,9 +146,9 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task TheFailureIsAlsoLoggedAtErrorLevel()
         {
-            var container = TestScope.Build(b => b.Add<Boom>());
+            var container = _tracker.Build(b => b.Add<Boom>());
             var boom = container.Resolve<Boom>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await boom.Started;

@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
+using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
 
@@ -32,6 +33,8 @@ namespace RuntimeFlow.Tests.Failure
         private CapturingLogger _log = null!;
         private RuntimeFlowOptions _options = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp()
         {
@@ -39,11 +42,15 @@ namespace RuntimeFlow.Tests.Failure
             _options = TestScope.Options(_log);
         }
 
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         [Timeout(10000)]
         public async Task AnOptionalFailureDegradesTheRunAndLetsDependentsRun()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<RemoteConfig>();
                 b.Add<Catalog>();
@@ -54,7 +61,7 @@ namespace RuntimeFlow.Tests.Failure
             var profile = container.Resolve<Profile>();
             catalog.AutoComplete = true;
             profile.AutoComplete = true;
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await config.Started;
@@ -73,7 +80,7 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task DependentsSeeTheDegradedServiceThroughTheContext()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<RemoteConfig>();
                 b.Add<Catalog>();
@@ -81,7 +88,7 @@ namespace RuntimeFlow.Tests.Failure
             var config = container.Resolve<RemoteConfig>();
             var catalog = container.Resolve<Catalog>();
             catalog.AutoComplete = true;
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await config.Started;
@@ -96,7 +103,7 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task DegradationIsLoggedAsAWarningWithItsDependents()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<RemoteConfig>();
                 b.Add<Catalog>();
@@ -105,7 +112,7 @@ namespace RuntimeFlow.Tests.Failure
             var config = container.Resolve<RemoteConfig>();
             container.Resolve<Catalog>().AutoComplete = true;
             container.Resolve<Profile>().AutoComplete = true;
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await config.Started;
@@ -123,9 +130,9 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task TheCompletionLineNamesTheDegradedServices()
         {
-            var container = TestScope.Build(b => b.Add<RemoteConfig>());
+            var container = _tracker.Build(b => b.Add<RemoteConfig>());
             var config = container.Resolve<RemoteConfig>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await config.Started;
@@ -141,7 +148,7 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task AFailureBehindADegradedUpstreamIsAnnotatedWithIt()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<RemoteConfig>();
                 b.Add<Catalog>();
@@ -150,7 +157,7 @@ namespace RuntimeFlow.Tests.Failure
             var catalog = container.Resolve<Catalog>();
             catalog.AutoComplete = true;
             catalog.Throw = new NullReferenceException("no catalog without a config");
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await config.Started;
@@ -167,7 +174,7 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task AFailureWithoutADegradedUpstreamIsNotAnnotated()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<RemoteConfig>();
                 b.Add<Catalog>();
@@ -176,7 +183,7 @@ namespace RuntimeFlow.Tests.Failure
             var catalog = container.Resolve<Catalog>();
             catalog.AutoComplete = true;
             catalog.Throw = new NullReferenceException("no catalog at all");
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await config.Started;
@@ -193,7 +200,7 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task TheMultiFailureFormAnnotatesEachServiceThatFollowedTheDegradation()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<RemoteConfig>();
                 b.Add<Catalog>();
@@ -202,7 +209,7 @@ namespace RuntimeFlow.Tests.Failure
             var config = container.Resolve<RemoteConfig>();
             var catalog = container.Resolve<Catalog>();
             var profile = container.Resolve<Profile>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await config.Started;

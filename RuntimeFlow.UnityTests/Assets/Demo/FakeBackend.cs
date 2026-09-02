@@ -91,6 +91,9 @@ namespace RuntimeFlow.Demo
                 new[] { Config, Auth, Profile, Catalog, Quests });
         }
 
+        /// <summary>Passed as the latency of a call that wants the endpoint's own latency.</summary>
+        public const int NoLatencyOverride = -1;
+
         private readonly Dictionary<string, EndpointState> _endpoints = new Dictionary<string, EndpointState>(StringComparer.Ordinal);
         private readonly List<string> _requests = new List<string>();
 
@@ -146,13 +149,30 @@ namespace RuntimeFlow.Demo
         /// </summary>
         /// <exception cref="InvalidOperationException">The endpoint is set to fail, or <typeparamref name="T"/> is not its payload type.</exception>
         /// <exception cref="OperationCanceledException">The token was cancelled while waiting.</exception>
-        public async Task<T> GetAsync<T>(string endpoint, CancellationToken cancellationToken) where T : class
+        public Task<T> GetAsync<T>(string endpoint, CancellationToken cancellationToken) where T : class
+            => GetAsync<T>(endpoint, NoLatencyOverride, cancellationToken);
+
+        /// <summary>
+        /// Calls <paramref name="endpoint"/> with a latency of this call's own choosing, leaving the
+        /// endpoint itself untouched. This is how a caller slows one request down — mutating the shared
+        /// endpoint state instead would outlive the call and change every later run.
+        /// </summary>
+        /// <param name="endpoint">The endpoint to call.</param>
+        /// <param name="latencyMilliseconds">
+        /// Delay to wait instead of the endpoint's own latency; <see cref="NoLatencyOverride"/> keeps it.
+        /// </param>
+        /// <param name="cancellationToken">Cancels the wait.</param>
+        /// <exception cref="InvalidOperationException">The endpoint is set to fail, or <typeparamref name="T"/> is not its payload type.</exception>
+        /// <exception cref="OperationCanceledException">The token was cancelled while waiting.</exception>
+        public async Task<T> GetAsync<T>(string endpoint, int latencyMilliseconds, CancellationToken cancellationToken)
+            where T : class
         {
             var state = State(endpoint);
             _requests.Add(endpoint);
 
+            var latency = latencyMilliseconds >= 0 ? latencyMilliseconds : state.LatencyMilliseconds;
             if (state.Hangs) await Task.Delay(Timeout.Infinite, cancellationToken);
-            if (state.LatencyMilliseconds > 0) await Task.Delay(state.LatencyMilliseconds, cancellationToken);
+            if (latency > 0) await Task.Delay(latency, cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
             if (state.Fails)

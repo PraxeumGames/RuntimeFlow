@@ -41,7 +41,6 @@ namespace RuntimeFlow.Demo
 
         private RuntimeFlowHost? _host;
         private string _message = "Not started.";
-        private bool _busy;
 
         private void Start()
         {
@@ -68,9 +67,13 @@ namespace RuntimeFlow.Demo
             GUILayout.Space(6f);
 
             GUILayout.BeginHorizontal();
-            GUI.enabled = !_busy && _host == null;
+            GUI.enabled = _host == null;
             if (GUILayout.Button("Start game")) StartGame();
-            GUI.enabled = !_busy && _host != null;
+
+            // Restart and Accept stay live while a run is in flight, on purpose: accepting the consent
+            // dialog is only useful mid-run, and hammering Restart is how the coalescing is watched —
+            // the host folds every request that arrives before the rebuild starts into one rebuild.
+            GUI.enabled = _host != null;
             if (GUILayout.Button("Restart session")) RestartSession();
             if (GUILayout.Button("Accept GDPR")) AcceptGdpr();
             GUI.enabled = true;
@@ -126,14 +129,19 @@ namespace RuntimeFlow.Demo
 
         private void StartGame()
         {
-            if (_busy || _host != null) return;
+            if (_host != null) return;
             _host = DemoGame.CreateHost(_backend, _chaos);
             _ = RunAsync(host => host.StartAsync(), "startup");
         }
 
+        /// <summary>
+        /// Asks for a restart every time the button is pressed, with no local guard. Double-clicking is
+        /// the point: the two requests coalesce inside the host into a single rebuild, and both awaiters
+        /// see the same final result.
+        /// </summary>
         private void RestartSession()
         {
-            if (_busy || _host == null) return;
+            if (_host == null) return;
             _ = RunAsync(host => host.RestartAsync("demo-panel"), "restart");
         }
 
@@ -158,7 +166,6 @@ namespace RuntimeFlow.Demo
             var host = _host;
             if (host == null) return;
 
-            _busy = true;
             _message = $"{what} running…";
             try
             {
@@ -171,10 +178,6 @@ namespace RuntimeFlow.Demo
             catch (Exception error)
             {
                 _message = $"{what} failed — {error.GetType().Name}: {error.Message}";
-            }
-            finally
-            {
-                _busy = false;
             }
         }
 

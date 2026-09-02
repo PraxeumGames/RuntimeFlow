@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
+using RuntimeFlow.Testing;
 using UnityEngine.TestTools;
 using VContainer;
 using VContainer.Unity;
@@ -272,28 +273,6 @@ namespace RuntimeFlow.Tests.PlayMode
             var aggregate = task.Exception;
             if (aggregate == null) return null;
             return aggregate.InnerExceptions.Count == 1 ? aggregate.InnerExceptions[0] : aggregate;
-        }
-
-        /// <summary>
-        /// A Microsoft.Extensions.Logging sink that keeps every formatted message, so the framework's
-        /// error diagnostics never reach the Unity console and fail the test. The PlayMode assembly
-        /// cannot reference the EditMode test assembly, so this mirrors its Support/CapturingLogger.
-        /// </summary>
-        private sealed class CapturingLogger : ILogger
-        {
-            private readonly List<string> _entries = new List<string>();
-
-            public IReadOnlyList<string> Entries => _entries;
-
-            public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
-
-            public bool IsEnabled(LogLevel logLevel) => true;
-
-            public void Log<TState>(LogLevel logLevel, EventId eventId, TState state, Exception? exception,
-                Func<TState, Exception?, string> formatter)
-                => _entries.Add($"{logLevel}: {formatter(state, exception)}");
-
-            public override string ToString() => string.Join(Environment.NewLine, _entries);
         }
     }
 }

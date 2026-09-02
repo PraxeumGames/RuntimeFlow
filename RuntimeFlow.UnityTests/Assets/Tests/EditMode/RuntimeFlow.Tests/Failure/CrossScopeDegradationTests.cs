@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
 
@@ -67,12 +68,18 @@ namespace RuntimeFlow.Tests.Failure
         private CapturingLogger _log = null!;
         private RuntimeFlowOptions _options = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp()
         {
             _log = new CapturingLogger();
             _options = TestScope.Options(_log);
         }
+
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
 
         [Test]
         [Timeout(10000)]
@@ -128,12 +135,12 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task AScopeRunResultStaysPerScope()
         {
-            var global = TestScope.Build(builder => builder.Add<Auth>());
-            var globalRun = ScopeRun.Create(global, "global", _options);
+            var global = _tracker.Build(builder => builder.Add<Auth>());
+            var globalRun = _tracker.Create(global, "global", _options);
             var globalResult = await globalRun.RunAsync();
 
             var session = global.CreateScope(builder => builder.Add<Profile>());
-            var sessionRun = ScopeRun.Create(session, "session", _options, new List<ScopeRun> { globalRun });
+            var sessionRun = _tracker.Create(session, "session", _options, new List<ScopeRun> { globalRun });
             var sessionResult = await sessionRun.RunAsync();
 
             Assert.That(globalResult.Degraded, Is.EqualTo(new[] { "Auth" }));

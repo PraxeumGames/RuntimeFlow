@@ -70,14 +70,11 @@ namespace RuntimeFlow
         /// <summary>State of the run.</summary>
         public RunState State => _disposed ? RunState.Disposed : _scheduler.State;
 
-        /// <summary>The resolver this run initializes.</summary>
-        public IObjectResolver Scope => _scope;
-
         /// <summary>Number of restarts the owner has reported for this scope.</summary>
         public int RestartCount
         {
             get => _scheduler.RestartCount;
-            set => _scheduler.RestartCount = value;
+            internal set => _scheduler.RestartCount = value;
         }
 
         /// <summary>
@@ -132,8 +129,6 @@ namespace RuntimeFlow
             _scheduler.DisposeTokens();
             if (_ownsScope) _scope.Dispose();
         }
-
-        internal ServiceGraph Graph => _graph;
 
         private List<ServiceNode> TeardownOrder()
         {

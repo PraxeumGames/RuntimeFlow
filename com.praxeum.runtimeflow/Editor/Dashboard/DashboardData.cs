@@ -12,7 +12,7 @@ namespace RuntimeFlow.Editor
     /// with the exception flattened to strings so the row survives serialization and domain reloads.
     /// </summary>
     [Serializable]
-    public sealed class DashboardService
+    internal sealed class DashboardService
     {
         /// <summary>Service name, as reported by the run.</summary>
         public string Name = string.Empty;
@@ -25,6 +25,9 @@ namespace RuntimeFlow.Editor
 
         /// <summary>Lifecycle state at capture time.</summary>
         public ServiceState State;
+
+        /// <summary>Name of <see cref="State"/>, so the diagnostics JSON reads without the enum at hand.</summary>
+        public string StateName = string.Empty;
 
         /// <summary>True when a failure degrades rather than fails the run.</summary>
         public bool Optional;
@@ -65,13 +68,16 @@ namespace RuntimeFlow.Editor
 
     /// <summary>One scope of a dashboard snapshot: the run's counters plus its service rows.</summary>
     [Serializable]
-    public sealed class DashboardScope
+    internal sealed class DashboardScope
     {
         /// <summary>Name of the scope, for example "global", "session" or a child scope name.</summary>
         public string Name = string.Empty;
 
         /// <summary>State of the run of this scope.</summary>
         public RunState State;
+
+        /// <summary>Name of <see cref="State"/>, so the diagnostics JSON reads without the enum at hand.</summary>
+        public string StateName = string.Empty;
 
         /// <summary>Weighted completion percentage of this scope, 0..100.</summary>
         public double Percent;
@@ -104,7 +110,7 @@ namespace RuntimeFlow.Editor
     /// "Last run" tab survives Play Mode exits and domain reloads.
     /// </summary>
     [Serializable]
-    public sealed class DashboardSnapshot
+    internal sealed class DashboardSnapshot
     {
         /// <summary>Label of the host the snapshot was taken from, for example "host #1 (gen 2)".</summary>
         public string HostLabel = string.Empty;
@@ -120,6 +126,9 @@ namespace RuntimeFlow.Editor
 
         /// <summary>Aggregated state of the host.</summary>
         public RunState State;
+
+        /// <summary>Name of <see cref="State"/>, so the diagnostics JSON reads without the enum at hand.</summary>
+        public string StateName = string.Empty;
 
         /// <summary>Weighted completion percentage across every scope, 0..100.</summary>
         public double Percent;
@@ -179,7 +188,7 @@ namespace RuntimeFlow.Editor
     /// <see cref="DashboardSnapshot"/>. Host references are never kept: every refresh asks the registry
     /// again, because the registry holds weak references and prunes them on read.
     /// </summary>
-    public static class DashboardData
+    internal static class DashboardData
     {
         /// <summary>Key the last snapshot is stored under in <see cref="SessionState"/>.</summary>
         public const string LastRunKey = "RuntimeFlow.Dashboard.LastRun";
@@ -222,8 +231,9 @@ namespace RuntimeFlow.Editor
                 UnityVersion = Application.unityVersion,
                 CapturedUtc = DateTime.UtcNow.ToString("o", CultureInfo.InvariantCulture),
                 State = aggregate.State,
-                Percent = aggregate.Percent,
-                ElapsedMs = aggregate.Elapsed.TotalMilliseconds,
+                StateName = aggregate.State.ToString(),
+                Percent = Finite(aggregate.Percent),
+                ElapsedMs = Finite(aggregate.Elapsed.TotalMilliseconds),
                 RestartCount = host.RestartCount,
                 Generation = host.Generation,
                 CanRestart = host.SessionRun != null && !host.IsQuitting,
@@ -248,8 +258,9 @@ namespace RuntimeFlow.Editor
             {
                 Name = status.Scope,
                 State = status.State,
-                Percent = status.Percent,
-                ElapsedMs = status.Elapsed.TotalMilliseconds,
+                StateName = status.State.ToString(),
+                Percent = Finite(status.Percent),
+                ElapsedMs = Finite(status.Elapsed.TotalMilliseconds),
                 RestartCount = status.RestartCount,
                 Total = status.Services.Count
             };
@@ -318,6 +329,14 @@ namespace RuntimeFlow.Editor
             if (scope != null) snapshot.Scopes.Add(scope);
         }
 
+        /// <summary>
+        /// Replaces a non-finite number with zero. A scope whose services all carry <c>Weight = 0</c>
+        /// yields a NaN percentage, and <see cref="JsonUtility"/> would write it as a bare <c>NaN</c>,
+        /// which is not valid JSON — so nothing non-finite is ever stored in a snapshot.
+        /// </summary>
+        /// <param name="value">The raw number from a status snapshot.</param>
+        private static double Finite(double value) => double.IsNaN(value) || double.IsInfinity(value) ? 0.0 : value;
+
         private static DashboardService Convert(ServiceStatus status)
         {
             var service = new DashboardService
@@ -326,12 +345,13 @@ namespace RuntimeFlow.Editor
                 Scope = status.Scope,
                 Phase = status.Phase ?? string.Empty,
                 State = status.State,
+                StateName = status.State.ToString(),
                 Optional = status.Optional,
                 UserGated = status.UserGated,
                 AwaitingPlayer = status.AwaitingPlayer,
-                ElapsedMs = status.Elapsed.TotalMilliseconds,
-                Progress = status.Progress,
-                Weight = status.Weight
+                ElapsedMs = Finite(status.Elapsed.TotalMilliseconds),
+                Progress = (float)Finite(status.Progress),
+                Weight = Finite(status.Weight)
             };
 
             service.Dependencies.AddRange(status.Dependencies);

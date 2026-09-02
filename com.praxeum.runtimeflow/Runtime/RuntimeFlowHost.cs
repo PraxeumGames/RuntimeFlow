@@ -322,7 +322,7 @@ namespace RuntimeFlow
                     {
                         _entryPointErrors.Clear();
                         var builder = new ContainerBuilder();
-                        Compose(builder, _globalInstaller!);
+                        Compose(builder, _globalInstaller!, "global");
                         _global = builder.Build();
                         ThrowOnEntryPointErrors("global");
                     }
@@ -367,7 +367,7 @@ namespace RuntimeFlow
             try
             {
                 _entryPointErrors.Clear();
-                var session = Global.CreateScope(builder => Compose(builder, _sessionInstaller));
+                var session = Global.CreateScope(builder => Compose(builder, _sessionInstaller, "session"));
                 _session = session;
                 try
                 {
@@ -411,12 +411,80 @@ namespace RuntimeFlow
                 session.HaltReason, session.HaltedBy);
         }
 
-        private void Compose(IContainerBuilder builder, Action<IContainerBuilder> installer)
+        private void Compose(IContainerBuilder builder, Action<IContainerBuilder> installer, string scope)
         {
             builder.RegisterInstance(this);
-            builder.RegisterEntryPointExceptionHandler(_entryPointErrors.Add);
             installer(builder);
+
+            // VContainer keeps one entry-point exception handler per scope and refuses a second
+            // registration of the same implementation type, so the host's collector is registered only
+            // when the consumer did not claim that slot itself.
+            if (!Inspect(builder, scope)) builder.RegisterEntryPointExceptionHandler(_entryPointErrors.Add);
+
             EntryPointsBuilder.EnsureDispatcherRegistered(builder);
+        }
+
+        /// <summary>
+        /// Looks at what the consumer installer left behind. It warns about a service that implements
+        /// <see cref="IAsyncInitializable"/> without exposing it — such a service silently never joins a
+        /// graph — and reports a consumer-registered entry-point exception handler, which supersedes the
+        /// host's collector. Inspection never registers anything and never aborts composition.
+        /// </summary>
+        /// <returns>True when the consumer registered an entry-point exception handler of its own.</returns>
+        private bool Inspect(IContainerBuilder builder, string scope)
+        {
+            var custom = false;
+            for (var i = 0; i < builder.Count; i++)
+            {
+                Registration? registration;
+                try
+                {
+                    // Build() is pure, but a component builder needs a LifetimeScope this early; such a
+                    // registration simply cannot be inspected and is left alone.
+                    registration = builder[i].Build();
+                }
+                catch (Exception)
+                {
+                    continue;
+                }
+
+                if (registration == null) continue;
+
+                // VContainer keeps EntryPointExceptionHandler internal, so it is recognised by name: the
+                // alternative would be resolving it, which is impossible before the container exists.
+                if (registration.ImplementationType.Name == "EntryPointExceptionHandler")
+                {
+                    custom = true;
+                    continue;
+                }
+
+                if (!typeof(IAsyncInitializable).IsAssignableFrom(registration.ImplementationType)) continue;
+                if (ExposesInitializable(registration)) continue;
+
+                _logger.Warn($"[RuntimeFlow] {scope}: {registration.ImplementationType.Name} implements IAsyncInitializable " +
+                             "but is registered without exposing it; it will never be initialized. " +
+                             "Use RegisterInitializable<T>() or .As<IAsyncInitializable>().");
+            }
+
+            if (custom)
+            {
+                _logger.Info($"[RuntimeFlow] {scope}: a custom EntryPointExceptionHandler is registered; " +
+                             "IInitializable exceptions are delivered to it instead of failing the run.");
+            }
+
+            return custom;
+        }
+
+        /// <summary>True when the registration is resolvable as <see cref="IAsyncInitializable"/>.</summary>
+        private static bool ExposesInitializable(Registration registration)
+        {
+            var exposed = registration.InterfaceTypes;
+            if (exposed == null) return registration.ImplementationType == typeof(IAsyncInitializable);
+            for (var i = 0; i < exposed.Count; i++)
+            {
+                if (exposed[i] == typeof(IAsyncInitializable)) return true;
+            }
+            return false;
         }
 
         private async Task<StartupResult> AwaitFinalAsync(Task<StartupResult> task)
@@ -603,6 +671,7 @@ namespace RuntimeFlow
             private void Forward()
             {
                 if (_host.TryGetTarget(out var host)) host.OnQuitting();
+                else Detach();
             }
         }
     }

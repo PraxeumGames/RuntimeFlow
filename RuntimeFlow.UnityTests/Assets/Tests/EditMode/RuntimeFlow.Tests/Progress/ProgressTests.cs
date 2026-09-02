@@ -48,6 +48,8 @@ namespace RuntimeFlow.Tests.Progress
         private CapturingLogger _log = null!;
         private RuntimeFlowOptions _options = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp()
         {
@@ -55,18 +57,22 @@ namespace RuntimeFlow.Tests.Progress
             _options = TestScope.Options(_log);
         }
 
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         [Timeout(10000)]
         public async Task PercentIsWeightedByTheInitAttribute()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Heavy>();
                 b.Add<Light>();
             });
             var heavy = container.Resolve<Heavy>();
             var light = container.Resolve<Light>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await heavy.Started;
@@ -85,14 +91,14 @@ namespace RuntimeFlow.Tests.Progress
         [Timeout(10000)]
         public async Task ReportProgressFeedsTheWeightedPercentage()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Heavy>();
                 b.Add<Light>();
             });
             var heavy = container.Resolve<Heavy>();
             var light = container.Resolve<Light>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
             var samples = new List<double>();
 
             var running = run.RunAsync();
@@ -116,13 +122,15 @@ namespace RuntimeFlow.Tests.Progress
         }
 
         [Test]
-        public void ReportProgressIsClamped()
+        [Timeout(10000)]
+        public async Task ReportProgressIsClamped()
         {
-            var container = TestScope.Build(b => b.Add<Heavy>());
+            var container = _tracker.Build(b => b.Add<Heavy>());
             var heavy = container.Resolve<Heavy>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
-            _ = run.RunAsync();
+            var running = run.RunAsync();
+            await heavy.Started;
 
             heavy.Context!.ReportProgress(-3f);
             Assert.That(run.GetStatus().Service("Heavy").Progress, Is.EqualTo(0f));
@@ -130,6 +138,7 @@ namespace RuntimeFlow.Tests.Progress
             Assert.That(run.GetStatus().Service("Heavy").Progress, Is.EqualTo(1f));
 
             heavy.Release();
+            await running;
         }
 
         [Test]
@@ -138,13 +147,13 @@ namespace RuntimeFlow.Tests.Progress
         {
             var observer = new CollectingObserver();
             _options.Observers.Add(observer);
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Alpha>();
                 b.Add<Beta>();
             });
 
-            await ScopeRun.Create(container, "session", _options).RunAsync();
+            await _tracker.Create(container, "session", _options).RunAsync();
 
             Assert.That(observer.Events, Is.EqualTo(new[]
             {
@@ -161,10 +170,10 @@ namespace RuntimeFlow.Tests.Progress
         {
             var observer = new CollectingObserver();
             _options.Observers.Add(observer);
-            var container = TestScope.Build(b => b.Add<Alpha>());
+            var container = _tracker.Build(b => b.Add<Alpha>());
             var alpha = container.Resolve<Alpha>();
 
-            await ScopeRun.Create(container, "session", _options).RunAsync(isRestart: true, generation: 3);
+            await _tracker.Create(container, "session", _options).RunAsync(isRestart: true, generation: 3);
 
             Assert.That(alpha.Context!.IsRestart, Is.True);
             Assert.That(alpha.Context.Generation, Is.EqualTo(3));
@@ -178,9 +187,9 @@ namespace RuntimeFlow.Tests.Progress
         {
             var hostile = new HostileObserver();
             _options.Observers.Add(hostile);
-            var container = TestScope.Build(b => b.Add<Alpha>());
+            var container = _tracker.Build(b => b.Add<Alpha>());
 
-            var result = await ScopeRun.Create(container, "session", _options).RunAsync();
+            var result = await _tracker.Create(container, "session", _options).RunAsync();
 
             Assert.That(result.Outcome, Is.EqualTo(StartupOutcome.Completed));
             Assert.That(hostile.Calls, Is.EqualTo(2));

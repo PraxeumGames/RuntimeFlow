@@ -36,6 +36,8 @@ namespace RuntimeFlow.Tests.Failure
         private CapturingLogger _log = null!;
         private RuntimeFlowOptions _options = null!;
 
+        private readonly RunTracker _tracker = new RunTracker();
+
         [SetUp]
         public void SetUp()
         {
@@ -44,13 +46,17 @@ namespace RuntimeFlow.Tests.Failure
             _options.TimeoutMultiplier = 1.0;
         }
 
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         [Timeout(10000)]
         public async Task ADeclaredTimeoutFailsTheServiceWithAnExplicitMessage()
         {
-            var container = TestScope.Build(b => b.Add<Slow>());
+            var container = _tracker.Build(b => b.Add<Slow>());
             var slow = container.Resolve<Slow>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await slow.Started;
@@ -67,9 +73,9 @@ namespace RuntimeFlow.Tests.Failure
         [Timeout(10000)]
         public async Task AnOptionalTimeoutOnlyDegradesTheRun()
         {
-            var container = TestScope.Build(b => b.Add<SlowOptional>());
+            var container = _tracker.Build(b => b.Add<SlowOptional>());
             var slow = container.Resolve<SlowOptional>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var result = await run.RunAsync();
 
@@ -83,9 +89,9 @@ namespace RuntimeFlow.Tests.Failure
         public async Task TimeoutMultiplierZeroDisablesEveryTimeout()
         {
             _options.TimeoutMultiplier = 0;
-            var container = TestScope.Build(b => b.Add<Slow>());
+            var container = _tracker.Build(b => b.Add<Slow>());
             var slow = container.Resolve<Slow>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await slow.Started;
@@ -105,13 +111,16 @@ namespace RuntimeFlow.Tests.Failure
             var observer = new CollectingObserver();
             _options.Observers.Add(observer);
             _options.StallWarningAfter = TimeSpan.FromMilliseconds(50);
-            var container = TestScope.Build(b => b.Add<GdprConsent>());
+            var container = _tracker.Build(b => b.Add<GdprConsent>());
             var consent = container.Resolve<GdprConsent>();
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await consent.Started;
-            await Task.Delay(TimeSpan.FromMilliseconds(250));
+            await AsyncTestAssert.Until(
+                () => _log.Has(LogLevel.Information, "awaiting player: GdprConsent ("),
+                TimeSpan.FromSeconds(5),
+                _log.Dump());
 
             var status = run.GetStatus();
             Assert.That(status.Service("GdprConsent").State, Is.EqualTo(ServiceState.Running));
@@ -129,18 +138,21 @@ namespace RuntimeFlow.Tests.Failure
         public async Task AStalledRunWarnsWithRunningAndBlockedServices()
         {
             _options.StallWarningAfter = TimeSpan.FromMilliseconds(50);
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.Add<Worker>();
                 b.Add<Waiting>();
             });
             var worker = container.Resolve<Worker>();
             container.Resolve<Waiting>().AutoComplete = true;
-            var run = ScopeRun.Create(container, "session", _options);
+            var run = _tracker.Create(container, "session", _options);
 
             var running = run.RunAsync();
             await worker.Started;
-            await Task.Delay(TimeSpan.FromMilliseconds(250));
+            await AsyncTestAssert.Until(
+                () => _log.Has(LogLevel.Warning, "no progress for"),
+                TimeSpan.FromSeconds(5),
+                _log.Dump());
 
             var message = _log.Find(LogLevel.Warning, "no progress for");
             Assert.That(message, Is.Not.Null, _log.Dump());

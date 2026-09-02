@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
 using VContainer.Unity;
@@ -48,6 +49,12 @@ namespace RuntimeFlow.Tests.VContainerIntegration
             }
         }
 
+        private readonly RunTracker _tracker = new RunTracker();
+
+        /// <summary>Disposes every run and container this fixture created, so nothing leaks into the next test.</summary>
+        [TearDown]
+        public void DisposeTrackedRuns() => _tracker.DisposeAll();
+
         [Test]
         [Timeout(10000)]
         public async Task InitializableRunsInsideBuildBeforeAnyInitializeAsync()
@@ -55,7 +62,7 @@ namespace RuntimeFlow.Tests.VContainerIntegration
             var trace = new Trace();
             var log = new CapturingLogger();
 
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 b.RegisterInstance(trace);
                 b.Register<EarlyEntryPoint>(Lifetime.Singleton).AsImplementedInterfaces();
@@ -65,7 +72,7 @@ namespace RuntimeFlow.Tests.VContainerIntegration
 
             Assert.That(trace.Entries, Is.EqualTo(new[] { "entry-point" }), "IInitializable must run inside Build()");
 
-            await ScopeRun.Create(container, "session", TestScope.Options(log)).RunAsync();
+            await _tracker.Create(container, "session", TestScope.Options(log)).RunAsync();
 
             Assert.That(trace.Entries, Is.EqualTo(new[] { "entry-point", "async-init" }));
         }
@@ -75,7 +82,7 @@ namespace RuntimeFlow.Tests.VContainerIntegration
         {
             var collected = new List<Exception>();
 
-            TestScope.Build(b =>
+            _tracker.Build(b =>
             {
                 b.RegisterEntryPointExceptionHandler(collected.Add);
                 b.Register<ThrowingEntryPoint>(Lifetime.Singleton).AsImplementedInterfaces();
@@ -90,7 +97,7 @@ namespace RuntimeFlow.Tests.VContainerIntegration
         [Test]
         public void TheDispatcherIsRegisteredOnlyOnce()
         {
-            var container = TestScope.Build(b =>
+            var container = _tracker.Build(b =>
             {
                 EntryPointsBuilder.EnsureDispatcherRegistered(b);
                 EntryPointsBuilder.EnsureDispatcherRegistered(b);

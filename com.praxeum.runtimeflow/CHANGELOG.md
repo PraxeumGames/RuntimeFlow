@@ -42,9 +42,18 @@ types to about 25, and every 0.x concept below is gone.
 - **Restart is budgeted.** Restarts are deferred (safe to request from inside `InitializeAsync`),
   coalesced, and limited to `MaxRestartsPerWindow` per `RestartWindow`; exceeding the budget raises a
   `RuntimeFlowException` listing the reasons instead of looping in production.
-- **Layout and packaging.** Namespace follows folder (`RuntimeFlow`, `RuntimeFlow.Internal`,
-  `RuntimeFlow.Testing`, `RuntimeFlow.Editor`); no solution file, no `dotnet` build, no analyzers
-  shipped in the package; the demo lives in the Unity test project instead of `Samples~`.
+- **Layout and packaging.** Inside the package, namespace follows folder (`RuntimeFlow`,
+  `RuntimeFlow.Internal`, `RuntimeFlow.Testing`, `RuntimeFlow.Editor`) and a script enforces it; the
+  test and demo assemblies keep their asmdef root namespace instead. No solution file, no `dotnet`
+  build, no analyzers shipped in the package; the demo lives in the Unity test project instead of
+  `Samples~`.
+- **Unity 2022.3 is the minimum**, up from 2021.3: the dashboard uses UI Toolkit APIs introduced in
+  2022.2. Both API compatibility levels of 2022.3 support the default interface members the package
+  relies on, so no project setting has to change.
+- **VContainer must be declared in the consuming project's manifest.** The package still names
+  `jp.hadashikick.vcontainer` (upstream, tag 1.15.3, pinned by SHA) in its `dependencies`, but UPM
+  resolves git-URL dependencies only from `Packages/manifest.json`, so a consumer adds the same line
+  next to `com.praxeum.runtimeflow`. Projects that already ship VContainer keep theirs.
 
 ### Added
 
@@ -386,6 +395,9 @@ Everything below existed in 0.x and no longer exists. Nothing is `[Obsolete]`; t
 - **`ResolveAsync<TService>()` on `IGameContext`**: Safe async DI resolution for background worker threads without sync-over-async blocking.
 - **Fluent Scope Registration DSL**: Extension methods `WithScene<T>()`, `WithModule<T>()`, and `WithTransition<T>()` on `IGameContextBuilder`.
 - **IL2CPP Code Preservation in Source Generator**: Automatic generation of `PreserveTypes()` and `PreserveCollection<T>()` with `[UnityEngine.Scripting.Preserve]` annotations in `RuntimeFlowGeneratedCatalog.g.cs`.
+- Regression tests covering registration-store lifetime/ownership semantics, resolver-backed
+  `IsRegistered`, guaranteed scope teardown, non-blocking bootstrap disposal, and session
+  restart recovery after a failed deactivation hook.
 
 ### Changed
 - **Zero-Reflection Decorators**: `GameContextDecorationChain` now compiles and caches direct factory delegates via `System.Linq.Expressions` with AOT fallback.
@@ -393,18 +405,26 @@ Everything below existed in 0.x and no longer exists. Nothing is `[Obsolete]`; t
 - **Hot-Path Allocations & LINQ Optimization**: Replaced LINQ queries with indexed loops and reusable collections across `GameContextBuilder` initialization and service discovery.
 - **Canonical Restart Contracts**: Removed legacy SFS namespaces; framework restart contracts are now canonically in `RuntimeFlow.Contexts` (`IGameRestartHandler`, `IGameDataCleaner`, `ISessionRestartAware`, `IGameRestartStateSaver`).
 
-## [0.5.0] - 2026-07-13
+### Fixed
+- Fixed `IsRegistered` constructing services during registration queries: checks now use the
+  container registration table and never instantiate the service.
+- Fixed double-disposal of scope-owned `RegisterInstance` services that were already resolved
+  through the container. Instances spawned by VContainer are now left to the container for
+  disposal, both during scope teardown and when an instance registration is replaced.
+- Fixed instance registration replacement: re-registering the same implementation type now
+  updates its lifetime (last registration wins) and disposes the replaced owned instance
+  instead of silently keeping the first registration.
+- Fixed scope teardown after a failed deactivation hook: teardown now always completes, the
+  active-scope reference is always cleared, and failures are aggregated into an
+  `AggregateException`. Cancellation-driven (superseded) transitions still surface as
+  `OperationCanceledException`.
+- Fixed `BootstrapResult.Dispose()` blocking the Unity main thread: disposal is now
   non-blocking on the main thread (synchronous on worker threads).
 - `RegisterInstance` now validates eagerly that the exposed service types are assignable from
   the instance type, consistent with `Register`.
 - `RestartSessionAsync` now clears active-scope references even when teardown fails, so a
   failed restart never leaves a stale disposed session context.
 - Declared the VContainer dependency in `package.json` so UPM resolves it automatically.
-
-### Added
-- Regression tests covering registration-store lifetime/ownership semantics, resolver-backed
-  `IsRegistered`, guaranteed scope teardown, non-blocking bootstrap disposal, and session
-  restart recovery after a failed deactivation hook.
 
 ## [0.5.0] - 2026-07-13
 

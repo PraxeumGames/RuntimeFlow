@@ -1,7 +1,10 @@
 using System;
 using System.Collections.Generic;
+using Microsoft.Extensions.Logging;
+using RuntimeFlow.Internal;
 using VContainer;
 using VContainer.Diagnostics;
+using ILogger = Microsoft.Extensions.Logging.ILogger;
 
 namespace RuntimeFlow.Testing
 {
@@ -37,15 +40,21 @@ namespace RuntimeFlow.Testing
     {
         private readonly IContainerBuilder _inner;
         private readonly IReadOnlyList<ServiceOverride> _overrides;
+        private readonly ILogger _logger;
         private readonly string _scope;
         private readonly List<RegistrationBuilder> _buffered = new List<RegistrationBuilder>();
         private readonly Dictionary<RegistrationBuilder, Registration?> _peeked =
             new Dictionary<RegistrationBuilder, Registration?>();
 
-        public OverridingContainerBuilder(IContainerBuilder inner, IReadOnlyList<ServiceOverride> overrides, string scope)
+        public OverridingContainerBuilder(
+            IContainerBuilder inner,
+            IReadOnlyList<ServiceOverride> overrides,
+            ILogger logger,
+            string scope)
         {
             _inner = inner;
             _overrides = overrides;
+            _logger = logger;
             _scope = scope;
         }
 
@@ -155,11 +164,14 @@ namespace RuntimeFlow.Testing
             {
                 registration = builder.Build();
             }
-            catch (Exception)
+            catch (Exception exception)
             {
                 // A registration this harness cannot inspect (a component builder needing a
-                // LifetimeScope, for example) is forwarded untouched and never overridden.
+                // LifetimeScope, for example) is forwarded untouched and never overridden. Saying so is
+                // what turns a silently un-overridden service into a one-line explanation.
                 registration = null;
+                _logger.Debug($"[RuntimeFlow] {_scope}: a registration could not be inspected for overrides " +
+                              $"({exception.GetType().Name}); it is forwarded unchanged.");
             }
 
             _peeked[builder] = registration;
