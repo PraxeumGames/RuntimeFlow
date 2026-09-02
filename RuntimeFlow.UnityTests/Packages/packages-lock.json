@@ -4,7 +4,9 @@
       "version": "file:../../com.praxeum.runtimeflow",
       "depth": 0,
       "source": "local",
-      "dependencies": {}
+      "dependencies": {
+        "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer#f2afd2ac175a1e04ac59a8f69794df827b53b732"
+      }
     },
     "com.unity.ext.nunit": {
       "version": "2.0.3",
@@ -25,11 +27,11 @@
       "url": "https://packages.unity.com"
     },
     "jp.hadashikick.vcontainer": {
-      "version": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1",
+      "version": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer#f2afd2ac175a1e04ac59a8f69794df827b53b732",
       "depth": 0,
       "source": "git",
       "dependencies": {},
-      "hash": "c30a8af94809177788cd4392ea9b6ff6373c51b9"
+      "hash": "f2afd2ac175a1e04ac59a8f69794df827b53b732"
     },
     "com.unity.modules.animation": {
       "version": "1.0.0",

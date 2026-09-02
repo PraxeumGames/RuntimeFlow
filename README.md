@@ -3,86 +3,151 @@
 [![CI](https://github.com/PraxeumGames/RuntimeFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/PraxeumGames/RuntimeFlow/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-**RuntimeFlow is a Unity startup orchestration framework centered on scoped DI, async lifecycle execution, and runtime recovery controls.**
+RuntimeFlow runs the asynchronous startup of a Unity game on top of stock VContainer. A service is a
+class that implements one interface, `IAsyncInitializable`, and is registered with VContainer in any
+way the container supports; after `Build()` the framework reads the scope's own registrations, derives
+an initialization DAG from constructor parameters, validates it before the first `InitializeAsync`, and
+runs it dynamically — each service starts as soon as its own dependencies are done, independent
+services overlap. Failures are the point: one exception names the service, the scope, the phase, the
+elapsed time, everything that completed and everything that was still blocked, with the original
+exception as `InnerException`. There is no central flow file, no stage markers and no custom container.
 
-For package installation and Unity integration usage, start with [`com.praxeum.runtimeflow/README.md`](com.praxeum.runtimeflow/README.md).
+Package documentation: [`com.praxeum.runtimeflow/README.md`](com.praxeum.runtimeflow/README.md).
+Design rationale and exact message formats: [`docs/DESIGN.md`](docs/DESIGN.md).
 
 ## Repository map
 
 | Path | Purpose |
 |---|---|
-| `com.praxeum.runtimeflow/` | Unity UPM package (runtime code, package metadata, analyzer payload) |
-| `RuntimeFlow.UnityTests/` | Unity test project for NUnit EditMode runtime tests against the real UPM package and VContainer |
-| `RuntimeFlow.Generators/` | Roslyn incremental generator project for initialization graph diagnostics |
-| `RuntimeFlow.sln` | Main solution for local build and test workflows |
+| `com.praxeum.runtimeflow/` | The UPM package. `Runtime/` — public API (namespace `RuntimeFlow`); `Runtime/Internal/` — graph builder and scheduler; `Runtime/Testing/` — test harness, compiled only under `UNITY_INCLUDE_TESTS`; `Editor/` — the dashboard window; `Runtime/Plugins/` — the Microsoft.Extensions.Logging.Abstractions assembly. |
+| `RuntimeFlow.UnityTests/` | Unity project holding the authoritative test suite (`Assets/Tests`, EditMode and PlayMode) and the demo (`Assets/Demo`) that exercises the broken-flow cases. |
+| `scripts/` | `run_unity_editmode_tests.sh [playmode]`, `check_package_namespaces.sh`, `check_docs_types.sh`. |
+| `docs/` | [`docs/DESIGN.md`](docs/DESIGN.md) and the allowlist used by the docs gate. |
 
-## Core capabilities
+There is no solution file, no `dotnet` build and no source generator; tests run only inside Unity.
 
-- **Strict scope hierarchy**: `Global -> Session -> Scene -> Module`
-- **Async lifecycle orchestration**: initialization, disposal, scope activation/deactivation contracts
-- **Runtime flow API**: scene/module loading, route navigation, preloading, reload, and additive modules
-- **Health and recovery**: service timeout supervision, retry policy, and controlled session restart paths
-- **Flow safety hooks**: transition handlers, guard stages, and restart-preparation hooks
-- **Scoped event propagation**: local, bubble-up, and broadcast-down delivery
-- **Loading progress model**: operation snapshots (`kind`, `stage`, `state`, percent, errors)
-- **Graph validation support**: constructor + `[DependsOn]` dependencies with RF diagnostics
+## Install
 
-## Architecture snapshot
+In the consuming project's `Packages/manifest.json`:
 
-### Scope model
-
-```text
-Global (0) -> Session (1) -> Scene (2) -> Module (3)
+```json
+{
+  "dependencies": {
+    "com.praxeum.runtimeflow": "https://github.com/PraxeumGames/RuntimeFlow.git?path=com.praxeum.runtimeflow#1.0.0",
+    "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer#f2afd2ac175a1e04ac59a8f69794df827b53b732"
+  },
+  "testables": [
+    "com.praxeum.runtimeflow"
+  ]
+}
 ```
 
-Services can depend only on same-or-wider scopes. `ISceneScope` and `IModuleScope` installers define scope-local registrations through `Configure(IGameScopeRegistrationBuilder)`.
+**Both lines are required.** The package declares `jp.hadashikick.vcontainer` in its own
+`package.json`, but UPM does not resolve a git-URL dependency that is declared *inside* a package: git
+dependencies are only fetched from the project manifest. The declaration in the package documents the
+requirement and is satisfied when the project manifest names the same package; without the second line
+above the project fails to compile with unresolved `VContainer` references. The pin is upstream
+`hadashiA/VContainer`, tag 1.15.3, referenced by commit SHA
+(`f2afd2ac175a1e04ac59a8f69794df827b53b732`) so the resolved API is exactly the one the suite runs
+against. A project that already ships its own VContainer — a fork, a registry copy or an embedded one —
+keeps it and omits the second line, as long as it is a superset of 1.15.3. CI asserts that the SHA in
+`com.praxeum.runtimeflow/package.json` and the one in `RuntimeFlow.UnityTests/Packages/manifest.json`
+never drift apart.
 
-### Runtime entry points
+The `testables` entry is what makes Unity define `UNITY_INCLUDE_TESTS` for the package, which is the
+constraint that compiles the `RuntimeFlow.Testing` assembly (`TestFlow`, `LifecycleFake`,
+`CollectingObserver`). Without it the harness is simply absent from the project — the runtime package
+works either way, and nothing from `RuntimeFlow.Testing` ever reaches a player build.
 
-| Area | Primary APIs |
-|---|---|
-| Builder | `GameContextBuilder`, `IGameContextBuilder`, `IGameScopeRegistrationBuilder` |
-| Pipeline | `RuntimePipeline`, `RuntimePipelineOptions`, `RuntimePipelinePresets` |
-| Flow | `IRuntimeFlowScenario`, `IRuntimeFlowContext`, `SceneRoute`, `RuntimeFlowPresets` |
-| Health/retry | `RuntimeHealthOptions`, `RuntimeRetryPolicyOptions`, `IRuntimeHealthObserver`, `IRuntimeRetryObserver` |
-| Guarding | `IRuntimeFlowGuard`, `RuntimeFlowGuardStage`, `IRuntimeSessionRestartPreparationHook` |
-| Status/readiness | `RuntimeStatus`, `RuntimeReadinessStatus`, `IRuntimeExecutionContext` |
-| Loading telemetry | `RuntimeLoadingOperationSnapshot`, `IRuntimeLoadingProgressObserver` |
+## Quick start
 
-### Source-generator diagnostics
+```csharp
+public sealed class RemoteConfig : IAsyncInitializable                  // no attribute: required, weight 1
+{
+    public string CatalogUrl { get; private set; } = "builtin://catalog";
+    public async Task InitializeAsync(InitContext ctx, CancellationToken ct)
+        => CatalogUrl = await Backend.FetchCatalogUrlAsync(ct);
+}
 
-`RuntimeFlow.Generators` defines diagnostics for initialization graph problems:
+[Init(Phase = "content", Weight = 3)]                                   // three times the progress weight
+public sealed class Catalog : IAsyncInitializable
+{
+    private readonly RemoteConfig _config;
+    public Catalog(RemoteConfig config) => _config = config;            // ctor parameter = edge "after RemoteConfig"
+    public Task InitializeAsync(InitContext ctx, CancellationToken ct)
+        => Backend.LoadCatalogAsync(_config.CatalogUrl, ct);
+}
 
-Generation is opt-in per consumer assembly via `[assembly: RuntimeFlow.Contexts.GenerateRuntimeFlowInitializationGraph]`, preventing unrelated Unity assemblies from emitting duplicate graph types.
+[Init(UserGated = true)]                                                // waits for the player, never times out
+public sealed class GdprConsent : IAsyncInitializable
+{
+    public Task InitializeAsync(InitContext ctx, CancellationToken ct) => ConsentDialog.ShowAsync(ct);
+}
 
-| Code | Description |
-|---|---|
-| `RF0001` | Duplicate implementation for a service interface |
-| `RF0002` | Missing dependency for constructor/service graph |
-| `RF0003` | Scope violation (dependency points to narrower scope) |
-| `RF0004` | Circular dependency in initialization graph |
+public sealed class UpdateCheck : IAsyncInitializable
+{
+    public async Task InitializeAsync(InitContext ctx, CancellationToken ct)
+    {
+        if (await Backend.MustUpdateAsync(ct)) ctx.Halt("update.required");   // stop startup, no exception
+    }
+}
+
+var host = new RuntimeFlowHost(
+    global: b => b.RegisterInitializable<RemoteConfig>(),
+    session: b => { b.RegisterInitializable<GdprConsent>(); b.RegisterInitializable<UpdateCheck>(); b.RegisterInitializable<Catalog>(); },
+    new RuntimeFlowOptions { Phases = new[] { "platform", "content" } });
+
+var result = await host.StartAsync();
+if (result.Outcome == StartupOutcome.Halted) return;                    // result.HaltReason == "update.required"
+await host.RestartAsync("bundles-updated");                             // Global stays warm, Session is rebuilt
+UnityEngine.Debug.Log(host.Describe());                                 // the graph, its edges and their origins
+```
+
+`RegisterInitializable<T>()` is optional sugar for
+`Register<T>(Lifetime.Singleton).AsSelf().AsImplementedInterfaces()`; any VContainer registration that
+exposes `IAsyncInitializable` is discovered the same way.
 
 ## Development
 
 ```bash
-dotnet build RuntimeFlow.sln
-dotnet build RuntimeFlow.Generators
-dotnet test RuntimeFlow.Generators.Tests
-scripts/run_unity_editmode_tests.sh
+UNITY_BIN=/Applications/Unity/Hub/Editor/2022.3.62f2/Unity.app/Contents/MacOS/Unity \
+  scripts/run_unity_editmode_tests.sh                       # EditMode suite (authoritative)
+UNITY_BIN=... scripts/run_unity_editmode_tests.sh playmode  # PlayMode suite
+
+scripts/check_package_namespaces.sh && scripts/check_docs_types.sh   # package gate, no Unity needed
 ```
 
-Useful focused runs:
+`UNITY_BIN` may be omitted on macOS: the script picks the editor matching
+`RuntimeFlow.UnityTests/ProjectSettings/ProjectVersion.txt`. Narrow a run with a namespace, fixture or
+test name:
 
 ```bash
-UNITY_BIN=/path/to/Unity scripts/run_unity_editmode_tests.sh
+RUNTIMEFLOW_TEST_FILTER=RuntimeFlow.Tests.Failure UNITY_BIN=... scripts/run_unity_editmode_tests.sh
 ```
 
-## Quality gates
+Results land in `RuntimeFlow.UnityTests/TestResults/`, the editor log in `RuntimeFlow.UnityTests/Logs/`.
 
-- `dotnet build RuntimeFlow.sln` — must succeed with zero warnings (warnings are treated as errors via `Directory.Build.props`).
-- `dotnet test RuntimeFlow.Generators.Tests --no-build` — Roslyn generator regression tests for RF0001..RF0004 diagnostics.
-- `scripts/run_unity_editmode_tests.sh` — NUnit EditMode runtime tests using the real Unity package and real VContainer.
-- The .NET generator gates run on every push / pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml). Runtime lifecycle tests run through `RuntimeFlow.UnityTests`; the workflow includes a gated Unity EditMode job that is enabled by setting repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS=1` and Unity license secrets.
+## CI
+
+- **Package gate** runs on every push and pull request and needs no Unity: the namespace/layout guard,
+  the docs-reference guard, JSON validity of `package.json`, the manifest and every assembly
+  definition, a check that the package version has a matching changelog section, and a check that the
+  VContainer pin is identical in `package.json` and in the test project's manifest.
+- **Unity EditMode and PlayMode suites** run nightly and on manual dispatch. They additionally run on a
+  push or pull request when the repository variable `RUNTIMEFLOW_RUN_UNITY_TESTS` is set to `1`; the
+  Unity license secrets (`UNITY_LICENSE`, `UNITY_EMAIL`, `UNITY_PASSWORD`) are what those jobs need to
+  pass, not part of the trigger condition.
+
+## Supported versions
+
+- Unity `2022.3` or newer is declared in `package.json`; the suite is validated on 2022.3.62f2 locally
+  and in CI. 2022.2 is the floor for the UI Toolkit API the dashboard uses; older editors are not
+  supported.
+- VContainer 1.15.3 or newer (upstream, or a fork that is a superset of it), declared in the consuming
+  project's own `Packages/manifest.json` — see [Install](#install).
+- The package is compiled with nullable reference types enabled and uses default interface members
+  (`IRuntimeFlowObserver`). On Unity 2022.3+ both API compatibility levels — ".NET Standard" (2.1) and
+  ".NET Framework" — support them, so no project setting has to change.
 
 ## License
 

@@ -5,84 +5,72 @@ on:
     branches: ["**"]
   pull_request:
     branches: ["**"]
+  schedule:
+    # Nightly full Unity run at 03:15 UTC.
+    - cron: "15 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  generator-build-and-test:
-    name: Generator Build & Test (.NET 9)
+  package-gate:
+    name: Package gate (no Unity)
     runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'schedule' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 9.0.x
+      - name: Namespace and layout guard
+        run: scripts/check_package_namespaces.sh
 
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/Directory.Build.props') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
+      - name: Docs reference real types
+        run: scripts/check_docs_types.sh
 
-      - name: Restore
+      - name: JSON validity (package.json, asmdefs, manifest)
         run: |
-          dotnet restore ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --nologo
+          python3 -m json.tool com.praxeum.runtimeflow/package.json >/dev/null
+          python3 -m json.tool RuntimeFlow.UnityTests/Packages/manifest.json >/dev/null
+          find com.praxeum.runtimeflow RuntimeFlow.UnityTests/Assets -name '*.asmdef' -print0 \
+            | xargs -0 -n1 sh -c 'python3 -m json.tool "$0" >/dev/null || { echo "::error::invalid JSON: $0"; exit 1; }'
 
-      - name: Build
+      - name: VContainer pin matches between package.json and the test project manifest
         run: |
-          dotnet build ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj --configuration Release --no-restore --nologo
+          python3 - <<'PY'
+          import json, sys
+          key = "jp.hadashikick.vcontainer"
+          pkg = json.load(open("com.praxeum.runtimeflow/package.json"))["dependencies"].get(key)
+          project = json.load(open("RuntimeFlow.UnityTests/Packages/manifest.json"))["dependencies"].get(key)
+          if pkg is None:
+              sys.exit("::error::com.praxeum.runtimeflow/package.json declares no %s dependency" % key)
+          if project is None:
+              sys.exit("::error::RuntimeFlow.UnityTests/Packages/manifest.json declares no %s dependency" % key)
+          if pkg != project:
+              sys.exit("::error::VContainer pin drift: package.json has %s but the test project manifest has %s" % (pkg, project))
+          print("VContainer pin: %s" % pkg)
+          PY
 
-      - name: Validate packaged analyzer
+      - name: package.json version matches CHANGELOG
         run: |
-          dotnet build ./RuntimeFlow.Generators/RuntimeFlow.Generators.csproj --configuration Release --no-restore --nologo
-          cmp -s \
-            ./RuntimeFlow.Generators/bin/Release/netstandard2.0/RuntimeFlow.Generators.dll \
-            ./com.praxeum.runtimeflow/Analyzers/RuntimeFlow.Generators.dll \
-            || { echo "::error::Packaged RuntimeFlow.Generators.dll is stale. Rebuild and copy the Release analyzer into com.praxeum.runtimeflow/Analyzers/."; exit 1; }
-          if grep -a "GameBuilder.Generators" ./com.praxeum.runtimeflow/Analyzers/RuntimeFlow.Generators.dll; then
-            echo "::error::Packaged RuntimeFlow.Generators.dll still references GameBuilder.Generators."
-            exit 1
-          fi
-
-      - name: Test generator
-        run: |
-          dotnet test ./RuntimeFlow.Generators.Tests/RuntimeFlow.Generators.Tests.csproj \
-            --configuration Release \
-            --no-build \
-            --nologo \
-            --logger "trx;LogFileName=generator-test-results.trx" \
-            --results-directory ./TestResults
-
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-results
-          path: ./TestResults/**/*.trx
-          if-no-files-found: warn
-
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: ./TestResults/**/coverage.cobertura.xml
-          if-no-files-found: warn
+          v=$(python3 -c "import json;print(json.load(open('com.praxeum.runtimeflow/package.json'))['version'])")
+          top=$(grep -m1 -oE '^## \[[^]]+\]' com.praxeum.runtimeflow/CHANGELOG.md | sed -E 's/^## \[(.*)\]$/\1/')
+          [[ "$top" == "$v" ]] || { echo "::error::package.json version $v but the newest CHANGELOG entry is [$top]"; exit 1; }
 
   unity-editmode-runtime-tests:
     name: Unity EditMode Runtime Tests
     runs-on: ubuntu-latest
-    if: ${{ vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
+    # Full Unity runs are nightly and manual; PRs run only the package gate unless
+    # the repository variable RUNTIMEFLOW_RUN_UNITY_TESTS is set to '1'.
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -104,4 +92,31 @@ jobs:
         with:
           name: unity-editmode-test-results
           path: TestResults/UnityEditMode
+          if-no-files-found: warn
+
+  unity-playmode-runtime-tests:
+    name: Unity PlayMode Runtime Tests
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || vars.RUNTIMEFLOW_RUN_UNITY_TESTS == '1' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Unity PlayMode tests
+        uses: game-ci/unity-test-runner@v4
+        env:
+          UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
+          UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
+          UNITY_PASSWORD: ${{ secrets.UNITY_PASSWORD }}
+        with:
+          projectPath: RuntimeFlow.UnityTests
+          testMode: playmode
+          artifactsPath: TestResults/UnityPlayMode
+
+      - name: Upload Unity test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-playmode-test-results
+          path: TestResults/UnityPlayMode
           if-no-files-found: warn

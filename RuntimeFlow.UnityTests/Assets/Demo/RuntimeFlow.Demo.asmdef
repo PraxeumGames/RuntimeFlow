@@ -1,0 +1,17 @@
+{
+    "name": "RuntimeFlow.Demo",
+    "rootNamespace": "RuntimeFlow.Demo",
+    "references": [
+        "RuntimeFlow.Runtime",
+        "VContainer"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

@@ -2,7 +2,7 @@
   "dependencies": {
     "com.praxeum.runtimeflow": "file:../../com.praxeum.runtimeflow",
     "com.unity.test-framework": "1.4.6",
-    "jp.hadashikick.vcontainer": "https://github.com/Bezarius/VContainer.git?path=VContainer/Assets/VContainer#1.15.3.1",
+    "jp.hadashikick.vcontainer": "https://github.com/hadashiA/VContainer.git?path=VContainer/Assets/VContainer#f2afd2ac175a1e04ac59a8f69794df827b53b732",
     "com.unity.modules.animation": "1.0.0",
     "com.unity.modules.assetbundle": "1.0.0",
     "com.unity.modules.audio": "1.0.0",
@@ -12,5 +12,8 @@
     "com.unity.modules.ui": "1.0.0",
     "com.unity.modules.unitywebrequest": "1.0.0",
     "com.unity.modules.unitywebrequestassetbundle": "1.0.0"
-  }
+  },
+  "testables": [
+    "com.praxeum.runtimeflow"
+  ]
 }
