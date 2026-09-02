@@ -2,138 +2,68 @@
 
 ## Project overview
 
-RuntimeFlow is a Unity game startup orchestration framework delivered as a UPM package (`com.praxeum.runtimeflow`). It provides hierarchical DI scopes, an async service initialization DAG, health supervision with automatic recovery, and a runtime pipeline for managing game lifecycle.
+RuntimeFlow is a Unity UPM package (`com.praxeum.runtimeflow`) that runs the asynchronous
+initialization of a game's services on top of stock VContainer. Services implement one
+interface, declare dependencies through their constructors, initialize concurrently as a DAG,
+and fail transparently (one exception naming the service, what completed and what was blocked).
 
-The repository has three components:
+Repository layout:
 
-- **`com.praxeum.runtimeflow/`** — The Unity package (runtime code, no `.csproj`). Uses VContainer for DI and `Microsoft.Extensions.Logging.Abstractions` for logging. Targets Unity 2021.3+.
-- **`RuntimeFlow.UnityTests/`** — Unity test project containing NUnit EditMode runtime tests against the local UPM package and the real VContainer package.
-- **`RuntimeFlow.Generators/`** — A Roslyn `IIncrementalGenerator` that builds `CompiledInitializationGraph.g.cs` at compile time, validating scope rules and detecting dependency cycles.
+- `com.praxeum.runtimeflow/` — the package. `Runtime/` (namespace `RuntimeFlow`),
+  `Runtime/Internal/` (`RuntimeFlow.Internal`), `Runtime/Testing/` (`RuntimeFlow.Testing`,
+  compiled only with `UNITY_INCLUDE_TESTS`), `Editor/` (`RuntimeFlow.Editor`, UI Toolkit dashboard).
+- `RuntimeFlow.UnityTests/` — Unity 2022.3 project with the authoritative NUnit EditMode/PlayMode
+  suite (`Assets/Tests`) and the demo (`Assets/Demo`) that exercises broken-flow cases.
+- `scripts/` — `run_unity_editmode_tests.sh [playmode]`, `check_package_namespaces.sh`,
+  `check_docs_types.sh`.
+- `docs/DESIGN.md` — the one-graph model and failure semantics.
+
+There is no `.sln`, no `dotnet` build and no source generator. Tests run only inside Unity.
 
 ## Build and test
 
 ```bash
-# Build the entire solution
-dotnet build RuntimeFlow.sln
-
-# Build the source generator
-dotnet build RuntimeFlow.Generators
-
-# Run generator tests
-dotnet test RuntimeFlow.Generators.Tests
-
-# Run runtime tests in Unity EditMode
-scripts/run_unity_editmode_tests.sh
+UNITY_BIN=/Applications/Unity/Hub/Editor/2022.3.62f2/Unity.app/Contents/MacOS/Unity scripts/run_unity_editmode_tests.sh
+UNITY_BIN=... scripts/run_unity_editmode_tests.sh playmode
+scripts/check_package_namespaces.sh && scripts/check_docs_types.sh   # CI package gate, no Unity
 ```
 
-> Runtime tests intentionally run inside Unity with NUnit and the real `jp.hadashikick.vcontainer` package. Do not reintroduce a .NET wrapper or local fake VContainer implementation for runtime tests.
+## Architecture rules (do not violate)
 
-## Architecture
+- **One graph.** The initialization order is derived from VContainer registrations: constructor
+  parameters that are other initializable services are edges; `[DependsOn(typeof(X))]` is a
+  validated escape hatch; optional named phases add barrier edges. There is no central flow
+  file, no stage-marker interfaces, no `GameFlow`-style vocabulary.
+- **Stock VContainer only.** Never reference `VContainer.Internal`. The framework never wraps
+  `IContainerBuilder`; consumers keep the full VContainer API.
+- **Single-threaded.** Everything runs on the caller's `SynchronizationContext`. No
+  `ConfigureAwait(false)`, no locks, no scheduler abstractions, no ambient statics holding
+  runtime state (`FlowRegistry` is diagnostics-only, weak references).
+- **Transparent failures.** Every failure names the service, scope, phase and elapsed time, lists
+  completed and unfinished services, and keeps the original exception as `InnerException`.
+  The default logger writes to the Unity console; `NullLogger` is never the default.
+- **No compatibility shims.** Public surface is small (~25 types); namespaces follow folders.
 
-### Scope hierarchy
-
-The framework enforces a strict four-level scope hierarchy:
-
-```
-Global (0)  →  Session (1)  →  Scene (2)  →  Module (3)
-```
-
-- Each scope gets its own `GameContext` wrapping a VContainer `IObjectResolver`.
-- Services in a scope may depend only on services from the same or earlier scopes (enforced at compile time by the source generator — diagnostic `RF0003`).
-- Scope types are identified by installer classes implementing `ISceneScope` or `IModuleScope` (with a `Configure` method that registers services). Global and Session scopes use built-in types.
-
-### Initialization DAG
-
-Services implement scope-specific marker interfaces (`IGlobalInitializableService`, `ISessionInitializableService`, etc.) which all extend `IAsyncInitializableService`. The source generator scans the compilation for these implementations and builds a dependency graph from:
-
-1. Constructor parameters that are themselves async-initializable services.
-2. Explicit `[DependsOn(typeof(...))]` attributes on the implementation class.
-
-At runtime, services are initialized in topological order and disposed in reverse.
-
-### Key entry points
+## Key types
 
 | Concern | Type | Location |
 |---|---|---|
-| Builder API | `GameContextBuilder` | `Runtime/Contexts/Core/` |
-| Pipeline orchestration | `RuntimePipeline` | `Runtime/Runtime/Pipeline/` |
-| Flow execution | `RuntimeFlowRunner` (implements `IRuntimeFlowContext`) | `Runtime/Runtime/Flow/` |
-| Health monitoring | `RuntimeHealthSupervisor` | `Runtime/Runtime/Health/` |
-| Event bus | `ScopeEventBus` (implements `IScopeEventBus`) | `Runtime/Events/` |
-| Source generator | `InitializationGraphGenerator` | `RuntimeFlow.Generators/` |
+| Service contract | `IAsyncInitializable`, `InitContext` | `Runtime/` |
+| Per-service policy | `[Init(Phase, Optional, UserGated, TimeoutSeconds, Weight)]`, `[DependsOn]` | `Runtime/` |
+| Global + Session lifecycle, restart | `RuntimeFlowHost` | `Runtime/RuntimeFlowHost.cs` |
+| One scope's graph | `ScopeRun` | `Runtime/ScopeRun.cs` |
+| Graph build and validation | `GraphBuilder`, `ConstructorEdges` | `Runtime/Internal/` |
+| Execution | `Scheduler`, `StallWatch` | `Runtime/Internal/` |
+| Observability | `IRuntimeFlowObserver`, `RuntimeFlowStatus`, `Describe()` | `Runtime/` |
+| Tests | `TestFlow`, `LifecycleFake`, `CollectingObserver` | `Runtime/Testing/` |
 
-### Registration and flow
+## Test conventions
 
-```csharp
-var pipeline = RuntimePipeline.Create(builder =>
-{
-    builder.Session()
-        .Register<IMyService, MyService>(Lifetime.Singleton);
-
-    builder.Scene<MySceneScope>();
-    builder.Module<MyModuleScope>();
-});
-
-pipeline.ConfigureFlow(new MyFlowScenario());
-await pipeline.RunAsync(sceneLoader);
-```
-
-Scene and module scopes are installer classes:
-```csharp
-public class MySceneScope : ISceneScope
-{
-    public void Configure(IGameScopeRegistrationBuilder builder)
-    {
-        builder.Register<ISceneService, SceneService>(Lifetime.Singleton);
-    }
-}
-```
-
-Top-level game flow is defined by implementing `IRuntimeFlowScenario.ExecuteAsync(IRuntimeFlowContext, CancellationToken)`.
-
-## Source generator diagnostics
-
-| Code | Description |
-|---|---|
-| `RF0001` | Duplicate implementation — multiple classes implement the same service interface |
-| `RF0002` | Missing dependency — constructor parameter has no registered implementation |
-| `RF0003` | Scope violation — a service depends on a service from a later (narrower) scope |
-| `RF0004` | Cycle detected — circular dependency in the initialization graph |
-
-## Conventions
-
-### Service interface hierarchy
-
-Scope-specific interfaces follow a consistent marker pattern:
-
-```
-IAsyncInitializableService
-├── IGlobalInitializableService
-├── ISessionInitializableService
-├── ISceneInitializableService
-└── IModuleInitializableService
-```
-
-The same pattern applies to `IAsyncDisposableService`, `IAsyncScopeActivationService`, and `ILazyInitializableService`.
-
-### Constructor injection
-
-VContainer resolves constructors by: `[Inject]` attribute first, then most-parameter constructor. The source generator mirrors this logic via `InitializationGraphRules.SelectConstructor`.
-
-### Test patterns
-
-- Runtime tests use `RuntimePipeline.Create(...)` to wire the full pipeline, then assert on tracked state (attempt counters, call logs, observer collections).
-- Test services live in `RuntimeFlow.UnityTests/Assets/Tests/EditMode/RuntimeFlow.Tests/Services/` and use `AttemptControlled*` naming — they accept a `Func<int, CancellationToken, Task>` to control per-attempt behavior.
-- Test scope installers live in `RuntimeFlow.UnityTests/Assets/Tests/EditMode/RuntimeFlow.Tests/Scopes/` (e.g., `TestSceneScope : ISceneScope`, `TestModuleScope : IModuleScope`) — they accept an `Action<IGameScopeRegistrationBuilder>` lambda to configure registrations dynamically.
-- Session scope in tests uses `builder.DefineSessionScope()` (parameterless, built-in type) and `builder.Session()` for inline registration.
-- Test observers in `RuntimeFlow.Tests/Observers/` collect health metrics and retry events.
-- `TestDoubles/DelegateRuntimeFlowScenario` wraps a lambda as `IRuntimeFlowScenario`.
-- `TestDoubles/NoopSceneLoader` provides a no-op `IGameSceneLoader`.
-
-### Event propagation
-
-`IScopeEventBus.Publish` supports three modes: `Local` (current scope only), `Bubble` (up to parent scopes), and `Broadcast` (down to child scopes). Events implement the `IScopeEvent` marker interface.
-
-### Health and recovery
-
-`RuntimePipelineOptions.Health` configures timeouts and auto-restart limits. The health supervisor tracks per-service metrics and can automatically restart the session scope when a service times out, up to `MaxAutoSessionRestartsPerRun` times.
+- `[Test] public async Task` with `[Timeout(10000)]`; synchronise with `TaskCompletionSource`
+  gates (`Support/ControlledService.cs`), never with `Task.Delay` races. Real time only in
+  timeout/stall tests with 50–200 ms thresholds.
+- Use `Support/AsyncTestAssert.cs` (`await AsyncTestAssert.ThrowsAsync<T>(...)`); NUnit's
+  `Assert.ThrowsAsync` deadlocks on the Unity main thread.
+- Tests inject a capturing `ILogger`; a stray `Debug.LogError` fails the test unless wrapped in
+  `LogAssert.Expect`.
+- Tests assert on the exact message formats documented in `docs/DESIGN.md`.

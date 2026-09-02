@@ -18,6 +18,32 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  package-gate:
+    name: Package gate (no Unity)
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name != 'schedule' }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Namespace and layout guard
+        run: scripts/check_package_namespaces.sh
+
+      - name: Docs reference real types
+        run: scripts/check_docs_types.sh
+
+      - name: JSON validity (package.json, asmdefs, manifest)
+        run: |
+          python3 -m json.tool com.praxeum.runtimeflow/package.json >/dev/null
+          python3 -m json.tool RuntimeFlow.UnityTests/Packages/manifest.json >/dev/null
+          find com.praxeum.runtimeflow RuntimeFlow.UnityTests/Assets -name '*.asmdef' -print0 \
+            | xargs -0 -n1 sh -c 'python3 -m json.tool "$0" >/dev/null || { echo "::error::invalid JSON: $0"; exit 1; }'
+
+      - name: package.json version matches CHANGELOG
+        run: |
+          v=$(python3 -c "import json;print(json.load(open('com.praxeum.runtimeflow/package.json'))['version'])")
+          grep -q "^## \[$v\]" com.praxeum.runtimeflow/CHANGELOG.md || { echo "::error::CHANGELOG.md has no [$v] section"; exit 1; }
+
   unity-editmode-runtime-tests:
     name: Unity EditMode Runtime Tests
     runs-on: ubuntu-latest
