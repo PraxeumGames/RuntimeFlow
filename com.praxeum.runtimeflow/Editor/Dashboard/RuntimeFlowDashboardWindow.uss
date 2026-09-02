@@ -226,3 +226,209 @@
     align-items: center;
     justify-content: space-between;
 }
+
+/* ---------------------------------------------------------------- 1.0 dashboard */
+
+.rf-tab-bar {
+    flex-direction: row;
+    margin-left: auto;
+}
+
+.rf-host-dropdown {
+    min-width: 160px;
+    margin-right: 6px;
+}
+
+.rf-version-label {
+    font-size: 10px;
+    color: #eaf6ff;
+}
+
+.rf-filter-field {
+    margin-bottom: 6px;
+}
+
+.rf-graph-top {
+    flex-grow: 1;
+    min-height: 160px;
+}
+
+.rf-hint {
+    font-size: 11px;
+    color: #8a9199;
+    white-space: normal;
+    margin-top: 4px;
+    margin-bottom: 4px;
+}
+
+/* Service rows */
+
+.rf-row-body {
+    flex-direction: row;
+    align-items: center;
+    flex-grow: 1;
+}
+
+.rf-group-header {
+    font-size: 11px;
+    -unity-font-style: bold;
+    color: #4ec9b0;
+    background-color: #2d2d30;
+    padding-left: 4px;
+    padding-right: 4px;
+}
+
+.rf-item-metric {
+    font-size: 10px;
+    color: #d4d4d4;
+    margin-left: 6px;
+    min-width: 52px;
+    -unity-text-align: middle-right;
+}
+
+.rf-dependency-row {
+    flex-direction: row;
+    align-items: center;
+    margin-bottom: 2px;
+}
+
+.rf-scope-card {
+    margin-right: 4px;
+}
+
+.rf-scope-services {
+    margin-top: 6px;
+    padding-top: 4px;
+    border-top-width: 1px;
+    border-top-color: #333333;
+}
+
+.rf-progress {
+    height: 16px;
+    margin-top: 6px;
+}
+
+/* State badges */
+
+.rf-badge {
+    min-width: 66px;
+    margin-right: 6px;
+    -unity-text-align: middle-center;
+}
+
+.rf-state--pending {
+    background-color: #333333;
+    color: #9aa0a6;
+}
+
+.rf-state--running {
+    background-color: #1e3a5c;
+    color: #79b8ff;
+}
+
+.rf-state--awaiting {
+    background-color: #4a3a12;
+    color: #ffd479;
+}
+
+.rf-state--completed {
+    background-color: #1e5c2b;
+    color: #85e89d;
+}
+
+.rf-state--degraded {
+    background-color: #5c4e1e;
+    color: #ffea7f;
+}
+
+.rf-state--failed {
+    background-color: #5c1e1e;
+    color: #fdaeb7;
+}
+
+.rf-state--cancelled {
+    background-color: #4a2b4a;
+    color: #e6b3e6;
+}
+
+.rf-state--skipped {
+    background-color: #2b2b2b;
+    color: #767676;
+}
+
+/* Failure cards */
+
+.rf-card--failed {
+    border-color: #a33a3a;
+    background-color: #2a1e1e;
+}
+
+.rf-card--degraded {
+    border-color: #a3862f;
+    background-color: #2a271e;
+}
+
+.rf-error-message {
+    white-space: normal;
+    color: #f5c2c7;
+    font-size: 11px;
+    margin-bottom: 6px;
+}
+
+.rf-stack {
+    min-height: 90px;
+    max-height: 220px;
+    font-size: 10px;
+    margin-top: 4px;
+}
+
+.rf-stack > .unity-text-field__input {
+    background-color: #1b1b1b;
+    color: #c8c8c8;
+    border-color: #333333;
+    white-space: normal;
+}
+
+/* Timeline */
+
+.rf-timeline {
+    height: 150px;
+    border-top-width: 1px;
+    border-top-color: #333333;
+    background-color: #202021;
+    padding: 6px;
+}
+
+.rf-timeline-row {
+    flex-direction: row;
+    align-items: center;
+    height: 18px;
+}
+
+.rf-timeline-name {
+    width: 150px;
+    font-size: 10px;
+    color: #cccccc;
+    overflow: hidden;
+}
+
+.rf-timeline-track {
+    flex-grow: 1;
+    height: 10px;
+    background-color: #2b2b2d;
+    border-radius: 2px;
+}
+
+.rf-timeline-bar {
+    position: absolute;
+    height: 10px;
+    border-radius: 2px;
+    min-width: 2px;
+}
+
+.rf-timeline-elapsed {
+    width: 60px;
+    font-size: 10px;
+    color: #9aa0a6;
+    -unity-text-align: middle-right;
+}

@@ -298,6 +298,12 @@ namespace RuntimeFlow
         /// <summary>Child runs created by <see cref="InitializeScopeAsync"/>, in creation order.</summary>
         internal IReadOnlyList<ScopeRun> ChildRuns => _childRuns;
 
+        /// <summary>Run of the global scope, or null before <see cref="StartAsync"/>; read by the editor dashboard.</summary>
+        internal ScopeRun? GlobalRun => _globalRun;
+
+        /// <summary>Run of the current session scope, or null before it exists; read by the editor dashboard.</summary>
+        internal ScopeRun? SessionRun => _sessionRun;
+
         private async Task<StartupResult> StartCoreAsync(CancellationToken cancellationToken)
         {
             await Task.Yield();
