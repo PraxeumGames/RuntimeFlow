@@ -33,7 +33,7 @@ if [[ -z "${UNITY_BIN:-}" ]]; then
       [[ -x "$UNITY_BIN" ]] || UNITY_BIN=""
     fi
     if [[ -z "$UNITY_BIN" ]]; then
-      UNITY_BIN=$(ls -d /Applications/Unity/Hub/Editor/*/Unity.app/Contents/MacOS/Unity 2>/dev/null | grep -vE '/[0-9]+\\.[0-9]+\\.[0-9]+[a-z][0-9]+' | sort -V | tail -1 || true)
+      UNITY_BIN=$(ls -d /Applications/Unity/Hub/Editor/*/Unity.app/Contents/MacOS/Unity 2>/dev/null | grep -vE '/[0-9]+\.[0-9]+\.[0-9]+[ab][0-9]+/' | sort -V | tail -1 || true)
     fi
     if [[ -z "$UNITY_BIN" ]]; then
       UNITY_BIN=$(ls -d /Applications/Unity/Hub/Editor/*/Unity.app/Contents/MacOS/Unity 2>/dev/null | sort -V | tail -1 || true)
@@ -91,8 +91,8 @@ fi
 # and the runner may still execute them). Compilation errors are authoritative.
 if grep -qE "Scripts have compiler errors|Script Compilation Error" "$LOG_FILE"; then
   echo "COMPILATION ERRORS detected in $LOG_FILE; any executed tests ran against stale assemblies." >&2
-  grep -E "error CS" "$LOG_FILE" | sed 's/.*Assets/Assets/' | sort -u | head -10 >&2
-  exit "${UNITY_EXIT_CODE:-1}"
+  grep -E "error CS" "$LOG_FILE" | sed 's/.*Assets/Assets/' | sort -u | head -10 >&2 || true
+  exit $(( UNITY_EXIT_CODE != 0 ? UNITY_EXIT_CODE : 1 ))
 fi
 
 PY_EXIT=0

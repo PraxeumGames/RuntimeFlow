@@ -42,7 +42,8 @@ jobs:
       - name: package.json version matches CHANGELOG
         run: |
           v=$(python3 -c "import json;print(json.load(open('com.praxeum.runtimeflow/package.json'))['version'])")
-          grep -q "^## \[$v\]" com.praxeum.runtimeflow/CHANGELOG.md || { echo "::error::CHANGELOG.md has no [$v] section"; exit 1; }
+          top=$(grep -m1 -oE '^## \[[^]]+\]' com.praxeum.runtimeflow/CHANGELOG.md | sed -E 's/^## \[(.*)\]$/\1/')
+          [[ "$top" == "$v" ]] || { echo "::error::package.json version $v but the newest CHANGELOG entry is [$top]"; exit 1; }
 
   unity-editmode-runtime-tests:
     name: Unity EditMode Runtime Tests

@@ -8,7 +8,7 @@ DOCS=(README.md "$PKG/README.md" docs/DESIGN.md)
 ALLOW=docs/external-types.txt
 fail=0
 for doc in "${DOCS[@]}"; do
-  [[ -f "$doc" ]] || { echo "::warning::$doc not found, skipped"; continue; }
+  [[ -f "$doc" ]] || { echo "::error::$doc not found"; fail=1; continue; }
   while IFS= read -r tok; do
     name=${tok%%[<.]*}
     grep -qx "$name" "$ALLOW" 2>/dev/null && continue
