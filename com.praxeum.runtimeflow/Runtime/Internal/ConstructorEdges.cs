@@ -22,16 +22,12 @@ namespace RuntimeFlow.Internal
             typeof(IScopedObjectResolver),
             typeof(IContainerBuilder),
             typeof(RuntimeFlowOptions),
+            typeof(RuntimeFlowHost),
+            typeof(ScopeRun),
             typeof(InitContext),
             typeof(ILogger),
             typeof(object),
             typeof(string)
-        };
-
-        private static readonly HashSet<string> IgnoredNames = new HashSet<string>(StringComparer.Ordinal)
-        {
-            "RuntimeFlow.RuntimeFlowHost",
-            "RuntimeFlow.ScopeRun"
         };
 
         /// <summary>Parameters of the constructor VContainer would inject, cached per type.</summary>
@@ -57,7 +53,7 @@ namespace RuntimeFlow.Internal
             {
                 if (type == ignored) return true;
             }
-            return type.FullName != null && IgnoredNames.Contains(type.FullName);
+            return false;
         }
 
         /// <summary>Element type of a collection parameter (the barrier idiom), or null.</summary>

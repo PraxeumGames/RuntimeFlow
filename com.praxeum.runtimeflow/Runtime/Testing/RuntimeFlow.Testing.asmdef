@@ -2,7 +2,8 @@
     "name": "RuntimeFlow.Testing",
     "rootNamespace": "RuntimeFlow.Testing",
     "references": [
-        "RuntimeFlow.Runtime"
+        "RuntimeFlow.Runtime",
+        "VContainer"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
