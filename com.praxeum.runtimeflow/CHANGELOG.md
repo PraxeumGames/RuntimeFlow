@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.1] - 2026-10-06
+
+### Fixed
+- Session restart preparation hooks now run when a restart arrives while the session is still initializing.
+  Previously the hooks were looked up only in the published session, which does not exist until every session
+  initializer completes, so a restart issued mid-initialization (for example from an initializer itself) skipped
+  restart preparation silently and left state that session had already set behind. The builder now tracks the
+  session container from the moment it is built, and `RuntimeSessionRestartPreparationContext.SessionContext`
+  exposes the session being restarted, published or still loading.
+
 ## [0.5.0] - 2026-07-13
 
 ### Added

@@ -50,6 +50,9 @@ namespace RuntimeFlow.Contexts
             try
             {
                 context = CreateContext(parentContext, registrations, autoServices, initializedCallback, initialize: true, availableServices, eventBus);
+                if (scope == GameContextType.Session)
+                    _loadingSessionContext = context;
+
                 var totalServices = await ExecuteInitializersAsync(scope, context, initializedServices, progressNotifier, generation, cancellationToken, scopeKey).ConfigureAwait(false);
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 if (scope != GameContextType.Global && !skipActivation)

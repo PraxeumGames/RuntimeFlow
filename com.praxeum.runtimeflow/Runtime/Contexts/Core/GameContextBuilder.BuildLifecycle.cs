@@ -136,6 +136,7 @@ namespace RuntimeFlow.Contexts
 
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 _sessionContext = sessionContext;
+                _loadingSessionContext = null;
                 _sceneContext = sceneContext;
                 _moduleContext = moduleContext;
                 _activeSceneScopeKey = activeSceneScopeKey;
@@ -343,6 +344,7 @@ namespace RuntimeFlow.Contexts
 
                 ThrowIfStaleGeneration(generation, cancellationToken);
                 _sessionContext = sessionContext;
+                _loadingSessionContext = null;
                 _sceneContext = sceneContext;
                 _moduleContext = moduleContext;
             }

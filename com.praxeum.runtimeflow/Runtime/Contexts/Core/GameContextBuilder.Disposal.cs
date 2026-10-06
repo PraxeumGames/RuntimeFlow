@@ -56,6 +56,9 @@ namespace RuntimeFlow.Contexts
             if (context == null)
                 return;
 
+            if (ReferenceEquals(context, _loadingSessionContext))
+                _loadingSessionContext = null;
+
             List<Exception>? exceptions = null;
 
             try

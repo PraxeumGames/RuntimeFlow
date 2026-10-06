@@ -8,16 +8,35 @@ namespace RuntimeFlow.Contexts
 {
     public partial class GameContextBuilder
     {
+        /// <summary>
+        /// The session a restart would tear down: the published one, or one still initializing.
+        /// A restart can arrive mid-initialization and cancel that load, and its restart preparation
+        /// must still run against it.
+        /// </summary>
+        internal IGameContext? RestartingSessionContext => _sessionContext ?? _loadingSessionContext;
+
         internal bool TryResolveFromSession<TService>(out TService? service)
             where TService : class
         {
-            if (_sessionContext == null)
+            return TryResolveFrom(_sessionContext, out service);
+        }
+
+        internal bool TryResolveFromRestartingSession<TService>(out TService? service)
+            where TService : class
+        {
+            return TryResolveFrom(RestartingSessionContext, out service);
+        }
+
+        private static bool TryResolveFrom<TService>(IGameContext? context, out TService? service)
+            where TService : class
+        {
+            if (context == null)
             {
                 service = null;
                 return false;
             }
 
-            if (!_sessionContext.IsRegistered(typeof(TService)))
+            if (!context.IsRegistered(typeof(TService)))
             {
                 service = null;
                 return false;
@@ -25,7 +44,7 @@ namespace RuntimeFlow.Contexts
 
             try
             {
-                service = _sessionContext.Resolve<TService>();
+                service = context.Resolve<TService>();
                 return true;
             }
             catch (VContainerException)

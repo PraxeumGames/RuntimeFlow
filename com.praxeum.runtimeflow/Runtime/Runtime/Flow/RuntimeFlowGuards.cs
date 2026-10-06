@@ -81,11 +81,25 @@ namespace RuntimeFlow.Contexts
     public sealed class RuntimeSessionRestartPreparationContext
     {
         public RuntimeSessionRestartPreparationContext(RuntimeFlowGuardContext guardContext)
+            : this(guardContext, sessionContext: null)
+        {
+        }
+
+        public RuntimeSessionRestartPreparationContext(
+            RuntimeFlowGuardContext guardContext,
+            IGameContext? sessionContext)
         {
             GuardContext = guardContext ?? throw new ArgumentNullException(nameof(guardContext));
+            SessionContext = sessionContext;
         }
 
         public RuntimeFlowGuardContext GuardContext { get; }
+
+        /// <summary>
+        /// The session being restarted, including one that is still initializing: a restart can arrive
+        /// before the session is published, and that session must be prepared all the same.
+        /// </summary>
+        public IGameContext? SessionContext { get; }
         public IRuntimeFlowContext? FlowContext => GuardContext.FlowContext;
         public Type? ScopeKey => GuardContext.ScopeKey;
         public GameContextType? TargetScopeType => GuardContext.TargetScopeType;
@@ -102,13 +116,16 @@ namespace RuntimeFlow.Contexts
     {
         private readonly IReadOnlyList<IRuntimeSessionRestartPreparationHook> _hooks;
         private readonly Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>>? _dynamicHooksProvider;
+        private readonly Func<IGameContext?>? _sessionContextProvider;
 
         public RuntimeSessionRestartPreparationGuardBridge(
             IReadOnlyList<IRuntimeSessionRestartPreparationHook> hooks,
-            Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>>? dynamicHooksProvider = null)
+            Func<IReadOnlyList<IRuntimeSessionRestartPreparationHook>>? dynamicHooksProvider = null,
+            Func<IGameContext?>? sessionContextProvider = null)
         {
             _hooks = hooks ?? throw new ArgumentNullException(nameof(hooks));
             _dynamicHooksProvider = dynamicHooksProvider;
+            _sessionContextProvider = sessionContextProvider;
         }
 
         public async Task<RuntimeFlowGuardResult> EvaluateAsync(
@@ -127,7 +144,9 @@ namespace RuntimeFlow.Contexts
                 return RuntimeFlowGuardResult.Allow();
             }
 
-            var preparationContext = new RuntimeSessionRestartPreparationContext(context);
+            var preparationContext = new RuntimeSessionRestartPreparationContext(
+                context,
+                _sessionContextProvider?.Invoke());
             foreach (var hook in hooks)
             {
                 cancellationToken.ThrowIfCancellationRequested();

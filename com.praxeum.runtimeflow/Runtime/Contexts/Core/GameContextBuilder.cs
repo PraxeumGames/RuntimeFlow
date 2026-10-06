@@ -38,6 +38,8 @@ namespace RuntimeFlow.Contexts
 
         private IGameContext? _globalContext;
         private GameContext? _sessionContext;
+        // Session container already built but not yet published to _sessionContext
+        private GameContext? _loadingSessionContext;
         private GameContext? _sceneContext;
         private GameContext? _moduleContext;
         private Type? _activeSceneScopeKey;

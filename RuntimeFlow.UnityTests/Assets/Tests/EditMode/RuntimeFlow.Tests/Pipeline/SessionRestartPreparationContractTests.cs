@@ -1,5 +1,6 @@
 using NUnit.Framework;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using RuntimeFlow.Contexts;
@@ -70,6 +71,44 @@ namespace RuntimeFlow.Tests
             Assert.That(restartAware.BeforeSessionRestartCalls, Is.EqualTo(0));
         }
 
+        [Test]
+        public async Task ReloadSessionAsync_WhileSessionIsStillInitializing_InvokesHookWithLoadingSession()
+        {
+            var secondAttemptStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var sessionService = new AttemptControlledSessionService(async (attempt, cancellationToken) =>
+            {
+                if (attempt != 2)
+                    return;
+
+                secondAttemptStarted.TrySetResult(true);
+                await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
+            });
+            var hook = new RecordingPreparationHook();
+
+            var pipeline = RuntimePipeline.Create(builder =>
+            {
+                builder.DefineSessionScope();
+                builder.Session().RegisterInstance<ITestSessionService>(sessionService);
+                builder.Session().RegisterInstance<IRuntimeSessionRestartPreparationHook>(hook);
+            });
+
+            await pipeline.InitializeAsync();
+
+            var firstReload = pipeline.ReloadScopeAsync<SessionScope>();
+            await secondAttemptStarted.Task.WaitAsync(TimeSpan.FromSeconds(1));
+            var secondReload = pipeline.ReloadScopeAsync<SessionScope>();
+
+            await AsyncTestAssert.CatchAsync<OperationCanceledException>(() => firstReload);
+            await secondReload;
+
+            // The second restart arrives while the first one's session is still initializing: the hook
+            // must receive that loading session, otherwise whatever state it already set survives the restart
+            Assert.That(hook.SessionContexts.Count, Is.EqualTo(2));
+            Assert.That(hook.SessionContexts[0], Is.Not.Null);
+            Assert.That(hook.SessionContexts[1], Is.Not.Null);
+            Assert.That(hook.SessionContexts[1], Is.Not.SameAs(hook.SessionContexts[0]));
+        }
+
         private static RuntimePipeline CreateSessionReloadPipeline(
             Action<GameContextBuilder>? configureBuilder = null,
             Action<RuntimePipelineOptions>? configureOptions = null,
@@ -111,13 +150,15 @@ namespace RuntimeFlow.Tests
 
         private sealed class RecordingPreparationHook : IRuntimeSessionRestartPreparationHook
         {
-            public int CallCount { get; private set; }
+            public int CallCount => SessionContexts.Count;
+
+            public List<IGameContext?> SessionContexts { get; } = new();
 
             public Task PrepareForSessionRestartAsync(
                 RuntimeSessionRestartPreparationContext context,
                 CancellationToken cancellationToken = default)
             {
-                CallCount++;
+                SessionContexts.Add(context.SessionContext);
                 return Task.CompletedTask;
             }
         }

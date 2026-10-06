@@ -48,7 +48,8 @@ namespace RuntimeFlow.Contexts
                 0,
                 new RuntimeSessionRestartPreparationGuardBridge(
                     configuredHooks,
-                    () => ResolveSessionRestartPreparationHooks(hasConfiguredHooks)));
+                    () => ResolveSessionRestartPreparationHooks(hasConfiguredHooks),
+                    () => _builder.RestartingSessionContext));
             return combined;
         }
 
@@ -57,10 +58,10 @@ namespace RuntimeFlow.Contexts
         {
             var hooks = new List<IRuntimeSessionRestartPreparationHook>();
 
-            TryAppendResolvedHooks(hooks, () => _builder.TryResolveFromSession<IRuntimeSessionRestartPreparationHook[]>(out var resolved) ? resolved : null);
-            TryAppendResolvedHooks(hooks, () => _builder.TryResolveFromSession<IReadOnlyList<IRuntimeSessionRestartPreparationHook>>(out var resolved) ? resolved : null);
-            TryAppendResolvedHooks(hooks, () => _builder.TryResolveFromSession<IEnumerable<IRuntimeSessionRestartPreparationHook>>(out var resolved) ? resolved : null);
-            TryAppendResolvedSingleHook(hooks, () => _builder.TryResolveFromSession<IRuntimeSessionRestartPreparationHook>(out var resolved) ? resolved : null);
+            TryAppendResolvedHooks(hooks, () => _builder.TryResolveFromRestartingSession<IRuntimeSessionRestartPreparationHook[]>(out var resolved) ? resolved : null);
+            TryAppendResolvedHooks(hooks, () => _builder.TryResolveFromRestartingSession<IReadOnlyList<IRuntimeSessionRestartPreparationHook>>(out var resolved) ? resolved : null);
+            TryAppendResolvedHooks(hooks, () => _builder.TryResolveFromRestartingSession<IEnumerable<IRuntimeSessionRestartPreparationHook>>(out var resolved) ? resolved : null);
+            TryAppendResolvedSingleHook(hooks, () => _builder.TryResolveFromRestartingSession<IRuntimeSessionRestartPreparationHook>(out var resolved) ? resolved : null);
 
             if (hooks.Count > 0)
             {
@@ -125,12 +126,8 @@ namespace RuntimeFlow.Contexts
 
         private bool HasRegisteredLegacyRestartAwareServices()
         {
-            IGameContext sessionContext;
-            try
-            {
-                sessionContext = _builder.GetSessionContext();
-            }
-            catch (InvalidOperationException)
+            var sessionContext = _builder.RestartingSessionContext;
+            if (sessionContext == null)
             {
                 return false;
             }
