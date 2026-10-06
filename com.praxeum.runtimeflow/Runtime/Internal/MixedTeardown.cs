@@ -63,7 +63,6 @@ namespace RuntimeFlow.Internal
                 {
                     try { await asyncDisposable.DisposeAsync(); }
                     catch (Exception exception) { Log(logger, name, node.Name, exception); }
-                    finally { ownership.RefreshProtection(); }
                 }
                 // The actual tracker is the ownership authority. Existing instances and transients
                 // never gain synchronous ownership merely by appearing in a graph or cache.
@@ -81,13 +80,11 @@ namespace RuntimeFlow.Internal
             var requesters = new Dictionary<ServiceNode, IObjectResolver>();
             foreach (var service in services)
             {
-                var node = new ServiceNode(nodes.Count, NodeKind.Service, service.Name, service.Type, name)
-                { Instance = service.Instance, Registration = service.Registration };
+                var node = Add(service.Type, service.Instance, service.Registration, scope);
+                node.Name = service.Name;
                 node.Deps.AddRange(service.Deps);
                 foreach (var edge in node.Deps) node.DepTargets.Add(edge.Target);
-                nodes.Add(node);
                 aliases.Add(service, node);
-                requesters.Add(node, scope);
                 if (node.Registration != null && !registrations.ContainsKey(node.Registration))
                     registrations.Add(node.Registration, node);
             }
@@ -258,7 +255,7 @@ namespace RuntimeFlow.Internal
             return false;
         }
 
-        private static void Log(ILogger logger, string scope, string service, Exception exception, bool synchronous = false)
+        internal static void Log(ILogger logger, string scope, string service, Exception exception, bool synchronous = false)
         {
             var mode = synchronous ? " synchronously" : string.Empty;
             try { logger.Error($"[RuntimeFlow] {scope}: disposing {service}{mode} threw {exception.GetType().Name}; continuing teardown.", exception); }

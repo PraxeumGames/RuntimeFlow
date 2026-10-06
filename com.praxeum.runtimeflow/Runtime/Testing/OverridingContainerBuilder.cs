@@ -158,22 +158,19 @@ namespace RuntimeFlow.Testing
             // A builder remains mutable throughout the installer. Exists() can inspect it before its
             // first As<T>() creates an interface list, so a cached Registration would retain null and
             // miss the final contract when Flush() checks overrides.
-            Registration? registration;
             try
             {
-                registration = builder.Build();
+                return builder.Build();
             }
             catch (Exception exception)
             {
                 // A registration this harness cannot inspect (a component builder needing a
                 // LifetimeScope, for example) is forwarded untouched and never overridden. Saying so is
                 // what turns a silently un-overridden service into a one-line explanation.
-                registration = null;
                 _logger.Debug($"[RuntimeFlow] {_scope}: a registration could not be inspected for overrides " +
                               $"({exception.GetType().Name}); it is forwarded unchanged.");
+                return null;
             }
-
-            return registration;
         }
     }
 }

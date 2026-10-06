@@ -90,12 +90,12 @@ namespace RuntimeFlow.Internal
             {
                 lock (tracker)
                 {
-                    var entries = tracker.ToArray(); // Stack snapshots run from top to bottom.
                     var found = false;
-                    foreach (var entry in entries)
+                    foreach (var entry in tracker)
                         if (ReferenceEquals(entry, instance)) { found = true; break; }
                     if (!found) continue;
 
+                    var entries = tracker.ToArray(); // Stack snapshots run from top to bottom.
                     tracker.Clear();
                     for (var i = entries.Length - 1; i >= 0; i--)
                         if (!ReferenceEquals(entries[i], instance)) tracker.Push(entries[i]);

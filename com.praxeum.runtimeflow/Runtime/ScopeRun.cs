@@ -59,30 +59,7 @@ namespace RuntimeFlow
             RuntimeFlowOptions options,
             IReadOnlyList<ScopeRun>? parents = null,
             bool ownsScope = false)
-        {
-            ValidateCreateArguments(scope, name, options);
-            var constructed = new List<ServiceNode>();
-            var protectedInstances = new List<object>();
-            var ancestorEvidenceComplete = !ownsScope || CaptureParentInstances(scope, parents, protectedInstances, options, name);
-            try
-            {
-                return CreateCore(scope, name, options, parents, ownsScope, constructed, disposesServices: true);
-            }
-            catch
-            {
-                // Sync callers receive the original graph error immediately. Ownership remains with
-                // the rollback until all asynchronous service cleanup and resolver disposal finish.
-                if (ownsScope)
-                {
-                    CaptureCreatedGraphForRollback(scope, name, options, constructed);
-                    ancestorEvidenceComplete &= CaptureParentInstances(scope, parents, protectedInstances, options, name);
-                    _ = ConstructionRollback.ReleaseAsync(scope, constructed, options.Logger, name,
-                        protectedInstances, ancestorEvidenceComplete,
-                        () => CaptureParentInstances(scope, parents, protectedInstances, options, name));
-                }
-                throw;
-            }
-        }
+            => CreateCore(scope, name, options, parents, ownsScope, disposesServices: true, out _);
 
         /// <summary>
         /// Builds the graph synchronously on success. On owned construction failure, waits for every
@@ -101,24 +78,14 @@ namespace RuntimeFlow
             IObjectResolver scope, string name, RuntimeFlowOptions options,
             IReadOnlyList<ScopeRun>? parents, bool ownsScope, bool disposesServices)
         {
-            ValidateCreateArguments(scope, name, options);
-            var constructed = new List<ServiceNode>();
-            var protectedInstances = new List<object>();
-            var ancestorEvidenceComplete = !ownsScope || CaptureParentInstances(scope, parents, protectedInstances, options, name);
+            Task? rollback = null;
             try
             {
-                return CreateCore(scope, name, options, parents, ownsScope, constructed, disposesServices);
+                return CreateCore(scope, name, options, parents, ownsScope, disposesServices, out rollback);
             }
             catch
             {
-                if (ownsScope)
-                {
-                    CaptureCreatedGraphForRollback(scope, name, options, constructed);
-                    ancestorEvidenceComplete &= CaptureParentInstances(scope, parents, protectedInstances, options, name);
-                    await ConstructionRollback.ReleaseAsync(scope, constructed, options.Logger, name,
-                        protectedInstances, ancestorEvidenceComplete,
-                        () => CaptureParentInstances(scope, parents, protectedInstances, options, name));
-                }
+                if (rollback != null) await rollback;
                 throw;
             }
         }
@@ -238,18 +205,40 @@ namespace RuntimeFlow
         }
 
         private static ScopeRun CreateCore(IObjectResolver scope, string name, RuntimeFlowOptions options,
-            IReadOnlyList<ScopeRun>? parents, bool ownsScope, List<ServiceNode> constructed, bool disposesServices)
+            IReadOnlyList<ScopeRun>? parents, bool ownsScope, bool disposesServices, out Task? rollback)
         {
-            ServiceGraph[]? parentGraphs = null;
-            if (parents != null && parents.Count > 0)
+            rollback = null;
+            ValidateCreateArguments(scope, name, options);
+            var constructed = new List<ServiceNode>();
+            var protectedInstances = new List<object>();
+            var ancestorEvidenceComplete = !ownsScope || CaptureParentInstances(scope, parents, protectedInstances, options, name);
+            try
             {
-                parentGraphs = new ServiceGraph[parents.Count];
-                for (var i = 0; i < parents.Count; i++) parentGraphs[i] = parents[i]._graph;
+                ServiceGraph[]? parentGraphs = null;
+                if (parents != null && parents.Count > 0)
+                {
+                    parentGraphs = new ServiceGraph[parents.Count];
+                    for (var i = 0; i < parents.Count; i++) parentGraphs[i] = parents[i]._graph;
+                }
+                var graph = GraphBuilder.Build(scope, name, options, parentGraphs, constructed);
+                if (!ownsScope && disposesServices)
+                    MixedTeardown.ValidateBorrowed(scope, graph.Services, options.Logger, name, includeUncreated: true);
+                return new ScopeRun(scope, graph, options, ownsScope) { DisposesServices = disposesServices };
             }
-            var graph = GraphBuilder.Build(scope, name, options, parentGraphs, constructed);
-            if (!ownsScope && disposesServices)
-                MixedTeardown.ValidateBorrowed(scope, graph.Services, options.Logger, name, includeUncreated: true);
-            return new ScopeRun(scope, graph, options, ownsScope) { DisposesServices = disposesServices };
+            catch
+            {
+                // Sync callers receive the original graph error immediately; async callers await
+                // this same rollback task before rethrowing it.
+                if (ownsScope)
+                {
+                    CaptureCreatedGraphForRollback(scope, name, options, constructed);
+                    ancestorEvidenceComplete &= CaptureParentInstances(scope, parents, protectedInstances, options, name);
+                    rollback = ConstructionRollback.ReleaseAsync(scope, constructed, options.Logger, name,
+                        protectedInstances, ancestorEvidenceComplete,
+                        () => CaptureParentInstances(scope, parents, protectedInstances, options, name));
+                }
+                throw;
+            }
         }
 
         /// <summary>Name of the scope, as used in messages and status snapshots.</summary>
@@ -424,12 +413,9 @@ namespace RuntimeFlow
         private List<ServiceNode> TeardownOrder()
         {
             var preferred = new List<ServiceNode>();
-            var seen = new HashSet<ServiceNode>();
             var completed = _scheduler.CompletionOrder;
             for (var i = completed.Count - 1; i >= 0; i--)
-                if (seen.Add(completed[i])) preferred.Add(completed[i]);
-            for (var i = _graph.Services.Count - 1; i >= 0; i--)
-                if (seen.Add(_graph.Services[i])) preferred.Add(_graph.Services[i]);
+                preferred.Add(completed[i]);
             return ConstructionRollback.TeardownOrder(_graph.Services, preferred);
         }
 

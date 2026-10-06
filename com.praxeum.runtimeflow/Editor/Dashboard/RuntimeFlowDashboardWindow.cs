@@ -25,7 +25,6 @@ namespace RuntimeFlow.Editor
 
         private DropdownField? _hostDropdown;
         private Button? _restartButton;
-        private VisualElement? _tabBar;
         private VisualElement? _viewContainer;
         private Label? _statusLabel;
         private Button[] _tabButtons = Array.Empty<Button>();
@@ -125,15 +124,15 @@ namespace RuntimeFlow.Editor
             ToolbarButton(toolbar, "Copy Describe()", CopyDescribe, null);
             ToolbarButton(toolbar, "Refresh", Refresh, null);
 
-            _tabBar = new VisualElement();
-            _tabBar.AddToClassList("rf-tab-bar");
+            var tabBar = new VisualElement();
+            tabBar.AddToClassList("rf-tab-bar");
             _tabButtons = new[]
             {
-                Tab(_tabBar, "Graph", 0),
-                Tab(_tabBar, "Scopes", 1),
-                Tab(_tabBar, "Last run", 2)
+                Tab(tabBar, "Graph", 0),
+                Tab(tabBar, "Scopes", 1),
+                Tab(tabBar, "Last run", 2)
             };
-            toolbar.Add(_tabBar);
+            toolbar.Add(tabBar);
 
             root.Add(toolbar);
         }

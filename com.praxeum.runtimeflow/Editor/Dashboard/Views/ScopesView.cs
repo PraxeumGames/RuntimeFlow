@@ -11,7 +11,6 @@ namespace RuntimeFlow.Editor
     internal sealed class ScopesView : VisualElement
     {
         private readonly ScrollView _content;
-        private DashboardSnapshot? _snapshot;
 
         /// <summary>Builds the scrolling card list; the view stays empty until <see cref="Refresh"/> runs.</summary>
         public ScopesView()
@@ -31,33 +30,32 @@ namespace RuntimeFlow.Editor
         public void Refresh(DashboardSnapshot? snapshot)
         {
             snapshot?.EnsureIdentities();
-            _snapshot = snapshot;
             // Rebuilt wholesale on every tick, so keep the reader where they were scrolled to.
             var scroll = _content.scrollOffset;
             _content.Clear();
             _content.schedule.Execute(() => _content.scrollOffset = scroll);
 
-            if (_snapshot?.HasError == true) _content.Add(ViewHelpers.HostFailure(_snapshot));
+            if (snapshot?.HasError == true) _content.Add(ViewHelpers.HostFailure(snapshot));
 
-            if (_snapshot == null || _snapshot.Scopes.Count == 0)
+            if (snapshot == null || snapshot.Scopes.Count == 0)
             {
                 _content.Add(ViewHelpers.Hint(
                     "No scope has been built yet. Enter Play Mode or run the demo to see global and session."));
                 return;
             }
 
-            var summary = ViewHelpers.Card(_snapshot.HostLabel);
-            summary.Add(ViewHelpers.PropertyRow("State", _snapshot.State.ToString()));
-            summary.Add(ViewHelpers.PropertyRow("Progress", ViewHelpers.Percent(_snapshot.Percent)));
-            summary.Add(ViewHelpers.PropertyRow("Restarts", _snapshot.RestartCount.ToString(CultureInfo.InvariantCulture)));
-            summary.Add(ViewHelpers.PropertyRow("Generation", _snapshot.Generation.ToString(CultureInfo.InvariantCulture)));
-            if (_snapshot.HaltReason.Length > 0)
-                summary.Add(ViewHelpers.PropertyRow("Halted by", _snapshot.HaltReason));
+            var summary = ViewHelpers.Card(snapshot.HostLabel);
+            summary.Add(ViewHelpers.PropertyRow("State", snapshot.State.ToString()));
+            summary.Add(ViewHelpers.PropertyRow("Progress", ViewHelpers.Percent(snapshot.Percent)));
+            summary.Add(ViewHelpers.PropertyRow("Restarts", snapshot.RestartCount.ToString(CultureInfo.InvariantCulture)));
+            summary.Add(ViewHelpers.PropertyRow("Generation", snapshot.Generation.ToString(CultureInfo.InvariantCulture)));
+            if (snapshot.HaltReason.Length > 0)
+                summary.Add(ViewHelpers.PropertyRow("Halted by", snapshot.HaltReason));
             _content.Add(summary);
 
-            for (var i = 0; i < _snapshot.Scopes.Count; i++)
+            for (var i = 0; i < snapshot.Scopes.Count; i++)
             {
-                _content.Add(ScopeCard(_snapshot.Scopes[i], i));
+                _content.Add(ScopeCard(snapshot.Scopes[i], i));
             }
         }
 

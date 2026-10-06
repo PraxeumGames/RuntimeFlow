@@ -15,7 +15,7 @@ namespace RuntimeFlow.Internal
         {
             if (!ancestorEvidenceComplete)
             {
-                Log(logger, name, "scope", new InitGraphException(name,
+                MixedTeardown.Log(logger, name, "scope", new InitGraphException(name,
                     "Cannot safely release a failed child scope: ancestor instance ownership could not be inspected."));
                 return;
             }
@@ -25,12 +25,12 @@ namespace RuntimeFlow.Internal
                 ownership = new MixedTeardown.OwnedCleanup(scope, logger, name, protectedInstances, refreshProtected);
                 await MixedTeardown.ReleaseAsync(scope, services, logger, name, ownsScope: true, ownership: ownership);
             }
-            catch (Exception exception) { Log(logger, name, "constructed services", exception); }
+            catch (Exception exception) { MixedTeardown.Log(logger, name, "constructed services", exception); }
             finally
             {
                 if (ownership != null)
                     try { ownership.DrainScope(); }
-                    catch (Exception exception) { Log(logger, name, "scope", exception); }
+                    catch (Exception exception) { MixedTeardown.Log(logger, name, "scope", exception); }
             }
         }
 
@@ -168,11 +168,5 @@ namespace RuntimeFlow.Internal
             return false;
         }
 
-        private static void Log(ILogger logger, string scope, string service, Exception exception)
-        {
-            // Cleanup must preserve the graph failure even if a consumer logger itself fails.
-            try { logger.Error($"[RuntimeFlow] {scope}: disposing {service} threw {exception.GetType().Name}; continuing teardown.", exception); }
-            catch { }
-        }
     }
 }

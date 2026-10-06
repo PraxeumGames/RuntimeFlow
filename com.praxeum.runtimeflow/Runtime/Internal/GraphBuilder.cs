@@ -107,7 +107,6 @@ namespace RuntimeFlow.Internal
             var externals = Externals(scope, name, parents);
             RejectRecreatedParentServices(scope, name, registrations, externals, options.Logger);
 
-            var sources = new List<Type>();
             var index = 0;
 
             foreach (var registration in registrations)
@@ -132,10 +131,9 @@ namespace RuntimeFlow.Internal
                     Registration = registration
                 };
                 services.Add(node);
-                sources.Add(registration.ImplementationType);
             }
 
-            return Assemble(scope, name, options, declaredPhases, services, externals, sources, index);
+            return Assemble(scope, name, options, declaredPhases, services, externals, index);
         }
 
         /// <summary>Recovers already-created graph cleanup evidence after failed construction, without resolving a graph.</summary>
@@ -184,13 +182,13 @@ namespace RuntimeFlow.Internal
             var anyKnownPhase = false;
             foreach (var node in services)
             {
-                var declared = InitAttributeOf(node, node.Registration!.ImplementationType)?.Phase;
+                var declared = InitAttributeOf(node)?.Phase;
                 if (declared != null && Contains(phases, declared)) { anyKnownPhase = true; break; }
             }
             if (!anyKnownPhase) return;
             foreach (var node in services)
             {
-                var declared = InitAttributeOf(node, node.Registration!.ImplementationType)?.Phase;
+                var declared = InitAttributeOf(node)?.Phase;
                 // Invalid explicit/default phase values have no valid ordering evidence.
                 var phase = declared ?? options.DefaultPhase ?? phases[phases.Count - 1];
                 if (!Contains(phases, phase)) continue;
@@ -211,7 +209,6 @@ namespace RuntimeFlow.Internal
             IReadOnlyList<string> declaredPhases,
             List<ServiceNode> services,
             List<ServiceNode> externals,
-            List<Type> sources,
             int index)
         {
             Disambiguate(services, externals);
@@ -224,24 +221,24 @@ namespace RuntimeFlow.Internal
             // Phases are declared globally but belong to the scopes that actually label a service: a scope
             // whose services carry no [Init(Phase = …)] runs without barriers instead of being swept into
             // the last phase. The "unmarked lands in the last phase" rule applies from the first label on.
-            var phases = AnyPhaseDeclared(services, sources) ? declaredPhases : Array.Empty<string>();
+            var phases = services.Any(node => InitAttributeOf(node)?.Phase != null) ? declaredPhases : Array.Empty<string>();
 
             var edges = new InjectionEdges(scope, all, options.Logger, name);
-            for (var i = 0; i < services.Count; i++)
+            foreach (var node in services)
             {
-                AddInjectionEdges(services[i], sources[i], edges, options.Logger, name);
+                AddInjectionEdges(node, node.Registration!.ImplementationType, edges, options.Logger, name);
                 if (edges.RespawnedSceneComponent is ServiceNode component)
                 {
-                    var origin = services[i].Deps.First(edge => ReferenceEquals(edge.Target, component)).Origin;
-                    throw ParentSceneDependencyError(name, services[i].Name, component, origin);
+                    var origin = node.Deps.First(edge => ReferenceEquals(edge.Target, component)).Origin;
+                    throw ParentSceneDependencyError(name, node.Name, component, origin);
                 }
             }
 
-            for (var i = 0; i < services.Count; i++)
-                ReadAttributes(services[i], sources[i], name, phases, options.DefaultPhase);
+            foreach (var node in services)
+                ReadAttributes(node, name, phases, options.DefaultPhase);
 
-            for (var i = 0; i < services.Count; i++)
-                AddDependsOnEdges(services[i], sources[i], scope, name, all, services, externals);
+            foreach (var node in services)
+                AddDependsOnEdges(node, scope, name, all, services, externals);
 
             var nodes = new List<ServiceNode>(services);
             if (phases.Count > 0) AddPhaseBarriers(nodes, services, phases, name, ref index);
@@ -469,27 +466,17 @@ namespace RuntimeFlow.Internal
             }
         }
 
-        private static bool AnyPhaseDeclared(List<ServiceNode> services, List<Type> sources)
-        {
-            for (var i = 0; i < services.Count; i++)
-            {
-                if (InitAttributeOf(services[i], sources[i])?.Phase != null) return true;
-            }
-            return false;
-        }
-
-        private static InitAttribute? InitAttributeOf(ServiceNode node, Type registeredType)
+        private static InitAttribute? InitAttributeOf(ServiceNode node)
             => node.Type.GetCustomAttribute<InitAttribute>(true)
-               ?? registeredType.GetCustomAttribute<InitAttribute>(true);
+               ?? node.Registration!.ImplementationType.GetCustomAttribute<InitAttribute>(true);
 
         private static void ReadAttributes(
             ServiceNode node,
-            Type registeredType,
             string scope,
             IReadOnlyList<string> phases,
             string? defaultPhase)
         {
-            var attribute = InitAttributeOf(node, registeredType);
+            var attribute = InitAttributeOf(node);
             if (attribute != null)
             {
                 node.Optional = attribute.Optional;
@@ -602,13 +589,13 @@ namespace RuntimeFlow.Internal
 
         private static void AddDependsOnEdges(
             ServiceNode node,
-            Type registeredType,
             IObjectResolver resolver,
             string scope,
             List<ServiceNode> all,
             List<ServiceNode> services,
             List<ServiceNode> externals)
         {
+            var registeredType = node.Registration!.ImplementationType;
             var attributes = new List<DependsOnAttribute>(node.Type.GetCustomAttributes<DependsOnAttribute>(true));
             if (registeredType != node.Type)
                 attributes.AddRange(registeredType.GetCustomAttributes<DependsOnAttribute>(true));
@@ -799,13 +786,7 @@ namespace RuntimeFlow.Internal
         }
 
         private static bool Contains(IReadOnlyList<string> values, string value)
-        {
-            for (var i = 0; i < values.Count; i++)
-            {
-                if (string.Equals(values[i], value, StringComparison.Ordinal)) return true;
-            }
-            return false;
-        }
+            => IndexOf(values, value) >= 0;
 
         private static int IndexOf(IReadOnlyList<string> values, string value)
         {

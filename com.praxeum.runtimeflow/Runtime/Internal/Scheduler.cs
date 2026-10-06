@@ -485,12 +485,12 @@ namespace RuntimeFlow.Internal
         /// A task may have finished while its captured-context observation is still queued behind an
         /// older watch tick. Read that completed task now; the queued observation later becomes a no-op.
         /// </summary>
-        private void SettleCompletedTask(ServiceNode node, bool expectedCancellation)
+        private void SettleCompletedTask(ServiceNode node)
         {
             Exception? error = null;
             try { node.Task!.GetAwaiter().GetResult(); }
             catch (Exception exception) { error = exception; }
-            SettleOutcome(node, error, expectedCancellation);
+            SettleOutcome(node, error);
         }
 
         private bool IsExpectedCancellation(ServiceNode node)
@@ -509,7 +509,7 @@ namespace RuntimeFlow.Internal
             }
         }
 
-        private void SettleOutcome(ServiceNode node, Exception? error, bool? expectedCancellation = null)
+        private void SettleOutcome(ServiceNode node, Exception? error)
         {
             if (node.OutcomeObserved) return;
             node.OutcomeObserved = true;
@@ -522,7 +522,7 @@ namespace RuntimeFlow.Internal
             {
                 // A frozen run is about to be replaced: a service that bails out with a cancellation
                 // right after requesting the replacement is cancelled, not failed.
-                if (expectedCancellation ?? IsExpectedCancellation(node)) CancelNode(node);
+                if (IsExpectedCancellation(node)) CancelNode(node);
                 else FailNode(node, cancelled, node.Clock.Elapsed);
                 return;
             }
@@ -763,7 +763,7 @@ namespace RuntimeFlow.Internal
                 // them now, rather than abandoning a completed task when the grace is zero.
                 foreach (var node in _inFlight.ToList())
                 {
-                    if (node.Task?.IsCompleted == true) SettleCompletedTask(node, IsExpectedCancellation(node));
+                    if (node.Task?.IsCompleted == true) SettleCompletedTask(node);
                 }
 
                 // Wait for the bookkeeping (ObserveAsync) of the services still in flight, not just their
@@ -1070,7 +1070,7 @@ namespace RuntimeFlow.Internal
 
         private void ProcessWatchTick()
         {
-            List<(ServiceNode Node, bool ExpectedCancellation)>? completed = null;
+            List<ServiceNode>? completed = null;
             List<ServiceNode>? expired = null;
             // Take one view of the in-flight set before any callback can release dependents. Completed
             // raw tasks are settled below, rather than timed out because their observations are queued.
@@ -1079,7 +1079,10 @@ namespace RuntimeFlow.Internal
             foreach (var node in inFlight)
             {
                 if (node.State == ServiceState.Running && node.Task?.IsCompleted == true)
-                    (completed ??= new List<(ServiceNode, bool)>()).Add((node, IsExpectedCancellation(node)));
+                {
+                    node.ExpectedCancellation ??= IsExpectedCancellation(node);
+                    (completed ??= new List<ServiceNode>()).Add(node);
+                }
             }
             foreach (var node in inFlight)
             {
@@ -1108,14 +1111,11 @@ namespace RuntimeFlow.Internal
 
                 foreach (var node in expired) Cancellation.Cancel(node.Cts, _logger, _scope, node.Name);
                 if (stopping) CancelAndSettle();
-                if (completed != null)
-                    foreach (var outcome in completed) SettleCompletedTask(outcome.Node, outcome.ExpectedCancellation);
-                if (!required) Pump();
-                return;
             }
 
             if (completed != null)
-                foreach (var outcome in completed) SettleCompletedTask(outcome.Node, outcome.ExpectedCancellation);
+                foreach (var node in completed) SettleCompletedTask(node);
+            if (expired != null) return;
             if (_stop != StopKind.None || State != RunState.Running || _finished) return;
             if (_options.StallWarningAfter <= TimeSpan.Zero) return;
             var since = _clock.Elapsed - _lastProgress;

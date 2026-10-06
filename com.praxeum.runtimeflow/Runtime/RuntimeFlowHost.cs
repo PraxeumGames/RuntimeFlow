@@ -624,7 +624,6 @@ namespace RuntimeFlow
                 }
                 graphOwnsScope = _ownsGlobal;
                 run = await ScopeRun.CreateAsync(_global!, "global", _options, null, _ownsGlobal, disposesServices: _ownsGlobal);
-                run.DisposesServices = _ownsGlobal;
                 ThrowIfAborted();
                 if (construction.StopRequested)
                     throw new OperationCanceledException("The global scope was stopped while its services were being constructed.");
@@ -820,17 +819,13 @@ namespace RuntimeFlow
         private void AbortChain()
         {
             // A request folded into this chain was accepted but never honoured: it gives its budget back.
-            if (_foldedRequest != null) _restarts.Remove(_foldedRequest);
+            DropFoldedRestart();
             _building = false;
-            _pending = false;
-            _pendingToken = default;
-            _foldedRequest = null;
             if (_quitting && _sessionRun == null) _sessionAbortedByQuit = true;
         }
 
         private void DropFoldedRestart()
         {
-            if (!_pending) return;
             if (_foldedRequest != null) _restarts.Remove(_foldedRequest);
             _pending = false;
             _pendingToken = default;
@@ -1289,18 +1284,7 @@ namespace RuntimeFlow
         {
             var descendants = new List<ChildRun>();
             foreach (var child in _childRuns.ToArray())
-            {
-                var ancestor = child.Scope.Parent;
-                while (ancestor != null)
-                {
-                    if (ReferenceEquals(ancestor, parent))
-                    {
-                        descendants.Add(child);
-                        break;
-                    }
-                    ancestor = ancestor.Parent;
-                }
-            }
+                if (IsDescendant(child.Scope, parent)) descendants.Add(child);
             return descendants.ToArray();
         }
 

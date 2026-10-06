@@ -171,7 +171,7 @@ namespace RuntimeFlow.Editor
 
                 foreach (var service in matches)
                 {
-                    _rows.Add(Row.ForService(scope, service));
+                    _rows.Add(Row.ForService(service));
                     signature = unchecked(signature * 31 + service.Id.GetHashCode());
                 }
             }
@@ -518,23 +518,21 @@ namespace RuntimeFlow.Editor
 
         private sealed class Row
         {
-            private Row(bool isHeader, string header, DashboardScope? scope, DashboardService? service)
+            private Row(bool isHeader, string header, DashboardService? service)
             {
                 IsHeader = isHeader;
                 Header = header;
-                Scope = scope;
                 Service = service;
             }
 
             public bool IsHeader { get; }
             public string Header { get; }
-            public DashboardScope? Scope { get; }
             public DashboardService? Service { get; }
 
-            public static Row ForHeader(string text) => new Row(true, text, null, null);
+            public static Row ForHeader(string text) => new Row(true, text, null);
 
-            public static Row ForService(DashboardScope scope, DashboardService service)
-                => new Row(false, string.Empty, scope, service);
+            public static Row ForService(DashboardService service)
+                => new Row(false, string.Empty, service);
         }
     }
 }

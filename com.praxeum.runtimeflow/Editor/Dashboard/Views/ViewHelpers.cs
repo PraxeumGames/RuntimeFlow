@@ -50,16 +50,6 @@ namespace RuntimeFlow.Editor
             return row;
         }
 
-        /// <summary>A colored badge naming a service state.</summary>
-        /// <param name="state">The state to render.</param>
-        public static Label StateBadge(ServiceState state)
-        {
-            var badge = new Label(state.ToString().ToLowerInvariant());
-            badge.AddToClassList("rf-badge");
-            badge.AddToClassList(StateClass(state));
-            return badge;
-        }
-
         /// <summary>USS modifier class of a service state, for example <c>rf-state--running</c>.</summary>
         /// <param name="state">The state to map.</param>
         public static string StateClass(ServiceState state) => state switch
