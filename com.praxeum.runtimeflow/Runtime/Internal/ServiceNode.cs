@@ -55,6 +55,9 @@ namespace RuntimeFlow.Internal
         public string Scope { get; }
 
         public object? Instance { get; set; }
+
+        /// <summary>The VContainer registration the node was discovered from; edges are resolved against it.</summary>
+        public VContainer.Registration? Registration { get; set; }
         public IAsyncInitializable? Service { get; set; }
         public InitContext? Context { get; set; }
 
@@ -66,6 +69,21 @@ namespace RuntimeFlow.Internal
         public double Weight { get; set; } = 1.0;
 
         public List<Edge> Deps { get; } = new List<Edge>();
+
+        /// <summary>Targets of <see cref="Deps"/>, so adding an edge checks for a duplicate in O(1).</summary>
+        public HashSet<ServiceNode> DepTargets { get; } = new HashSet<ServiceNode>();
+
+        /// <summary>
+        /// For an external node built from a linked parent run: the parent's own node, whose state is read
+        /// again when this run starts (the parent may have finished after this graph was built).
+        /// </summary>
+        public ServiceNode? Source { get; set; }
+
+        /// <summary>The last status snapshot of a terminal node; a terminal node never changes again.</summary>
+        public ServiceStatus? CachedStatus { get; set; }
+
+        /// <summary>True once teardown reported the node as still running past the grace.</summary>
+        public bool AbandonReported { get; set; }
         public List<ServiceNode> Dependents { get; } = new List<ServiceNode>();
         public List<string> LazyParameters { get; } = new List<string>();
 
@@ -75,9 +93,15 @@ namespace RuntimeFlow.Internal
         public float Progress { get; set; }
         public CancellationTokenSource? Cts { get; set; }
         public Task? Task { get; set; }
+
+        /// <summary>The scheduler's bookkeeping of <see cref="Task"/>; awaited by teardown while the node is in flight.</summary>
+        public Task? Observation { get; set; }
         public Exception? Error { get; set; }
 
-        /// <summary>Failure captured while constructing the instance; replayed when the run starts.</summary>
+        /// <summary>
+        /// Failure captured while constructing the instance: a required node fails the run before anything
+        /// starts, an optional one degrades once its own dependencies are done.
+        /// </summary>
         public Exception? ConstructionError { get; set; }
 
         /// <summary>True once the node reached a state it can no longer leave.</summary>
@@ -89,16 +113,33 @@ namespace RuntimeFlow.Internal
         /// <summary>Name used in messages; barriers render as the phase they guard.</summary>
         public string DisplayName => Kind == NodeKind.Barrier ? $"phase '{Phase}'" : Name;
 
-        /// <summary>Dependencies that have not finished yet, in graph order.</summary>
-        public List<string> UnmetDependencies()
+        private IReadOnlyList<string>? _dependencyNames;
+
+        /// <summary>
+        /// Display names of every dependency, in graph order. Edges never change once the graph is built, so
+        /// the list is computed once and shared by every status snapshot.
+        /// </summary>
+        public IReadOnlyList<string> DependencyNames
         {
-            var result = new List<string>();
+            get
+            {
+                if (_dependencyNames != null) return _dependencyNames;
+                var names = new string[Deps.Count];
+                for (var i = 0; i < names.Length; i++) names[i] = Deps[i].Target.DisplayName;
+                return _dependencyNames = names;
+            }
+        }
+
+        /// <summary>Dependencies that have not finished yet, in graph order; a shared empty list when none.</summary>
+        public IReadOnlyList<string> UnmetDependencies()
+        {
+            List<string>? result = null;
             foreach (var edge in Deps)
             {
                 if (!edge.Target.IsSatisfied)
-                    result.Add(edge.Target.DisplayName);
+                    (result ??= new List<string>()).Add(edge.Target.DisplayName);
             }
-            return result;
+            return result ?? (IReadOnlyList<string>)Array.Empty<string>();
         }
 
         /// <inheritdoc />
@@ -111,6 +152,13 @@ namespace RuntimeFlow.Internal
         /// <summary>Formats a duration with one decimal, for example "3.2s".</summary>
         public static string S1(TimeSpan value)
             => value.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture) + "s";
+
+        /// <summary>Formats a duration in seconds with one decimal, for example "3.2s".</summary>
+        public static string S1(double seconds)
+            => seconds.ToString("0.0", CultureInfo.InvariantCulture) + "s";
+
+        /// <summary>Lower-case state name used in messages, for example "degraded".</summary>
+        public static string State(ServiceState state) => state.ToString().ToLowerInvariant();
 
         /// <summary>Formats a duration with two decimals, for example "3.21s".</summary>
         public static string S2(TimeSpan value)

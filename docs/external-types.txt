@@ -91,3 +91,40 @@ UNITY_LICENSE
 UNITY_EMAIL
 UNITY_PASSWORD
 RUNTIMEFLOW_RUN_UNITY_TESTS
+
+# VContainer, BCL and Unity API named by the edge rules and the restart contract.
+ContainerLocal
+WithParameter
+RegisterComponent
+RegisterComponentInHierarchy
+TypeAnalyzer
+TargetInvocationException
+FileStream
+Timeout
+Cancel
+IsCanceled
+EventId
+RUNTIMEFLOW_EXTERNAL_MEL
+
+# Illustrative service names in the edge-rule examples.
+Auth
+Profile
+ProfileApi
+
+# VContainer API (upstream and the 1.19 fork) named by the entry-point and edge rules.
+EnsureDispatcherRegistered
+UseEntryPoints
+RegisterEntryPoint
+RegisterFromResolve
+TryGetRegistration
+IRepo
+
+# Test-runner variables and the chaos harness of the test project.
+RUNTIMEFLOW_TEST_FILTER
+RUNTIMEFLOW_CHAOS_BATCHES
+RUNTIMEFLOW_VCONTAINER
+RUNTIMEFLOW_VCONTAINER_FORK
+RestartChaosTests
+ChaosFindingsTests
+ChaosSweep
+Replay

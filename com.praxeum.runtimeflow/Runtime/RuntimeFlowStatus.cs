@@ -144,7 +144,8 @@ namespace RuntimeFlow
             TimeSpan elapsed,
             int restartCount,
             string? haltReason,
-            Exception? error)
+            Exception? error,
+            string? haltedBy = null)
         {
             State = state;
             Scope = scope;
@@ -157,6 +158,7 @@ namespace RuntimeFlow
             Elapsed = elapsed;
             RestartCount = restartCount;
             HaltReason = haltReason;
+            HaltedBy = haltedBy;
             Error = error;
         }
 
@@ -192,6 +194,9 @@ namespace RuntimeFlow
 
         /// <summary>Reason of the halt, or null.</summary>
         public string? HaltReason { get; }
+
+        /// <summary>Name of the service that called <see cref="InitContext.Halt"/>, or null.</summary>
+        public string? HaltedBy { get; }
 
         /// <summary>Failure of the run, or null.</summary>
         public Exception? Error { get; }

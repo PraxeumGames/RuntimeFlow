@@ -1,4 +1,5 @@
 using System;
+using System.Threading.Tasks;
 using System.Collections.Generic;
 using NUnit.Framework;
 using RuntimeFlow.Testing;
@@ -84,11 +85,13 @@ namespace RuntimeFlow.Tests.Graph
         }
 
         [Test]
-        public void DescribeListsParentScopeServicesAsExternal()
+        [Timeout(10000)]
+        public async Task DescribeListsParentScopeServicesAsExternal()
         {
             var options = TestScope.Options(_log);
             var global = _tracker.Build(b => b.Add<GlobalConfig>());
             var globalRun = _tracker.Create(global, "global", options);
+            await globalRun.RunAsync();
             var session = global.CreateScope(b => b.Add<SessionUser>());
 
             var describe = _tracker.Create(session, "session", options, new List<ScopeRun> { globalRun }).Describe();
@@ -101,6 +104,19 @@ namespace RuntimeFlow.Tests.Graph
                 "external (from parent scopes): GlobalConfig [global, initialized]",
                 ""
             })), describe);
+        }
+
+        [Test]
+        public void DescribeShowsAParentServiceThatIsNotInitializedYet()
+        {
+            var options = TestScope.Options(_log);
+            var global = _tracker.Build(b => b.Add<GlobalConfig>());
+            var globalRun = _tracker.Create(global, "global", options);
+            var session = global.CreateScope(b => b.Add<SessionUser>());
+
+            var describe = _tracker.Create(session, "session", options, new List<ScopeRun> { globalRun }).Describe();
+
+            Assert.That(describe, Does.Contain("external (from parent scopes): GlobalConfig [global, pending]"), describe);
         }
 
         private sealed class Analytics : IAnalytics { }

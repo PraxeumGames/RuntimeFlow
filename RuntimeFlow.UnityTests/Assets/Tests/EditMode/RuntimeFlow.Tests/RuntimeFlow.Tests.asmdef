@@ -4,6 +4,8 @@
     "references": [
         "RuntimeFlow.Runtime",
         "RuntimeFlow.Testing",
+        "RuntimeFlow.Tests.Shared",
+        "RuntimeFlow.Tests.Components",
         "RuntimeFlow.Editor",
         "RuntimeFlow.Demo",
         "VContainer",

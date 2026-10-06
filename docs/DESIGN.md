@@ -8,8 +8,9 @@ means changing a test.
 
 **The container is the graph.** Startup order is not declared anywhere: it is derived from the
 VContainer registrations of the scope being initialized. A service is a class implementing
-`IAsyncInitializable` registered as `Lifetime.Singleton`; its dependencies are the parameters of the
-constructor VContainer would inject.
+`IAsyncInitializable` registered as `Lifetime.Singleton`; its dependencies are whatever VContainer
+injects into it — constructor parameters and `[Inject]` members — resolved the way VContainer resolves
+them.
 
 Three things were deliberately *not* built:
 
@@ -42,11 +43,33 @@ enumerable — a VContainer version we do not know — the build fails with
 
 Every service is constructed during the build, before the run starts, so a resolution problem surfaces
 as a named graph error rather than as one container exception for the whole scope. A construction
-failure is attached to its own node and replayed as that node's failure when the run begins.
+failure is attached to its own node. When the run begins, every *required* node that failed to
+construct fails at once — all of them are reported, before a single service starts. An *optional* one
+degrades in graph order instead, once its own dependencies are done, so a broken optional service in
+the middle of a chain does not let the rest of the chain overtake its upstream.
 
-Services of parent scopes become **external** nodes: they take part in edges and in `Describe()`, count
-as already completed, and are never scheduled. That is what makes a session graph able to depend on
-global services without re-initializing them.
+Whatever can be validated without constructing a service is validated first: the options, the
+lifetimes, the `[Init]` values of every concretely registered type, and the parent-scope scene
+components a service would re-inject (below). A graph error found after construction (a cycle, an
+unknown `[DependsOn]` target, a bad `[Init]` on a factory product) releases what the build constructed —
+`IAsyncDisposable` services are disposed by the framework and the scope is disposed, which lets
+VContainer dispose the `IDisposable` ones — but only when the run was going to own the scope
+(`ownsScope: true`). A caller-owned container (`RuntimeFlowHost.From`, `ScopeRun.Create` without
+`ownsScope`) keeps its singletons untouched: they are not the framework's to dispose.
+
+Services of parent scopes become **external** nodes: they take part in edges and in `Describe()` and
+are never scheduled. That is what makes a session graph able to depend on global services without
+re-initializing them. Through linked runs (the host passes its runs as `parents`) an external node
+carries the state of the parent's node, read again when the child run starts: a degraded global service
+stays `Degraded` in the session; one the parent run never initialized — skipped by a halt, cancelled,
+failed, not run yet — is not satisfied, and a service of the child depending on it fails at the start of
+the run, like a construction failure (`X depends on Y of scope 'global', which is Skipped there: that run
+never initialized it, so X cannot start. Run a child scope only once every parent run completed.`). The
+host never gets there — it refuses a child scope whose parents have not all completed — so this guards a
+standalone `ScopeRun.Create` with parents. A standalone `ScopeRun.Create` on a child resolver without
+parents only sees the parent containers, so its externals always count as initialized (and are named
+after the instance the parent holds, so a factory registration is known by its concrete type, not by its
+contract).
 
 Because discovery goes through the registration's *exposed* types, a class that implements
 `IAsyncInitializable` but is registered without exposing it — `Register<Catalog>(Lifetime.Singleton)`,
@@ -68,32 +91,74 @@ Validation performed at build time:
 
 | Problem | Message |
 |---|---|
-| Non-singleton | `Foo is registered with Lifetime.Transient in scope 'session'; initializable services must be Lifetime.Singleton (a Scoped/Transient service would be re-created uninitialized in child scopes).` |
+| Non-singleton | `Foo is registered with Lifetime.Transient in scope 'session'; initializable services must be Lifetime.Singleton (a Scoped/Transient service would be re-created uninitialized in child scopes).` A MonoBehaviour gets the extra hint ` For a MonoBehaviour use RegisterComponent(instance), RegisterComponentOnNewGameObject<T>(Lifetime.Singleton) or RegisterComponentInHierarchy<T>(), which is accepted as Scoped as long as no child scope resolves it.` — upstream `RegisterComponentInHierarchy` is always Scoped, yet in the scope that registers it every resolution returns the one component in the scene, so it is accepted there. |
+| A child service injects a parent's Scoped scene component | Checked before the child constructs anything, directly or through plain registrations: `Foo in scope 'session' depends on HudRoot (ctor: HudRoot hud), which scope 'global' registers with RegisterComponentInHierarchy (Lifetime.Scoped). VContainer creates a Scoped registration anew in every scope that resolves it, so 'session' would inject that scene component again with its own dependencies and dispose it with itself. Register it in 'global' as a single instance instead: RegisterComponent(instance), for example RegisterComponent(Object.FindObjectOfType<T>(true)).` Resolved through a parent singleton it is fine (the parent resolves it), and so is anything on the 1.19 fork, which registers hierarchy components as singletons. Resolving it ad hoc from a child (`childScope.Resolve<HudRoot>()`) re-injects it too; the graph cannot see that. |
 | Two registrations of the same type | Warning: `Foo is registered as IAsyncInitializable 2 times; each registration will be initialized.` |
-| Construction failed | `Could not construct Foo in scope 'session': <message>. Register the missing type in 'session' or a parent scope.` |
+| Construction failed: missing registration | `Could not construct Foo in scope 'session': <VContainer message>. Register the missing type in 'session' or a parent scope.` |
+| Construction failed: the constructor threw | `Could not construct Foo in scope 'session': its construction threw InvalidOperationException: <message>. See InnerException.` (`TargetInvocationException` is unwrapped; the inner exception is the original.) |
+| Equal-arity constructors, none `[Inject]` | Warning: `Foo has 2 constructors with 1 parameter and none is marked [Inject]; VContainer injects the first one reflection returns (Foo(Bar bar)), which is not guaranteed to be the same in every build. Mark the intended constructor with [Inject].` |
+| Negative `CancellationGrace` | `RuntimeFlowOptions.CancellationGrace is -2.0s; it must be >= 0 or Timeout.InfiniteTimeSpan (wait forever).` |
+| Duplicate or empty phase name | `RuntimeFlowOptions.Phases [boot, ui, boot] lists phase 'boot' twice; phase names must be unique.` |
 | `DefaultPhase` not in `Phases` | `RuntimeFlowOptions.DefaultPhase is 'x', but RuntimeFlowOptions.Phases is [platform, content].` |
 | Phase used, none declared | `Foo declares phase 'content', but RuntimeFlowOptions.Phases is empty. Declare the ordered phase list in RuntimeFlowOptions.Phases.` |
 | Unknown phase | `Foo declares phase 'x', but RuntimeFlowOptions.Phases is [platform, content].` |
 | `UserGated` + `TimeoutSeconds` | `Foo is user-gated and declares TimeoutSeconds = 30; user-gated services never time out. Remove one of them.` |
+| Negative or non-finite `Weight` | `Foo declares Weight = -1; weight must be a finite number >= 0 (0 removes the service from the progress bar).` |
+| Negative or non-finite `TimeoutSeconds` | `Foo declares TimeoutSeconds = -1; it must be a finite number >= 0 (0 means no timeout).` |
+| Negative or non-finite `TimeoutMultiplier` | `RuntimeFlowOptions.TimeoutMultiplier is NaN; it must be a finite number >= 0 (0 disables all timeouts).` |
 
 ### Edge rules
 
-`ConstructorEdges` picks the constructor the way VContainer does — among
-`DeclaredOnly | Instance | Public | NonPublic`, the single one marked `[Inject]`, otherwise the one with
-the most parameters (first wins on a tie) — and caches `Type → ParameterInfo[]`. Both the runtime type
-of the resolved instance and `Registration.ImplementationType` are inspected, which is how a decorator
-registered as `Register<I>(resolver => new Decorator(inner))` still contributes its edges.
+Edges follow what VContainer injects. `ConstructorEdges` mirrors VContainer's `TypeAnalyzer` exactly:
+among `DeclaredOnly | Instance | Public | NonPublic` constructors, the single one marked `[Inject]`
+wins wherever it is declared (two or more make VContainer throw, so there are no constructor edges);
+otherwise the **first constructor reflection returns** with strictly the most parameters. Using the
+same reflection order in the same process is what keeps the edges identical to the constructor
+VContainer really calls. A tie is still a portability hazard — reflection order is not guaranteed to be
+the same in every build — so it is reported as a warning asking for `[Inject]` rather than broken by
+some other rule that could disagree with VContainer (the reason 0.x once shipped a silently wrong
+edge). On top of the constructor, `[Inject]` methods, fields and properties are read up the base-type
+chain the way VContainer injects them, so a `MonoBehaviour` registered with `RegisterComponent` gets
+the edges of its `[Inject] Construct(...)` method — for the registrations VContainer constructs or
+injects by reflection only. An instance (`RegisterInstance`) or a factory product
+(`Register(resolver => …)`) is never member-injected by VContainer, so it contributes its constructor
+parameters and nothing else (an `[Inject]` field there would only invent edges, and false cycles). Both
+the runtime type of the resolved instance and `Registration.ImplementationType` are inspected, which is
+how a decorator registered as `Register<I>(resolver => new Decorator(inner))` still contributes its
+edges.
 
-| Parameter | Meaning |
+Each injected type is then resolved the way VContainer resolves it:
+
+| Injected type | Meaning |
 |---|---|
-| Another service's type or an interface it exposes | Edge. An interface with several implementations produces an edge to each of them. |
-| `IEnumerable<T>`, `IReadOnlyList<T>`, `IReadOnlyCollection<T>`, `IList<T>`, `ICollection<T>`, `List<T>`, `T[]` | Edges to every service assignable to `T`, excluding the node itself — the barrier idiom for "after all background tasks". |
-| `Func<…>`, `Lazy<T>`, `ILazy<T>`, `LazyDependency<T>` | **Not** an edge. The documented way to break a cycle; listed in `Describe()` as a `lazy:` row. |
+| A single type `T` | The registration VContainer picks — the nearest scope that registers `T`, and the **last** registration of `T` there. An edge to that service only; a class that merely happens to implement `T` but is not registered as `T` is not a dependency. |
+| `[Key(x)] T` (VContainer 1.19 fork) | The registration of `T` keyed `x` (`.Keyed(x)`), looked up through the keyed `TryGetRegistration(type, out registration, key)`. The attribute is read by name, since upstream 1.15.3 has neither it nor keyed lookups. |
+| `IEnumerable<T>`, `IReadOnlyList<T>` | Edges to every registration of `T` in the scope and its parents, excluding the node itself — the barrier idiom for "after all background tasks". Other collection shapes (`List<T>`, `T[]`, `IReadOnlyCollection<T>`…) are not resolvable by VContainer: no edge, the service fails construction. |
+| A registration that is not itself a service | Walked through: `Profile(IProfileApi)` → `ProfileApi(Auth)` → `Auth` gives `Profile` an edge to `Auth`, with origin `ctor: IProfileApi api via ProfileApi` (deeper chains read `via Repository > ProfileApi`). Dependencies follow the scope VContainer actually uses to construct the registration. For an inherited singleton, a child registration of the same implementation type can keep construction in the child even when it exposes a different interface. Each node reached is reported once, with the first chain found, and walks are memoised per registration and effective construction scope. Factory (`Register(resolver => …)`), instance and `RegisterFromResolve` registrations end the walk — what they resolve is invisible to reflection; add `[DependsOn]` when it matters (see below). |
+| A lookup that throws | For example `IRepo<int>` against an open generic `Repo<T> where T : class` in a parent scope: no edge (Debug log). Resolving the service throws the same way, so the construction error — not a raw exception out of `ScopeRun.Create` — explains it. |
+| `ContainerLocal<T>` | Follows VContainer's local resolution. A wrapped collection excludes parent singleton registrations; parent scoped and transient elements still resolve in the child. An explicitly registered parent collection is not imported. |
+| A parameter supplied by the registration's `WithParameter(...)` | Not resolved, so not an edge. |
+| `Func<…>`, `Lazy<T>`, `ILazy<T>`, `LazyDependency<T>` | **Not** an edge, directly or on a transitive walk. The documented way to break a cycle; listed in `Describe()` as a `lazy:` row. |
 | `IObjectResolver`, `IScopedObjectResolver`, `IContainerBuilder`, `RuntimeFlowHost`, `ScopeRun`, `RuntimeFlowOptions`, `InitContext`, `ILogger`, `object`, `string`, primitives, enums, `decimal` | Ignored. |
-| Anything resolving to a parent registration | Edge to the external node. |
+| Anything resolving to a parent service instance | Edge to the external node. If VContainer would recreate that initializable registration in the child, the graph rejects it rather than counting the parent's initialized instance as its replacement. |
 
 Every edge remembers where it came from, and the origin is printed verbatim in cycle errors and in
-`Describe()`: `ctor: ICdnMirrorSelector mirrors`, `DependsOn`, `phase barrier`.
+`Describe()`: `ctor: ICdnMirrorSelector mirrors`, `[Inject] Construct(Auth auth)`, `[Inject] Auth auth`,
+`ctor: IProfileApi api via ProfileApi`, `DependsOn`, `phase barrier`.
+Distinct injected overloads retain their own parameter identities, including keyed dependencies.
+
+**Where reflection stops.** The walk derives edges from what VContainer constructs; it cannot see what
+user code resolves. A migrating project must add `[DependsOn(typeof(T))]` wherever one of these hides a
+dependency:
+
+- a factory: `Register<IFoo>(resolver => new Foo(resolver.Resolve<Auth>()), Lifetime.Singleton)` — the
+  product's constructor parameters are inspected, but only against the types they declare, not against
+  what the lambda passes;
+- an instance: `RegisterInstance(foo)`;
+- the 1.19 fork's `RegisterFromResolve<IFoo>(resolver => resolver.Resolve<Config>().Foo)`;
+- a delegate parameter: `WithParameter<IFoo>(resolver => resolver.Resolve<Auth>().Foo)` — a parameter
+  supplied by `WithParameter` is no edge at all;
+- anything resolved from an injected `IObjectResolver` inside a constructor or method.
 
 `[DependsOn(typeof(T))]` targets every node — local or external — assignable to `T`, excluding the
 declaring node. Zero matches is an error, because a silently dropped ordering constraint is exactly how
@@ -149,34 +214,48 @@ It is **single-threaded by construction**. Everything runs on the `Synchronizati
 the caller of `RunAsync` — `UnityEngine`'s in play mode, the editor's in EditMode, which is why the
 EditMode suite is authoritative and the PlayMode suite only covers frame-driven behaviour. There is no
 `ConfigureAwait(false)` anywhere in the package (the layout guard enforces this), no locks, no thread
-affinity checks, no scheduler abstraction. A null context is a one-line warning
-(`SynchronizationContext.Current is null; continuations run inline on the calling thread.`) rather than
-a failure.
+affinity checks, no scheduler abstraction. Starting a run without a context is refused with
+`InvalidOperationException` (`The 'session' run must be started on a thread with a SynchronizationContext
+(the Unity main thread); SynchronizationContext.Current is null, so its continuations would run
+concurrently on the thread pool.`): without one, every continuation — `Task.Yield`, `Task.Delay`, the
+watch timer — resumes on the thread pool and the lock-free bookkeeping would race.
 
 "Single-threaded" describes where the framework's own code runs, not where its inputs come from. A
 caller's `CancellationToken` may be cancelled from any thread — a network callback, a `Task.Run`
 worker, Unity's background loader; the registration reacts on that thread, and the framework marshals
-the reaction back through the captured `SynchronizationContext` before it touches any run state. Every
+the reaction back through the captured `SynchronizationContext` before it touches any run state. The
+same holds for `InitContext.Halt` and `InitContext.ReportProgress`: called from another thread, they are
+posted to the run's context (a progress report that lands after the service finished is ignored).
+`InitContext.DegradedServices` hands out an immutable snapshot, replaced — never mutated — on every
+degradation, so a service may enumerate it across an `await` or from a worker thread; each read of the
+property returns the latest snapshot. Every
 observer callback, log line and status mutation therefore still happens on the run's thread, and a
 service that cancels from a worker thread sees no difference from one that cancels on the main thread.
 
 One periodic loop per run (`StallWatch`, at most 1 Hz, faster when a configured threshold demands it)
 drives both timeout enforcement and the stall warning. Each service gets a `CancellationToken` linked
 to the run's; it stays valid after `InitializeAsync` returns, so background work started during
-initialization is cancelled by the next restart.
+initialization is cancelled by the next restart. A caller cancellation that lands after the run already
+finished (posted from another thread just before completion) is ignored: a finished run keeps its
+outcome and its service tokens.
 
 ### Failure semantics
 
 | Event | Behaviour |
 |---|---|
-| Required service throws | Node `Failed`; the run token is cancelled; in-flight services are awaited up to `CancellationGrace` (5 s) so their failures are collected too; then one `RuntimeFlowException`. |
+| Required service throws | Node `Failed`; the run token is cancelled; in-flight services are awaited up to `CancellationGrace` (5 s) so their failures are collected too; then one `RuntimeFlowException`. The wait covers the observers' bookkeeping, not just the raw service tasks, so the exception never misses a failure that already happened. |
 | Optional service throws | Node `Degraded`, warning logged, dependents start anyway and see the name in `InitContext.DegradedServices`. The name also travels down: a parent-scope node that degraded stays `Degraded` as an external node of every child scope, so the session's services and its `Describe()` see the global degradation. `StartupResult.Degraded` stays per scope for `ScopeRun.RunAsync`; `RuntimeFlowHost.StartAsync`/`RestartAsync` return the union, global names first. |
 | Required service fails behind a degraded one | Same failure handling, plus an annotation: every direct dependency of the failing service that is `Degraded` — own scope or parent — is named in the message as ` (after upstream X degraded)`. |
-| Timeout | Only from `[Init(TimeoutSeconds = n)]`, scaled by `TimeoutMultiplier` (`0` disables all timeouts). There is no default deadline — 0.x had a self-learning 5-second watchdog that tore down bundle downloads and produced restart storms. User-gated services are exempt. |
+| Timeout | Only from `[Init(TimeoutSeconds = n)]`, scaled by `TimeoutMultiplier` (`0` disables all timeouts). There is no default deadline — 0.x had a self-learning 5-second watchdog that tore down bundle downloads and produced restart storms. User-gated services are exempt. Every service expired in one watch tick is reported with its own timeout: all of them are marked timed out first, the run is marked failing (when one is required) before observers hear of it, dependents are released, and their tokens are cancelled last — so a service that catches its cancellation and returns (inline, inside `Cancel()`) cannot complete a node that already timed out, and a second required expiry is not misreported as cancelled. A watch tick that throws (a framework bug; a throwing logger cannot, see below) is logged as `[RuntimeFlow] session: the watch tick threw InvalidOperationException; timeouts and stall warnings keep running.` and the loop continues. |
 | Stall | `StallWarningAfter` (10 s) of no service start, completion or `ReportProgress` call produces a warning naming what is running, what is awaiting the player and what is blocked. It never cancels anything. |
-| `Halt` | First call wins; run state `Halted`; unstarted nodes skipped, in-flight ones cancelled; the result is `StartupOutcome.Halted` and nothing throws. |
-| Caller cancellation | The run's task completes cancelled. |
-| Grace exceeded | Services still running after `CancellationGrace` are marked `Cancelled` and abandoned with an error line; teardown continues, and their `InitContext` throws `ObjectDisposedException` afterwards. |
+| `Halt` | First call wins; run state `Halted`; unstarted nodes skipped, in-flight ones cancelled; the result is `StartupOutcome.Halted` and nothing throws. An empty reason throws `ArgumentException` at the call site. A halt in the **global** scope ends the startup there: no session is built (see §3). |
+| Failure while stopping | A service that fails while a halt or a cancellation settles does not change the outcome, but it is never dropped silently: `[RuntimeFlow] session: Foo threw InvalidOperationException (cleanup exploded) while the run was halting; the outcome stays unchanged.` (`… while the run was being cancelled; …`). |
+| Throwing cancellation callback | `CancellationTokenSource.Cancel()` runs user callbacks (`ct.Register(() => request.Abort())`) and rethrows their exceptions. Every cancellation the framework performs goes through one helper that logs `[RuntimeFlow] session: a cancellation callback threw InvalidOperationException (abort failed) while cancelling the run; the other callbacks ran, continuing.` and carries on: a halt or failure still settles, a timed-out service's dependents are still released, and disposal still reaches every `DisposeAsync` and the scope. |
+| Throwing logger | Every log call is contained: a logger that throws is never able to wedge a run (the run's task is completed in a `finally`, whatever logging or observers do). The first failure of each logger is reported once through `Debug.LogWarning`. |
+| Observers during a failure | The run's own state changes first — `Failed` for a required failure or timeout — and only then are observers notified, so an observer that calls `CancelAsync()` from `OnServiceFailed` cannot turn a failure into a cancellation and lose the `RuntimeFlowException`. |
+| Caller cancellation | The run's task completes cancelled; `OnRunCancelled` fires and an Info line reports it. |
+| Grace | A stopping run waits for the services still *in flight* — not for ones it already gave up on (timed out), which would stall every later stop for the whole grace. `ScopeRun.DisposeAsync` then waits for those too, again bounded by the grace, before it disposes them: teardown never disposes a service while it is still inside its `InitializeAsync`, within the grace. `Timeout.InfiniteTimeSpan` (or a value beyond what a timer can express) waits forever; zero does not wait; a negative value is rejected. `ScopeRun.CancelAsync`/`DisposeAsync` wait for a run that is already stopping (halt, failure) too. **With an infinite grace, a service that ignores its token makes `CancelAsync`, `DisposeAsync`, `RuntimeFlowHost.DisposeAsync` and every restart wait forever** — and a service that awaits its own `RestartAsync` deadlocks permanently instead of for one grace. |
+| Grace exceeded | Services still running after `CancellationGrace` are marked `Cancelled` and abandoned with an error line; teardown continues, and their `InitContext` throws `ObjectDisposedException` afterwards. A timed-out service still running when its run is disposed is reported the same way (`… still running 5.0s after cancellation: Catalog (timed out after 30.0s). …`) and disposed anyway. |
 
 Message formats, verbatim:
 
@@ -208,6 +287,8 @@ completed; cancelled: RemoteCatalog).
 [RuntimeFlow] session: 2 services still running 5.0s after cancellation: A (5.0s), B (5.0s).
 Continuing teardown; they must observe their CancellationToken.
 
+[RuntimeFlow] session: cancelled after 1.2s (3/12 services completed).
+
 Restart budget exceeded: 6 restarts within 60s (limit 5). Reasons: bundles-updated, auth-lost, ….
 ```
 
@@ -222,29 +303,47 @@ logger adds it when a message does not already carry it.
 
 ### Entry points
 
-`RuntimeFlowHost` composes each scope as: register itself → the consumer installer → inspect what the
-installer left behind → register the host's entry-point exception handler unless the consumer already
-registered one → ensure the entry-point dispatcher is registered (without which `IInitializable` never
-runs in a plain `ContainerBuilder`). VContainer runs `IInitializable` inside `Build()`, before the
-asynchronous graph, in registration order, and swallows exceptions unless a handler is installed —
-hence the handler, which turns a swallowed throw into a failed run:
+`RuntimeFlowHost` composes each scope as: register itself → register the host's entry-point exception
+collector → the consumer installer → inspect what the installer left behind → ensure the entry-point
+dispatcher is registered (without which `IInitializable` never runs in a plain `ContainerBuilder`).
+VContainer runs `IInitializable` inside `Build()`, before the asynchronous graph, in registration order;
+without a handler upstream VContainer only logs an exception with `Debug.LogException` and carries on
+building — hence the collector, which turns that throw into a failed run:
 
 ```text
 Initialization of scope 'session' failed: SaveMigration threw IOException while VContainer was running
 the IInitializable entry points of the scope: disk full. See InnerException.
 ```
 
-VContainer allows a single entry-point exception handler per scope and refuses a second registration of
-the same implementation type, so the inspection pass exists for two reasons. It lets a consumer
-registration of `RegisterEntryPointExceptionHandler` **supersede** the host's collector — the host then
-registers nothing, and an `IInitializable` that throws is routed to the consumer's handler instead of
-failing the run. That is a legitimate choice (a game may want to swallow a non-fatal migration error),
-so it is allowed rather than blocked, but it changes a documented semantic, hence one informational
-line: `a custom EntryPointExceptionHandler is registered; IInitializable exceptions are delivered to it
-instead of failing the run.` The same pass is what finds a service registered without exposing
-`IAsyncInitializable` (above); it inspects registration builders through the public `Build()`, registers
-nothing and never aborts composition — a registration that cannot be inspected this early (a component
-builder needing a `LifetimeScope`) is skipped.
+The collector is registered in **every** scope the host composes and **before** the installer. The
+order is what makes it work on the VContainer 1.19 fork as well: its `EnsureDispatcherRegistered` (called
+by `UseEntryPoints`, `RegisterEntryPoint`, a `LifetimeScope` build and the host itself) registers
+`Debug.LogException` as the handler of any scope that has none yet — registered after the installer, the
+collector would find that default already in place and mistake it for a consumer's handler, and a
+session relying on the parent's handler would get the default instead. VContainer resolves the handler
+through the parent chain and takes the last registration of a scope, and it allows one handler per
+scope (1.15.3 refuses a second singleton one: `Conflict implementation type`). So when the installer
+registers its own handler, the collector's entry is replaced by an inert registration and the
+consumer's handler **supersedes** it: an `IInitializable` that throws is routed to the consumer's handler
+instead of failing the run. That is a legitimate choice (a game may want to swallow a non-fatal
+migration error), so it is allowed rather than blocked, but it changes a documented semantic, hence one
+informational line: `a custom EntryPointExceptionHandler is registered; IInitializable exceptions are
+delivered to it instead of failing the run.` A consumer handler of a parent scope — one registered in
+the global installer, or in a container passed to `RuntimeFlowHost.From` — stays in charge of the session:
+the session's collector forwards every exception to it. A parent handler that is exactly
+`UnityEngine.Debug.LogException` is the fork's default, not a consumer decision, and is ignored.
+
+The collector collects only while the host is building its scope. VContainer routes *every* entry-point
+exception of the scope to it for the rest of the scope's life — `IStartable`, `ITickable`, the post and
+fixed/late variants — and those are logged at Error (`[RuntimeFlow] Foo threw InvalidOperationException
+in a VContainer entry point after its scope was built: <message>`), never swallowed and never carried
+into the next build. The name of the failing entry point is the outermost frame of the exception's stack
+that belongs to an entry-point type, so a helper deeper down (`FileStream`, say) is not blamed.
+
+The inspection pass is also what finds a service registered without exposing `IAsyncInitializable`
+(above); it inspects registration builders through the public `Build()`, registers nothing and never
+aborts composition — a registration that cannot be inspected this early (a component builder needing a
+`LifetimeScope`) is skipped.
 
 `IStartable` and `ITickable` are frame-driven and unordered with respect to asynchronous
 initialization; that is a documented contract, not an oversight.
@@ -254,52 +353,189 @@ initialization; that is a documented contract, not an oversight.
 State flow of `RuntimeFlowHost.RestartAsync`:
 
 ```text
-request ─▶ quitting?            ─ yes ▶ refuse (warning + InvalidOperationException)
-        ─▶ started?             ─ no  ▶ InvalidOperationException ("start the host first")
-        ─▶ restart pending?     ─ yes ▶ coalesce: join the run already in flight
-        ─▶ budget exceeded?     ─ yes ▶ RuntimeFlowException with the list of reasons
-        ─▶ cancel current run ─▶ dispose child runs (reverse creation order)
-        ─▶ dispose session run ─▶ Global.CreateScope(composed session installer)
-        ─▶ ScopeRun.Create ─▶ RunAsync(isRestart: true, generation + 1)
+request ─▶ quitting?                 ─ yes ▶ refuse (warning + InvalidOperationException)
+        ─▶ started?                  ─ no  ▶ InvalidOperationException ("start the host first")
+        ─▶ token owned by the run it tears down? ─ yes ▶ warning; the token is ignored
+        ─▶ token already cancelled?  ─ yes ▶ cancelled task; nothing is torn down or budgeted
+        ─▶ global scope halted?      ─ yes ▶ InvalidOperationException (the global scope is never rebuilt)
+        ─▶ restart pending?          ─ yes ▶ coalesce: join the chain already in flight
+        ─▶ budget exceeded?          ─ yes ▶ RuntimeFlowException with the list of reasons (not recorded)
+        ─▶ no session yet (a startup or restart is building one)?
+                                     ─ yes ▶ that chain builds its session as this restart
+        ─▶ freeze the session run (nothing new starts) ─▶ after a yield: cancel it
+        ─▶ dispose its child runs (reverse creation order) ─▶ dispose the session run
+        ─▶ Global.CreateScope(composed session installer) ─▶ ScopeRun.Create
+        ─▶ RunAsync(isRestart: true, generation + 1)
 ```
 
-The whole sequence starts after a `Task.Yield`, so a service can request a restart from inside its own
-`InitializeAsync` — as `_ = host.RestartAsync("reason")`, never awaited. Awaiting it there deadlocks by
-construction until the grace expires: the returned task completes only once the current run is torn
-down, and teardown waits up to `CancellationGrace` for the in-flight services, one of which is the
-awaiting service itself. `Generation` is stamped as started *before* the first `InitializeAsync` of the new
-run, so a synchronous restart request from within it opens a new generation instead of joining the one
-it is running in. Both `StartAsync` and `RestartAsync` follow the chain and return the result of the
-**last** run, which is why an awaiter that started before a restart still observes the final outcome.
+**No request ever waits for a session run to finish on its own.** Whenever a session exists, an
+accepted restart cancels it; when none exists yet — a request during the global phase of the startup,
+or from an entry point or constructor while a session is being built — the chain in flight builds its
+session *as* the restart (budgeted once, `Generation` and `RestartCount` incremented,
+`InitContext.IsRestart` set) instead of building one generation only to throw it away. A startup whose
+global phase fails drops such a request (and its budget entry) and its awaiters observe the startup
+failure, never a misleading restart. This is what makes the common live-ops chain work: an addressables
+service finds the catalog outdated, downloads and requests a restart; in the next generation a configs
+service finds the configs outdated and requests another; generation 2 completes — whether the first
+service lives in the session or in global, and whether the services return, park on their token or
+throw a cancellation after asking.
+
+**Freeze now, cancel later.** Accepting a restart for a running session freezes its scheduler (and its
+children's) synchronously: no further service of the doomed generation starts, so a dependent of the
+requesting service never runs on stale data. The tokens are cancelled only after a `Task.Yield`, so a
+service can request a restart from inside its own `InitializeAsync` — as `_ = host.RestartAsync("reason")`,
+never awaited — without re-entrancy. A service that throws `OperationCanceledException` from a frozen
+run is recorded as cancelled, not failed. Awaiting the request there deadlocks by construction until
+the grace expires: the returned task completes only once the current run is torn down, and teardown
+waits up to `CancellationGrace` for the in-flight services, one of which is the awaiting service itself.
+`Generation` is stamped as started *before* the first `InitializeAsync` of the new run, so a synchronous
+restart request from within it opens a new generation instead of joining the one it is running in. A
+frozen run never finishes on its own — not even when every one of its services finished — so a doomed
+generation (or a session doomed before it started, which the host freezes before its first service)
+never reports `Completed` or fires `OnRunCompleted`; the cancellation that replaces it ends it
+`Cancelled`. For the same reason no run ever reports `Completed` while one of its services is
+`Cancelled`.
+Both `StartAsync` and `RestartAsync` follow the chain and return the result of the **last** run, which
+is why an awaiter that started before a restart still observes the final outcome.
+
+**Tokens.** A `CancellationToken` passed to `RestartAsync` cancels the new session run. A token of the
+run the restart tears down — the requesting service's own token, a session run token, a token of a
+session child run — would be cancelled by that very teardown and cancel the new generation at birth,
+so it is ignored with a warning:
+
+```text
+[RuntimeFlow] restart 'configs-updated': the CancellationToken passed to RestartAsync belongs to the run
+this restart tears down; it is ignored, otherwise the new generation would be cancelled at birth. Pass
+CancellationToken.None or a token that outlives the restart.
+```
+
+Tokens *derived* from it (a linked source) cannot be recognised; do not pass them. A token that is
+already cancelled when `RestartAsync` is called yields a cancelled task and tears nothing down
+(`restart 'x' not started: its CancellationToken is already cancelled.`).
+
+**A halt in the global scope ends the startup.** Its skipped services never initialized, and a session
+built on top of them would run on half an application, so no session is built: `StartAsync` returns the
+global run's `Halted` result (`Scope == "global"`, `HaltReason`, `HaltedBy`, the global degradations),
+`State` and `GetStatus()` report `Halted` with the reason and the halting service, `Session` throws
+`InvalidOperationException` (`No session scope exists: the global scope was halted by X ('reason'), so no
+session is built. The global scope is never rebuilt; dispose this host and create a new one.`), a restart
+requested during the global phase is dropped (unbudgeted; its awaiters get the halt), and every later
+`RestartAsync` is refused with `InvalidOperationException` — global services are never rebuilt, so there
+is nothing a restart could build a session on. Starting over means a new host.
+
+**Global services are never rebuilt.** A global service may request a restart, but it must not wait on
+its own token afterwards: nothing cancels it, and the startup would never finish. A request while the
+global scope is initializing, or with a token of the global run, logs:
+
+```text
+[RuntimeFlow] restart 'addressables-updated' requested while the global scope is initializing: global
+services are not rebuilt by RestartAsync, only the session is. Do not wait on your token after
+requesting a restart from the global scope: nothing cancels it, and the startup would never finish.
+```
+
+**Failed builds stay recoverable.** When the session cannot even be built during a restart (an installer
+throws, an `IInitializable` entry point throws, the graph is invalid), nothing half-built stays
+published: the scope is disposed, `State` is `Failed`, `GetStatus().Error` carries the exception,
+`Session` throws `InvalidOperationException` (`The session scope failed to build (…); call
+RuntimeFlowHost.RestartAsync to build it again.`, the exception as `InnerException`), and the next
+`RestartAsync` builds a fresh session — a "Retry" button recovers. The same holds for a first session
+that fails to build: `StartAsync` keeps returning that failure, `RestartAsync` rebuilds. A failure of the
+*global* phase instead resets the host, so a later `StartAsync` retries from scratch — except for a
+global supplied through `RuntimeFlowHost.From`, whose half-initialized singletons cannot be initialized
+twice (`StartAsync` then fails with `InvalidOperationException`).
+
+`State` is `Running` for the whole of a startup or restart, including the teardown of the generation it
+replaces (never `Disposed` mid-restart).
+
+**Budget.** `MaxRestartsPerWindow` counts *accepted* restarts within the sliding `RestartWindow`; a
+refused request is not recorded, so a steady retry is refused only while the window is really full. A
+request folded into a chain that then fails before honouring it — the global phase fails (even while its
+teardown is still running), or the session build fails after a constructor asked for it — gives its
+budget entry back.
+With `RestartWindow` zero or less the window never slides and the limit counts every restart over the
+host's lifetime (`Restart budget exceeded: 2 restarts over the host's lifetime (limit 1). Reasons: …`).
+
+**Disposal and quitting during a chain.** Every await of a startup or restart chain is followed by a
+check: once the host is disposed or the application is quitting, the chain stops without building
+anything (`ObjectDisposedException` or `OperationCanceledException` for its awaiters). `DisposeAsync`
+freezes every run up front — every child run, the session and the global run — so no service of any
+scope starts once it was called, not even in a child run that is disposed only after another one; it
+cancels them all after a `Task.Yield` (a service may call `DisposeAsync` from its own
+`InitializeAsync` without having its token cancelled inside that call), then waits for the chain to
+unwind — bounded by twice `CancellationGrace` plus a second, unbounded when the grace is infinite — so no
+session is ever built on a disposed global. Afterwards `Global` and `Session` throw
+`ObjectDisposedException`. A quit cancels the child runs too — a child frozen by an accepted restart
+would otherwise never be cancelled when the quit stops that restart before disposing it — and refuses
+new child scopes. A quit that tears the session down without a replacement leaves `State` `Cancelled`
+and a `Session` getter that says the application is quitting. Every iteration over the child runs works
+on a snapshot: a cancellation callback may dispose another child, which removes it from the list.
 
 Disposal order, top to bottom:
 
-1. Cancel the run; wait out `CancellationGrace`.
-2. `IAsyncDisposable.DisposeAsync()` on every service the run started, in **reverse completion order**;
-   failures are logged (`disposing Foo threw InvalidOperationException; continuing teardown.`) and never
-   rethrown.
+1. Freeze the run (nothing new starts), yield, cancel it; wait out `CancellationGrace` (also when the
+   run is already stopping); then wait, again up to the grace, for timed-out services still inside
+   their `InitializeAsync`.
+2. `IAsyncDisposable.DisposeAsync()` on every constructed service in **reverse completion order**
+   (services that never started go last, in reverse registration order); failures are logged
+   (`disposing Foo threw InvalidOperationException; continuing teardown.`) and never rethrown.
+   Disposing everything the scope constructed mirrors VContainer disposing every `IDisposable`
+   registration: construction alone takes ownership. The services of a global supplied through
+   `RuntimeFlowHost.From` are left alone — that container is its owner's.
 3. Dispose the service tokens and the run's cancellation sources; mark the generation abandoned, after
    which its `InitContext` throws `ObjectDisposedException`.
 4. `scope.Dispose()` when the run owns the scope. VContainer then disposes `IDisposable` registrations
-   in reverse creation order.
+   in reverse creation order; one that throws is logged and the remaining ones are still disposed.
 
-The framework never calls `Dispose()` itself, so nothing is disposed twice; synchronous disposal is
-VContainer's business and follows its dependency-correct order. On the host, child runs go before the
-session and the session before the global run; a global container supplied through
-`RuntimeFlowHost.From` is never disposed.
+The framework never calls `Dispose()` itself; synchronous disposal is VContainer's business and follows
+its dependency-correct order. A service implementing both `IAsyncDisposable` and `IDisposable` is
+therefore disposed twice — `DisposeAsync` by the framework, then `Dispose` by VContainer — and must
+tolerate it. Concurrent and re-entrant `DisposeAsync` calls (one from a disposal callback, say) share one
+teardown and all complete when it does. Every step runs even when an earlier one failed. A scope whose
+`Dispose()` throws is disposed again until it disposes cleanly (VContainer resumes with the next
+disposable), up to 64 attempts. Distinct disposables may throw the same exception object, so exception
+identity does not stop retries. Identical failures are logged once plus a count; exhausting the bound
+logs that remaining disposables could not be released.
+
+On the host, child runs go before the session and the session before the global run; a global container
+supplied through `RuntimeFlowHost.From` is never disposed. Child scopes (`InitializeScopeAsync`) follow
+their lineage: one below the session is disposed with it, by every restart; one below global is
+independent of the session, survives restarts and is disposed with the host. A child run disposed by
+its user remains tracked until teardown finishes, so a restart or host disposal awaits it before
+disposing its parent. Afterwards the host releases the run and retains only weak scope identity to
+reject another initialization of the same resolver or a child below that disposed scope.
+`InitializeScopeAsync` refuses (with `InvalidOperationException`) to
+start a child scope while a startup or restart is in flight, while any parent run has not `Completed` —
+a child created from a service of its parent scope, while that scope is still initializing, would
+otherwise run on uninitialized parents — and once the application is quitting. Because constructing the
+child's services runs user code, the checks are repeated after `ScopeRun.Create`: a child whose
+constructor requested a restart (dooming the session it would run on) or disposed the host is disposed
+and refused (`Scope 'lobby' was refused: a restart was requested while its services were being
+constructed. …`) before anything of it starts. It rejects (with `InitGraphException`) the host's own
+scopes, a scope already initialized, and a scope below a session a restart has replaced.
+A grandchild scope sees every ancestor run: `[DependsOn]` on a service of its parent child scope
+works, and degradation travels down the whole lineage.
 
 ## 4. Diagnostics
 
 - **`Describe()`** renders the graph as an aligned table: index, phase, name, flags
   (`required|optional`, `user-gated`, `timeout Ns`, `weight N`), one indented row per edge with its
-  origin (and `[global, initialized]` or `[global, degraded]` for external targets), the `lazy:`
+  origin (and `[global, initialized]`, `[global, degraded]` — or, for a parent service its run has not
+  initialized, its state: `[global, pending]`, `[global, skipped]` — for external targets), the `lazy:`
   parameters, and a final line listing the services inherited from parent scopes. It answers "why did this run in that order" without
   a debugger, and it is snapshot-tested.
 - **`GetStatus()`** returns immutable `RuntimeFlowStatus`/`ServiceStatus` snapshots: state, phase,
   elapsed (ticking while running), reported sub-progress, weight, dependencies, `WaitingOn`, error,
-  weighted `Percent`, `RestartCount`. Safe to poll every frame; the dashboard polls at 4 Hz.
+  weighted `Percent`, `RestartCount`, `HaltReason`, `HaltedBy`. Safe to poll every frame; the dashboard
+  polls at 4 Hz. Polling allocates little: a node's dependency names are computed once (edges never
+  change after the build), an empty `WaitingOn` is a shared empty list, and the snapshot of a service
+  in a terminal state is built once and reused.
+  A graph where every service has `weight 0` reports `0%` while running and `100%` once all services
+  are satisfied.
 - **`IRuntimeFlowObserver`** is the push side, with default interface members so implementations stay
-  small. Observers are wrapped: one that throws is logged and skipped.
+  small. Every run ends in exactly one of `OnRunCompleted`, `OnRunHalted`, `OnRunFailed` or
+  `OnRunCancelled`. Observers are wrapped: one that throws is logged and skipped. The observer set is
+  snapshotted when the run starts (`RunAsync`, not `ScopeRun.Create`): an observer added between the two
+  receives the whole run, one added mid-run does not affect the run in flight.
 - **`FlowRegistry`** is the only static in the package holding runtime objects, it is
   diagnostics-only, it holds **weak** references, prunes them on read, and is cleared on
   `RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)`. Runtime logic never
@@ -318,7 +554,12 @@ session and the session before the global run; a global container supplied throu
   then `service.Release()`), so ordering assertions are deterministic. Real time appears only in
   timeout and stall tests, with 50–200 ms thresholds.
 - **Awaiting assertions.** NUnit's `Assert.ThrowsAsync` blocks the Unity main thread and deadlocks any
-  posted continuation; the suite uses awaiting equivalents instead.
+  posted continuation; the suite uses awaiting equivalents instead. Unity's runner also reports an
+  async test whose task ends Canceled (an escaping `OperationCanceledException`) as *passed*: it
+  rethrows only faulted tasks. Both test assemblies therefore declare the assembly-level
+  FailOnEscapedCancellation attribute (Tests/Shared), which reroutes every `Task`-returning test
+  through a wrapper that turns a cancelled task into a failure; an expected cancellation is asserted
+  explicitly with the awaiting assertions.
 - **Overrides filter registrations.** `TestFlow.Override<T>` cannot rely on "register last, wins":
   VContainer resolves a collection by merging every registration, so the real service would still be
   discovered through `IReadOnlyList<IAsyncInitializable>` and would still be constructed and
@@ -329,6 +570,26 @@ session and the session before the global run; a global container supplied throu
   No reflection, no internals. An override matching nothing fails the test by name.
 - **Exact messages.** Tests assert on the strings in this document, because a diagnostic that is not
   pinned degrades silently.
+- **Chaos, fast by default.** `RestartChaosTests` generates random global/session/child graphs whose
+  services follow a random script per generation (complete, throw, bail out, ignore the token, park,
+  halt — global services included — request restarts with every kind of token) while the "game"
+  restarts, cancels, quits, disposes and opens child scopes at random moments, and checks the lifecycle
+  invariants after every case (nothing starts after `DisposeAsync` was called, in any scope; every task
+  settles; every constructed service is disposed exactly once; generations are monotonic; …). A failing
+  case names its seed; `Replay(seed)` reproduces it. Every EditMode run executes seeds 0–74 (three
+  batches of 25) plus the fixed sfs-client restart chains; the full sweep is the `[Category("Chaos")]`
+  `ChaosSweep`, enabled by `RUNTIMEFLOW_CHAOS_BATCHES=first,count` (batch *n* is seeds 25*n*…25*n*+24;
+  `0,30` sweeps seeds 0–749, about a second per seed). Without the variable `ChaosSweep(-1)` passes
+  trivially. An explicitly supplied range must have a nonnegative first batch, a positive count and
+  seeds within the integer range; an invalid value fails instead of selecting that sentinel. The
+  batch runner also rejects missing results and runs that execute no tests. Every product bug the chaos
+  found is reduced to a deterministic test in `ChaosFindingsTests`.
+- **Two VContainers.** `RUNTIMEFLOW_VCONTAINER=fork scripts/run_unity_editmode_tests.sh [playmode]` runs
+  the suites against the Bezarius 1.19.0 fork sfs-client ships, by temporarily pointing the test
+  project's manifest at it (the lock entry is dropped; both files are restored on every exit path).
+  `RUNTIMEFLOW_VCONTAINER_FORK` overrides the package URL, for example with a `file:` path to a local
+  copy when offline. Tests that depend on fork-only API (keyed registrations) find it by reflection and
+  are skipped on upstream.
 - **`LifecycleFake` needs a JIT.** It builds its fakes with `DispatchProxy`, which emits IL at runtime,
   so it runs in the Editor and in Mono players and throws under IL2CPP. Nothing in the runtime package
   depends on it and it never reaches a player build (`RuntimeFlow.Testing` is constrained to

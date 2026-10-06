@@ -33,6 +33,15 @@ namespace RuntimeFlow.Tests.Testing
             }
         }
 
+        public interface IRepository : IAsyncInitializable
+        {
+            Task SaveAsync();
+
+            Task<int> CountAsync();
+
+            Task<string> NameAsync();
+        }
+
         private static InitContext? NoContext => null;
 
         private readonly RunTracker _tracker = new RunTracker();
@@ -175,6 +184,17 @@ namespace RuntimeFlow.Tests.Testing
         public void OnlyInterfacesCanBeFaked()
         {
             Assert.Throws<ArgumentException>(() => LifecycleFake.Of<Stub>());
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AStubLessFakeReturnsCompletedTasksForTaskMembers()
+        {
+            var fake = LifecycleFake.Of<IRepository>();
+
+            await fake.SaveAsync();
+            Assert.That(await fake.CountAsync(), Is.EqualTo(0));
+            Assert.That(await fake.NameAsync(), Is.Null);
         }
     }
 }

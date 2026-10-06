@@ -1,29 +1,64 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Logging;
 
 namespace RuntimeFlow.Internal
 {
-    /// <summary>Direct, allocation-free logging helpers that never treat a message as a format template.</summary>
+    /// <summary>
+    /// Direct, allocation-free logging helpers that never treat a message as a format template and never
+    /// throw: a user logger that fails must not wedge a run (a scheduler step that logs before it settles a
+    /// task would otherwise never settle it). The first failure of each logger is reported once through
+    /// <c>UnityEngine.Debug.LogWarning</c>; later ones are dropped.
+    /// </summary>
     internal static class RfLogger
     {
         private static readonly Func<string, Exception?, string> Formatter = (state, _) => state;
+        private static readonly ConditionalWeakTable<ILogger, object> Reported = new ConditionalWeakTable<ILogger, object>();
 
         /// <summary>Writes a message at <see cref="LogLevel.Debug"/>.</summary>
-        public static void Debug(this ILogger logger, string message)
-            => logger.Log(LogLevel.Debug, default, message, null, Formatter);
+        public static void Debug(this ILogger logger, string message) => Write(logger, LogLevel.Debug, message, null);
 
         /// <summary>Writes a message at <see cref="LogLevel.Information"/>.</summary>
-        public static void Info(this ILogger logger, string message)
-            => logger.Log(LogLevel.Information, default, message, null, Formatter);
+        public static void Info(this ILogger logger, string message) => Write(logger, LogLevel.Information, message, null);
 
         /// <summary>Writes a message at <see cref="LogLevel.Warning"/>.</summary>
-        public static void Warn(this ILogger logger, string message)
-            => logger.Log(LogLevel.Warning, default, message, null, Formatter);
+        public static void Warn(this ILogger logger, string message) => Write(logger, LogLevel.Warning, message, null);
 
         /// <summary>Writes a message at <see cref="LogLevel.Error"/>.</summary>
         public static void Error(this ILogger logger, string message, Exception? exception = null)
-            => logger.Log(LogLevel.Error, default, message, exception, Formatter);
+            => Write(logger, LogLevel.Error, message, exception);
+
+        private static void Write(ILogger logger, LogLevel level, string message, Exception? exception)
+        {
+            try
+            {
+                logger.Log(level, default, message, exception, Formatter);
+            }
+            catch (Exception failure)
+            {
+                ReportOnce(logger, failure);
+            }
+        }
+
+        private static void ReportOnce(ILogger logger, Exception failure)
+        {
+            try
+            {
+                lock (Reported)
+                {
+                    if (Reported.TryGetValue(logger, out _)) return;
+                    Reported.Add(logger, Reported);
+                }
+                UnityEngine.Debug.LogWarning(
+                    $"[RuntimeFlow] the configured logger ({logger.GetType().Name}) threw {failure.GetType().Name}: " +
+                    $"{failure.Message}. RuntimeFlow keeps running and drops the messages this logger cannot write.\n{failure}");
+            }
+            catch (Exception)
+            {
+                // Nothing left to report to.
+            }
+        }
     }
 
     /// <summary>
@@ -32,13 +67,18 @@ namespace RuntimeFlow.Internal
     /// </summary>
     internal sealed class ObserverList
     {
-        private readonly IReadOnlyList<IRuntimeFlowObserver> _observers;
+        private readonly IRuntimeFlowObserver[] _observers;
         private readonly ILogger _logger;
         private readonly string _scope;
 
         public ObserverList(IReadOnlyList<IRuntimeFlowObserver> observers, ILogger logger, string scope)
         {
-            _observers = observers;
+            // Snapshot: RuntimeFlowOptions.Observers stays mutable in the user's hands, and a service
+            // adding an observer mid-run must neither corrupt this run's iteration nor change who gets
+            // the remaining events of a run that already started.
+            var copy = new IRuntimeFlowObserver[observers.Count];
+            for (var i = 0; i < observers.Count; i++) copy[i] = observers[i];
+            _observers = copy;
             _logger = logger;
             _scope = scope;
         }
@@ -73,13 +113,16 @@ namespace RuntimeFlow.Internal
         public void RunFailed(RuntimeFlowException error)
             => Fan(o => o.OnRunFailed(_scope, error), nameof(IRuntimeFlowObserver.OnRunFailed));
 
+        public void RunCancelled()
+            => Fan(o => o.OnRunCancelled(_scope), nameof(IRuntimeFlowObserver.OnRunCancelled));
+
         /// <summary>
         /// Delivers one event to every observer in registration order; an observer that throws is reported
         /// and skipped, so a broken listener can never take the run down with it.
         /// </summary>
         private void Fan(Action<IRuntimeFlowObserver> call, string method)
         {
-            for (var i = 0; i < _observers.Count; i++)
+            for (var i = 0; i < _observers.Length; i++)
             {
                 try { call(_observers[i]); }
                 catch (Exception e) { Report(_observers[i], method, e); }

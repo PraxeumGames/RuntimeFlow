@@ -4,6 +4,8 @@ using System.Globalization;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using VContainer;
 
@@ -49,11 +51,20 @@ namespace RuntimeFlow.Internal
     internal static class GraphBuilder
     {
         /// <summary>Builds and validates the graph of <paramref name="scope"/>; throws <see cref="InitGraphException"/> on any problem.</summary>
+        /// <param name="scope">The resolver whose local registrations become the graph.</param>
+        /// <param name="name">Scope name used in messages.</param>
+        /// <param name="options">Phases, logger and option values to validate.</param>
+        /// <param name="parents">Graphs of the linked parent runs, or null.</param>
+        /// <param name="ownsServices">
+        /// True when the run will own the scope: a graph error found after construction then releases the
+        /// services it constructed. A caller-owned container keeps its singletons untouched.
+        /// </param>
         public static ServiceGraph Build(
             IObjectResolver scope,
             string name,
             RuntimeFlowOptions options,
-            IReadOnlyList<ServiceGraph>? parents)
+            IReadOnlyList<ServiceGraph>? parents,
+            bool ownsServices)
         {
             var declaredPhases = options.Phases ?? Array.Empty<string>();
             if (options.DefaultPhase != null && !Contains(declaredPhases, options.DefaultPhase))
@@ -61,21 +72,50 @@ namespace RuntimeFlow.Internal
                 throw new InitGraphException(name,
                     $"RuntimeFlowOptions.DefaultPhase is '{options.DefaultPhase}', but RuntimeFlowOptions.Phases is {Bracket(declaredPhases)}.");
             }
+            if (double.IsNaN(options.TimeoutMultiplier) || double.IsInfinity(options.TimeoutMultiplier) || options.TimeoutMultiplier < 0)
+            {
+                throw new InitGraphException(name,
+                    $"RuntimeFlowOptions.TimeoutMultiplier is {Fmt.N(options.TimeoutMultiplier)}; it must be a finite number >= 0 (0 disables all timeouts).");
+            }
+
+            ValidateOptions(options, name, declaredPhases);
 
             var registrations = LocalRegistrations(scope, name);
+
+            // What can be validated without constructing a service is validated first — the lifetimes, the
+            // [Init] attributes of concretely registered types, and parent services that injection would
+            // recreate or re-inject — so these errors never leave constructed services behind. Cycles,
+            // [DependsOn] targets and the attributes of factory products need the constructed graph and are
+            // checked afterwards (releasing what was constructed, when the run owns the scope).
+            foreach (var registration in registrations)
+            {
+                if (registration.Lifetime == Lifetime.Singleton || IsSceneComponent(registration)) continue;
+                throw new InitGraphException(name,
+                    $"{registration.ImplementationType.Name} is registered with Lifetime.{registration.Lifetime} in scope '{name}'; " +
+                    "initializable services must be Lifetime.Singleton (a Scoped/Transient service would be re-created uninitialized in child scopes)." +
+                    (typeof(UnityEngine.Component).IsAssignableFrom(registration.ImplementationType)
+                        ? " For a MonoBehaviour use RegisterComponent(instance), RegisterComponentOnNewGameObject<T>(Lifetime.Singleton) " +
+                          "or RegisterComponentInHierarchy<T>(), which is accepted as Scoped as long as no child scope resolves it."
+                        : string.Empty));
+            }
+
+            foreach (var registration in registrations)
+            {
+                var type = registration.ImplementationType;
+                if (!type.IsClass || type.IsAbstract) continue;
+                var attribute = type.GetCustomAttribute<InitAttribute>(true);
+                if (attribute != null) ValidateInitAttribute(attribute, type.Name, name, declaredPhases);
+            }
+
+            var externals = Externals(scope, name, parents);
+            RejectRecreatedParentServices(scope, name, registrations, externals, options.Logger);
+
             var services = new List<ServiceNode>();
             var sources = new List<Type>();
             var index = 0;
 
             foreach (var registration in registrations)
             {
-                if (registration.Lifetime != Lifetime.Singleton)
-                {
-                    throw new InitGraphException(name,
-                        $"{registration.ImplementationType.Name} is registered with Lifetime.{registration.Lifetime} in scope '{name}'; " +
-                        "initializable services must be Lifetime.Singleton (a Scoped/Transient service would be re-created uninitialized in child scopes).");
-                }
-
                 object? instance = null;
                 Exception? constructionError = null;
                 try
@@ -84,9 +124,7 @@ namespace RuntimeFlow.Internal
                 }
                 catch (Exception exception)
                 {
-                    constructionError = new InitGraphException(name,
-                        $"Could not construct {registration.ImplementationType.Name} in scope '{name}': {exception.Message}. " +
-                        $"Register the missing type in '{name}' or a parent scope.", exception);
+                    constructionError = ConstructionError(registration, name, exception);
                 }
 
                 var source = instance?.GetType() ?? registration.ImplementationType;
@@ -94,13 +132,36 @@ namespace RuntimeFlow.Internal
                 {
                     Instance = instance,
                     Service = instance as IAsyncInitializable,
-                    ConstructionError = constructionError
+                    ConstructionError = constructionError,
+                    Registration = registration
                 };
                 services.Add(node);
                 sources.Add(registration.ImplementationType);
             }
 
-            var externals = Externals(scope, name, parents);
+            try
+            {
+                return Assemble(scope, name, options, declaredPhases, services, externals, sources, index);
+            }
+            catch (Exception)
+            {
+                // No run will ever own these services: release what the run would have released — unless
+                // they belong to a container the caller owns, whose singletons are not ours to dispose.
+                if (ownsServices) ReleaseConstructed(services, options.Logger, name);
+                throw;
+            }
+        }
+
+        private static ServiceGraph Assemble(
+            IObjectResolver scope,
+            string name,
+            RuntimeFlowOptions options,
+            IReadOnlyList<string> declaredPhases,
+            List<ServiceNode> services,
+            List<ServiceNode> externals,
+            List<Type> sources,
+            int index)
+        {
             Disambiguate(services, externals);
             WarnAboutDuplicates(options.Logger, name, services);
 
@@ -116,8 +177,9 @@ namespace RuntimeFlow.Internal
             for (var i = 0; i < services.Count; i++)
                 ReadAttributes(services[i], sources[i], name, phases, options.DefaultPhase);
 
+            var edges = new InjectionEdges(scope, all, options.Logger, name);
             for (var i = 0; i < services.Count; i++)
-                AddConstructorEdges(services[i], sources[i], all);
+                AddInjectionEdges(services[i], sources[i], edges, options.Logger, name);
 
             for (var i = 0; i < services.Count; i++)
                 AddDependsOnEdges(services[i], sources[i], scope, name, all, services, externals);
@@ -129,6 +191,134 @@ namespace RuntimeFlow.Internal
             DetectCycles(nodes, name);
 
             return new ServiceGraph(name, nodes, services, externals, phases);
+        }
+
+        /// <summary>Option checks that concern every graph, validated before anything is constructed.</summary>
+        private static void ValidateOptions(RuntimeFlowOptions options, string name, IReadOnlyList<string> phases)
+        {
+            var grace = options.CancellationGrace;
+            if (grace < TimeSpan.Zero && grace != Timeout.InfiniteTimeSpan)
+            {
+                throw new InitGraphException(name,
+                    $"RuntimeFlowOptions.CancellationGrace is {Fmt.S1(grace)}; it must be >= 0 or Timeout.InfiniteTimeSpan (wait forever).");
+            }
+
+            for (var i = 0; i < phases.Count; i++)
+            {
+                if (string.IsNullOrEmpty(phases[i]))
+                    throw new InitGraphException(name, $"RuntimeFlowOptions.Phases {Bracket(phases)} contains an empty phase name.");
+                for (var j = 0; j < i; j++)
+                {
+                    if (string.Equals(phases[i], phases[j], StringComparison.Ordinal))
+                        throw new InitGraphException(name, $"RuntimeFlowOptions.Phases {Bracket(phases)} lists phase '{phases[i]}' twice; phase names must be unique.");
+                }
+            }
+        }
+
+        /// <summary>
+        /// A MonoBehaviour found in the scene hierarchy (<c>RegisterComponentInHierarchy</c>) is always
+        /// registered as Scoped, yet every resolution returns the one component that lives in the scene —
+        /// it is never re-created per scope, so it is as safe to initialize as a singleton.
+        /// </summary>
+        internal static bool IsSceneComponent(Registration registration)
+            => registration.Lifetime == Lifetime.Scoped && registration.Provider?.GetType().Name == "FindComponentProvider";
+
+        /// <summary>
+        /// Refuses parent service dependencies whose resolution would recreate a singleton in this scope
+        /// or re-inject a parent scene component. Neither can use the initialized parent node's identity;
+        /// validate reflected dependencies before constructing services of this scope.
+        /// </summary>
+        private static void RejectRecreatedParentServices(
+            IObjectResolver scope,
+            string name,
+            List<Registration> registrations,
+            List<ServiceNode> externals,
+            ILogger logger)
+        {
+            if (externals.Count == 0) return;
+
+            var edges = new InjectionEdges(scope, externals, logger, name);
+            foreach (var registration in registrations)
+            {
+                if (!InjectionEdges.IsReflected(registration)) continue;
+                var custom = InjectionEdges.CustomParameters(registration);
+                foreach (var point in ConstructorEdges.InjectionPoints(registration.ImplementationType))
+                {
+                    if (InjectionEdges.Supplied(custom, point) || ConstructorEdges.IsLazy(point.Type)) continue;
+                    var targets = edges.Targets(point, scope, registration);
+                    var component = edges.RespawnedSceneComponent;
+                    if (component == null) continue;
+
+                    var via = string.Empty;
+                    foreach (var target in targets)
+                    {
+                        if (ReferenceEquals(target.Target, component)) via = target.Via;
+                    }
+                    throw new InitGraphException(name,
+                        $"{registration.ImplementationType.Name} in scope '{name}' depends on {component.Name} " +
+                        $"({point.Origin}{(via.Length == 0 ? string.Empty : " via " + via)}), which scope '{component.Scope}' registers " +
+                        "with RegisterComponentInHierarchy (Lifetime.Scoped). VContainer creates a Scoped registration anew in " +
+                        $"every scope that resolves it, so '{name}' would inject that scene component again with its own " +
+                        $"dependencies and dispose it with itself. Register it in '{component.Scope}' as a single instance " +
+                        "instead: RegisterComponent(instance), for example RegisterComponent(Object.FindObjectOfType<T>(true)).");
+                }
+            }
+        }
+
+        private static InitGraphException ConstructionError(Registration registration, string name, Exception exception)
+        {
+            var cause = exception;
+            while (cause is TargetInvocationException && cause.InnerException != null) cause = cause.InnerException;
+
+            var text = Sentence(cause.Message);
+            if (cause is VContainerException)
+            {
+                return new InitGraphException(name,
+                    $"Could not construct {registration.ImplementationType.Name} in scope '{name}': {text} " +
+                    $"Register the missing type in '{name}' or a parent scope.", cause);
+            }
+
+            return new InitGraphException(name,
+                $"Could not construct {registration.ImplementationType.Name} in scope '{name}': its construction threw " +
+                $"{cause.GetType().Name}: {text} See InnerException.", cause);
+        }
+
+        private static string Sentence(string message)
+        {
+            var text = message.TrimEnd();
+            return text.EndsWith(".", StringComparison.Ordinal) ? text : text + ".";
+        }
+
+        /// <summary>
+        /// Releases the services of a graph that failed validation: <see cref="IAsyncDisposable"/> ones are
+        /// disposed here (VContainer only knows <see cref="IDisposable"/>), in reverse construction order.
+        /// </summary>
+        private static void ReleaseConstructed(List<ServiceNode> services, ILogger logger, string name)
+        {
+            for (var i = services.Count - 1; i >= 0; i--)
+            {
+                if (!(services[i].Instance is IAsyncDisposable disposable)) continue;
+                var service = services[i].Name;
+                try
+                {
+                    var pending = disposable.DisposeAsync();
+                    if (!pending.IsCompleted) _ = ObserveDisposal(pending.AsTask(), logger, name, service);
+                    else if (pending.IsFaulted) _ = ObserveDisposal(pending.AsTask(), logger, name, service);
+                }
+                catch (Exception exception)
+                {
+                    logger.Error($"[RuntimeFlow] {name}: disposing {service} threw {exception.GetType().Name}; continuing teardown.", exception);
+                }
+            }
+        }
+
+        private static async Task ObserveDisposal(Task disposal, ILogger logger, string name, string service)
+        {
+            try { await disposal; }
+            catch (Exception exception)
+            {
+                logger.Error($"[RuntimeFlow] {name}: disposing {service} threw {exception.GetType().Name}; continuing teardown.", exception);
+            }
         }
 
         private static List<Registration> LocalRegistrations(IObjectResolver scope, string name)
@@ -161,6 +351,8 @@ namespace RuntimeFlow.Internal
                         externals.Add(new ServiceNode(index--, NodeKind.External, node.Name, node.Type, parent.Scope)
                         {
                             Instance = node.Instance,
+                            Registration = node.Registration,
+                            Source = node,
                             State = ExternalState(node)
                         });
                     }
@@ -175,9 +367,24 @@ namespace RuntimeFlow.Internal
                 var scopeName = "parent" + (depth == 0 ? string.Empty : "^" + depth.ToString(CultureInfo.InvariantCulture));
                 foreach (var registration in LocalRegistrations(current, name))
                 {
-                    externals.Add(new ServiceNode(index--, NodeKind.External,
-                        registration.ImplementationType.Name, registration.ImplementationType, scopeName)
+                    // A factory registration only declares its contract type; the instance the parent
+                    // already holds (or constructs now, as the child would on first use) names the service.
+                    var type = registration.ImplementationType;
+                    object? instance = null;
+                    try
                     {
+                        instance = current.Resolve(registration);
+                        type = instance?.GetType() ?? type;
+                    }
+                    catch (Exception)
+                    {
+                        // The parent cannot construct it either; its own run reports that.
+                    }
+
+                    externals.Add(new ServiceNode(index--, NodeKind.External, type.Name, type, scopeName)
+                    {
+                        Instance = instance,
+                        Registration = registration,
                         State = ServiceState.Completed
                     });
                 }
@@ -188,12 +395,13 @@ namespace RuntimeFlow.Internal
         }
 
         /// <summary>
-        /// State an external node inherits from its parent-scope node: a service that degraded there stays
-        /// degraded here, so this scope's services see it in <see cref="InitContext.DegradedServices"/> and
-        /// in <c>Describe()</c>. Everything else counts as initialized — externals are never scheduled.
+        /// State an external node inherits from its parent-scope node, read again when the run starts. A
+        /// service that degraded there stays degraded here, so this scope's services see it in
+        /// <see cref="InitContext.DegradedServices"/> and in <c>Describe()</c>. A service that never
+        /// initialized there — skipped by a halt, cancelled, failed, or not run yet — keeps that state: it
+        /// is not satisfied, and a service of this scope depending on it fails instead of starting.
         /// </summary>
-        private static ServiceState ExternalState(ServiceNode node)
-            => node.State == ServiceState.Degraded ? ServiceState.Degraded : ServiceState.Completed;
+        internal static ServiceState ExternalState(ServiceNode node) => node.State;
 
         private static void Disambiguate(List<ServiceNode> services, List<ServiceNode> externals)
         {
@@ -256,28 +464,7 @@ namespace RuntimeFlow.Internal
                 node.UserGated = attribute.UserGated;
                 node.TimeoutSeconds = attribute.TimeoutSeconds;
                 node.Weight = attribute.Weight;
-
-                if (attribute.UserGated && attribute.TimeoutSeconds > 0)
-                {
-                    throw new InitGraphException(scope,
-                        $"{node.Name} is user-gated and declares TimeoutSeconds = {Fmt.N(attribute.TimeoutSeconds)}; " +
-                        "user-gated services never time out. Remove one of them.");
-                }
-
-                if (attribute.Phase != null)
-                {
-                    if (phases.Count == 0)
-                    {
-                        throw new InitGraphException(scope,
-                            $"{node.Name} declares phase '{attribute.Phase}', but RuntimeFlowOptions.Phases is empty. " +
-                            "Declare the ordered phase list in RuntimeFlowOptions.Phases.");
-                    }
-                    if (!Contains(phases, attribute.Phase))
-                    {
-                        throw new InitGraphException(scope,
-                            $"{node.Name} declares phase '{attribute.Phase}', but RuntimeFlowOptions.Phases is {Bracket(phases)}.");
-                    }
-                }
+                ValidateInitAttribute(attribute, node.Name, scope, phases);
             }
 
             if (phases.Count == 0) return;
@@ -287,31 +474,76 @@ namespace RuntimeFlow.Internal
             node.PhaseIndex = IndexOf(phases, phase);
         }
 
-        private static void AddConstructorEdges(ServiceNode node, Type registeredType, List<ServiceNode> all)
+        /// <summary>Checks the values of one [Init] attribute; the phase must be one of <paramref name="phases"/>.</summary>
+        private static void ValidateInitAttribute(InitAttribute attribute, string service, string scope, IReadOnlyList<string> phases)
         {
-            var seen = new HashSet<string>(StringComparer.Ordinal);
+            if (double.IsNaN(attribute.Weight) || double.IsInfinity(attribute.Weight) || attribute.Weight < 0)
+            {
+                throw new InitGraphException(scope,
+                    $"{service} declares Weight = {Fmt.N(attribute.Weight)}; weight must be a finite number >= 0 (0 removes the service from the progress bar).");
+            }
+
+            if (double.IsNaN(attribute.TimeoutSeconds) || double.IsInfinity(attribute.TimeoutSeconds) || attribute.TimeoutSeconds < 0)
+            {
+                throw new InitGraphException(scope,
+                    $"{service} declares TimeoutSeconds = {Fmt.N(attribute.TimeoutSeconds)}; it must be a finite number >= 0 (0 means no timeout).");
+            }
+
+            if (attribute.UserGated && attribute.TimeoutSeconds > 0)
+            {
+                throw new InitGraphException(scope,
+                    $"{service} is user-gated and declares TimeoutSeconds = {Fmt.N(attribute.TimeoutSeconds)}; " +
+                    "user-gated services never time out. Remove one of them.");
+            }
+
+            if (attribute.Phase == null) return;
+            if (phases.Count == 0)
+            {
+                throw new InitGraphException(scope,
+                    $"{service} declares phase '{attribute.Phase}', but RuntimeFlowOptions.Phases is empty. " +
+                    "Declare the ordered phase list in RuntimeFlowOptions.Phases.");
+            }
+            if (!Contains(phases, attribute.Phase))
+            {
+                throw new InitGraphException(scope,
+                    $"{service} declares phase '{attribute.Phase}', but RuntimeFlowOptions.Phases is {Bracket(phases)}.");
+            }
+        }
+
+        /// <summary>
+        /// Edges of one service from everything VContainer injects into it — constructor parameters and
+        /// [Inject] methods, fields and properties — resolved the way VContainer resolves them.
+        /// </summary>
+        private static void AddInjectionEdges(ServiceNode node, Type registeredType, InjectionEdges edges, ILogger logger, string scope)
+        {
+            var seen = new HashSet<(MemberInfo Member, int Position)>();
+            var custom = InjectionEdges.CustomParameters(node.Registration);
+
+            // VContainer injects [Inject] members only into what it constructs or injects by reflection. An
+            // instance (RegisterInstance) or a factory product (Register(resolver => …)) never gets them, so
+            // only its constructor parameters count — the documented choice that keeps a decorator's edges.
+            var reflected = node.Registration == null || InjectionEdges.IsReflected(node.Registration);
             foreach (var type in InspectedTypes(node, registeredType))
             {
-                foreach (var parameter in ConstructorEdges.Parameters(type))
-                {
-                    var parameterType = parameter.ParameterType;
-                    if (!seen.Add(parameterType.FullName + " " + parameter.Name)) continue;
+                var ambiguity = ConstructorEdges.Ambiguity(type);
+                if (ambiguity != null) logger.Warn($"[RuntimeFlow] {scope}: {ambiguity}");
 
-                    if (ConstructorEdges.IsLazy(parameterType))
+                foreach (var point in ConstructorEdges.InjectionPoints(type))
+                {
+                    if (!reflected && !point.IsConstructorParameter) continue;
+                    if (!seen.Add(point.Key)) continue;
+                    if (InjectionEdges.Supplied(custom, point)) continue;
+
+                    if (ConstructorEdges.IsLazy(point.Type))
                     {
-                        node.LazyParameters.Add($"{Fmt.Type(parameterType)} {parameter.Name}");
+                        node.LazyParameters.Add($"{Fmt.Type(point.Type)} {point.Name}");
                         continue;
                     }
-                    if (ConstructorEdges.IsIgnored(parameterType)) continue;
 
-                    var target = ConstructorEdges.ElementType(parameterType) ?? parameterType;
-                    if (ConstructorEdges.IsIgnored(target)) continue;
-
-                    var origin = $"ctor: {Fmt.Type(parameterType)} {parameter.Name}";
-                    foreach (var candidate in all)
+                    foreach (var (target, via) in edges.Targets(point, edges.Scope, node.Registration))
                     {
-                        if (!ReferenceEquals(candidate, node) && target.IsAssignableFrom(candidate.Type))
-                            AddEdge(node, candidate, origin);
+                        if (ReferenceEquals(target, node)) continue;
+                        AddEdge(node, target, via.Length == 0 ? point.Origin : point.Origin + " via " + via);
                     }
                 }
             }
@@ -348,6 +580,11 @@ namespace RuntimeFlow.Internal
                 }
 
                 if (matched) continue;
+
+                // A service that failed to construct through a factory is only known by its contract
+                // type, so the target may well be that very service: its construction error, which fails
+                // the run, is the real explanation — a derived graph error would only hide it.
+                if (services.Any(s => s.ConstructionError != null && (s.Type.IsInterface || s.Type.IsAbstract))) continue;
 
                 // The target resolves but is not part of any graph: the registration simply forgot to
                 // expose IAsyncInitializable. That is a far more common mistake than a missing service,
@@ -422,10 +659,7 @@ namespace RuntimeFlow.Internal
 
         private static void AddEdge(ServiceNode from, ServiceNode to, string origin)
         {
-            foreach (var edge in from.Deps)
-            {
-                if (ReferenceEquals(edge.Target, to)) return;
-            }
+            if (!from.DepTargets.Add(to)) return;
             from.Deps.Add(new Edge(to, origin));
         }
 

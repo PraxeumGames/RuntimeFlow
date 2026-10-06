@@ -76,12 +76,14 @@ types to about 25, and every 0.x concept below is gone.
 - `RuntimeFlowException` — `Scope`, `Service`, `Phase`, `Elapsed`, `Completed`, `Unfinished`,
   `Failures`.
 - `InitGraphException` — graph problems raised before the first `InitializeAsync`.
-- `IRuntimeFlowObserver` — default-interface-member hooks for run, phase and service events.
+- `IRuntimeFlowObserver` — default-interface-member hooks for run, phase and service events; every run
+  ends in exactly one of `OnRunCompleted`, `OnRunHalted`, `OnRunFailed`, `OnRunCancelled`.
 - `RuntimeFlowStatus`, `ServiceStatus`, `ServiceState`, `RunState` — pull snapshots with weighted
-  `Percent`, `WaitingOn`, elapsed and errors.
+  `Percent`, `WaitingOn`, elapsed, errors, `HaltReason` and `HaltedBy`.
 - `UnityConsoleLogger` — the default Microsoft.Extensions.Logging sink for the Unity console.
 - `RuntimeFlowRegistrationExtensions.RegisterInitializable<T>()` — optional registration sugar.
-- `RuntimeFlow.Testing`: `TestFlow` (headless host with `Override<T>`, `Configure`, `ObserveWith`,
+- `RuntimeFlow.Testing`: `TestFlow` (headless host with `Override<T>` — instance or per-build factory —,
+  `Override<T, TImpl>`, `Configure`, `ObserveWith`,
   `WithStartupTimeout`, captured `Log`), `LifecycleFake` (+ `LifecycleFakeHandle`, `FakeBehavior`,
   `FakeInvocationLog`, `FakeDispatchProxy`), `CollectingObserver`.
 - `RuntimeFlow.Editor`: `RuntimeFlowDashboardWindow` — Graph / Scopes / Last run tabs, session restart,
@@ -89,6 +91,134 @@ types to about 25, and every 0.x concept below is gone.
 - `scripts/check_package_namespaces.sh` and `scripts/check_docs_types.sh`, wired into a Unity-free
   package gate that runs on every push and pull request.
 - `docs/DESIGN.md` — the one-graph model, scheduler guarantees and the exact message catalogue.
+
+### Fixed
+
+Found by the pre-release review of the restart, scheduler, graph and host code; each has a regression
+test.
+
+- **Restart chains.** A restart requested before a session exists (during the global phase) makes the
+  startup build its first session directly as the restart instead of waiting for a generation 0 that
+  nothing would cancel — a session service that then requested a second restart and parked on its
+  token hung forever. A dropped request (the global phase failed) is not budgeted and lets the host be
+  started again. A restart whose session fails to build (installer, entry point or graph error) leaves
+  the host restartable, with `State == Failed`, the error in `GetStatus().Error` and a `Session` getter
+  that says so; before, every later request coalesced into the failed one forever.
+- **Doomed generations.** Accepting a restart freezes the running session synchronously, so no
+  dependent of the requesting service starts in the generation being replaced; its tokens are still
+  cancelled only after a yield.
+- **Restart tokens.** The requesting service's own token (any token of the run being torn down) is
+  ignored with a warning instead of cancelling the new generation at birth; an already cancelled token
+  yields a cancelled task and tears nothing down. A request from the global scope warns that global
+  services are not rebuilt and must not wait on their token.
+- **Dispose and quit during a chain.** A startup or restart stops after any await once the host is
+  disposed or the application quits, instead of building a session on a disposed global;
+  `DisposeAsync` cancels and waits (bounded) for the chain, and concurrent calls share one teardown.
+  `State` is `Running` during a restart's teardown instead of `Disposed`.
+- **Budget.** Refused requests no longer consume the restart budget; `RestartWindow <= 0` is documented
+  as a lifetime budget.
+- **Scheduler.** Several timeouts in one tick are all reported as timeouts, and a service that returns
+  from its own timeout cancellation can no longer complete (or doubly release) a timed-out node; every
+  node transition is guarded. Teardown waits only for services still in flight, and `CancelAsync` /
+  `DisposeAsync` wait for a run that is already halting or failing. Required construction failures are
+  all reported before anything starts; an optional one degrades in graph order. `InitContext.Halt` and
+  `ReportProgress` are marshalled to the run's context; a run without a `SynchronizationContext` is
+  refused; a caller cancellation landing after completion is ignored. `CancellationGrace` accepts
+  `Timeout.InfiniteTimeSpan` (and huge values) instead of hanging teardown, a negative grace is
+  rejected, and a failing watch tick no longer silently ends timeouts. A cancelled run is logged and
+  reported through the new `OnRunCancelled`.
+- **Edges follow VContainer.** Constructor selection mirrors VContainer exactly (equal-arity
+  constructors without `[Inject]` warn instead of being tie-broken differently from VContainer);
+  `[Inject]` methods, fields and properties are edges; a single parameter depends on the registration
+  VContainer picks, not on every assignable class (no more invented edges or false cycles); only
+  `IEnumerable<T>`/`IReadOnlyList<T>` are barriers; dependencies through plain registrations are
+  followed transitively (`ctor: IProfileApi api via ProfileApi`); `WithParameter` values and
+  `ContainerLocal<T>` are handled.
+- **Graph building.** A throwing constructor is reported with its own exception (no
+  `TargetInvocationException` text, no "register the missing type" advice); a graph error releases the
+  services and the owned scope it already constructed; `RegisterComponentInHierarchy` (always Scoped)
+  is accepted; duplicate phase names are rejected; huge timeouts no longer overflow.
+- **Host.** The entry-point exception handler collects only while a scope is built — later player-loop
+  exceptions are logged, not swallowed — and a consumer handler in the global installer also covers the
+  session; the failing entry point is named correctly when a helper threw for it. A throwing
+  `Dispose()` no longer aborts teardown or wedges a restart. Child scopes see every ancestor run
+  (grandchildren), are refused while a parent is not `Completed` or a restart is in flight, reject the
+  host's own scopes, repeated and stale-session scopes, are forgotten after their teardown finishes, and
+  a child of Global survives session restarts. A global supplied through `From` no longer has its
+  services disposed by the host, and a failed one cannot be re-initialized.
+- **Testing.** `TestFlow.StartAsync` reports a caller cancellation as a cancellation, not a timeout;
+  `LifecycleFake` without a stub returns completed tasks.
+
+### Fixed (second review round)
+
+Found by a second review and by the restart chaos fixture; each has a regression test, and the suite
+now also runs against the VContainer 1.19 fork sfs-client ships.
+
+- **A halt in the global scope stops the startup.** Before, the host ignored it and built the session on
+  global services the halt had skipped, which the session saw as initialized. Now no session is built:
+  `StartAsync` returns the global `Halted` result, `State`/`GetStatus()` report `Halted` with the reason
+  and the halting service (new `RuntimeFlowStatus.HaltedBy`), `Session` throws explaining the halt, and
+  `RestartAsync` is refused with `InvalidOperationException` — the global scope is never rebuilt, so
+  starting over means a new host. External nodes keep the real state of their parent node (read again
+  when the child run starts): a child service depending on a parent service that never initialized fails
+  instead of starting.
+- **Disposal and quitting.** `DisposeAsync` freezes every run — every child run included — before it
+  awaits anything, so no service of any scope starts once it was called (an older child used to keep
+  starting services while a newer one was disposed), and cancels them only after a yield, so a service
+  may call it from its own `InitializeAsync`. `Global` and `Session` throw `ObjectDisposedException`
+  afterwards. A quit also cancels the child runs (one frozen by a restart the quit aborted hung its
+  awaiter), refuses new child scopes, and a quit that tears the session down leaves `State == Cancelled`
+  with a `Session` getter that says so instead of reporting the global run's `Completed`. Iterations over
+  the child runs work on snapshots (a cancellation callback disposing another child threw "Collection was
+  modified"). A child scope whose constructor requests a restart is refused and disposed instead of
+  starting on the doomed session. A restart folded into a chain that then fails before honouring it gives
+  its budget entry back.
+- **Caller-owned containers.** A graph error of a container the run does not own (`RuntimeFlowHost.From`,
+  `ScopeRun.Create` without `ownsScope`) no longer disposes the caller's singletons. `[Init]` values are
+  validated before anything is constructed.
+- **Scheduler robustness.** A cancellation callback that throws (`ct.Register(() => request.Abort())`)
+  is logged instead of escaping: halts and failures still settle, a timed-out service's dependents are
+  still released, and disposal still reaches every service and the scope. A logger that throws can no
+  longer wedge a run (every log call is contained; the run's task completes in a `finally`). A frozen run
+  never finishes on its own, so a generation doomed by a restart can no longer report `Completed` over a
+  service that never initialized, and no run reports `Completed` while a service is `Cancelled`.
+  Failures while a halt or cancellation settles are logged as warnings. Progress reported after a
+  service finished is ignored. A timed-out service still inside its `InitializeAsync` is waited for
+  (bounded by the grace) before it is disposed. Observers are notified of a failure only after the run
+  is failing, so one that cancels the run from `OnServiceFailed` cannot hide the failure. The observer
+  set is snapshotted by `RunAsync`, not by `ScopeRun.Create`. `InitContext.DegradedServices` is an
+  immutable snapshot per read (enumerating it across an `await` threw "Collection was modified").
+  `GetStatus()` shares dependency-name lists and terminal snapshots instead of allocating them per poll.
+  Scope disposal retries are bounded at 64 attempts, with a diagnostic when the bound is exhausted;
+  distinct disposables throwing the same exception object still allow teardown to continue, and
+  identical failures are logged once plus a count. A re-entrant `ScopeRun.DisposeAsync` joins the teardown in flight.
+- **Entry points on VContainer 1.19.** The fork's `EnsureDispatcherRegistered` registers
+  `Debug.LogException` as the handler of any scope without one, which made session `IInitializable`
+  failures (and global ones, with `UseEntryPoints`) log instead of failing the build. The host now
+  registers its collector in every scope it composes, before the installer; a consumer handler still
+  supersedes it (its entry is replaced, since 1.15.3 refuses two), a consumer handler of a parent scope
+  stays in charge of the session, and a parent handler that is exactly `Debug.LogException` is not
+  mistaken for a consumer's.
+- **Graph discovery.** A walk through plain registrations yields each node once and is memoised per
+  registration and effective construction scope, so diamond lattices no longer cost their number of paths; edge de-duplication is O(1).
+  `[Key(x)]` members (1.19 fork) depend on the keyed registration. A lookup that throws while edges are
+  derived is no edge, leaving the construction error in charge. Instance and factory registrations no
+  longer get edges from `[Inject]` members VContainer never injects into them (false cycles). A child
+  service injecting a parent's `RegisterComponentInHierarchy` component — Scoped on 1.15.3, so VContainer
+  would re-inject the scene component into the child and dispose it with it — is a graph error.
+  Inherited singleton construction follows the actual resolving scope; recreated parent services are
+  rejected before child construction. Injected overloads retain distinct keyed edges, and local
+  collections exclude parent singleton elements the same way VContainer does.
+- **Documentation.** The README no longer calls any fork of 1.15.3's API a safe drop-in; it lists the
+  patterns that end the transitive walk and need `[DependsOn]` (factories, instances, the fork's
+  `RegisterFromResolve`, delegate `WithParameter`), and the cases that wait forever with an infinite
+  `CancellationGrace`.
+- **Test infrastructure.** `scripts/run_unity_editmode_tests.sh` takes `RUNTIMEFLOW_VCONTAINER=fork`
+  (temporary manifest swap, restored on every exit path), `RUNTIMEFLOW_TEST_CATEGORY`, and
+  `RUNTIMEFLOW_CHAOS_BATCHES` for the opt-in chaos sweep; the regular EditMode run keeps a fast chaos
+  subset. A stale results file can no longer be reported as the current run's. Invalid explicit chaos
+  ranges, missing results and runs that execute no tests fail. Disposing child runs remain tracked until
+  completion, while weak scope identity rejects their reuse afterwards; host status preserves `HaltedBy`.
 
 ### Removed
 
@@ -228,6 +358,9 @@ Everything below existed in 0.x and no longer exists. Nothing is `[Obsolete]`; t
   RuntimeFlow does not use and does not ship, and Unity would otherwise flag it as a missing reference.
   The dead `Assets/Packages/Microsoft.Extensions.DependencyInjection.Abstractions*` copy in the Unity
   test project has been deleted.
+- The same importer carries the define constraint `!RUNTIMEFLOW_EXTERNAL_MEL`: a project that already
+  ships Microsoft.Extensions.Logging.Abstractions (NuGetForUnity) defines `RUNTIMEFLOW_EXTERNAL_MEL` and
+  RuntimeFlow compiles against that copy instead of failing with duplicate precompiled assemblies.
 
 ## [0.9.0] - 2026-08-22
 

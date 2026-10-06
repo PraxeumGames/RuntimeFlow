@@ -232,20 +232,41 @@ namespace RuntimeFlow.Testing
         {
             var stub = _state.Stub;
             if (stub == null) return;
+            // Interface dispatch covers both implicit and explicit implementations: an explicit
+            // `Task IAsyncInitializable.InitializeAsync(...)` is invisible to GetMethod by name and
+            // the old lookup silently skipped the stub entirely.
+            if (stub is IAsyncInitializable initializable)
+            {
+                await initializable.InitializeAsync(context!, cancellationToken);
+                return;
+            }
             var method = stub.GetType().GetMethod("InitializeAsync", new[] { typeof(InitContext), typeof(CancellationToken) });
             if (method == null) return;
             if (method.Invoke(stub, new object?[] { context, cancellationToken }) is Task task)
                 await task;
         }
 
+        /// <summary>
+        /// What a stub-less member returns: a completed task for <see cref="Task"/> and <c>Task&lt;T&gt;</c>
+        /// (awaiting null would throw), the default for value types, null otherwise.
+        /// </summary>
+        private static object? DefaultResult(Type returnType)
+        {
+            if (returnType == typeof(void)) return null;
+            if (returnType == typeof(Task)) return Task.CompletedTask;
+            if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
+            {
+                var result = returnType.GetGenericArguments()[0];
+                var value = result.IsValueType ? Activator.CreateInstance(result) : null;
+                return typeof(Task).GetMethod(nameof(Task.FromResult))!.MakeGenericMethod(result).Invoke(null, new[] { value });
+            }
+            return returnType.IsValueType ? Activator.CreateInstance(returnType) : null;
+        }
+
         private object? InvokeStub(MethodInfo targetMethod, object?[]? args)
         {
             var stub = _state.Stub;
-            if (stub == null)
-            {
-                var returnType = targetMethod.ReturnType;
-                return returnType.IsValueType && returnType != typeof(void) ? Activator.CreateInstance(returnType) : null;
-            }
+            if (stub == null) return DefaultResult(targetMethod.ReturnType);
 
             try
             {

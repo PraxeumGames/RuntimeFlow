@@ -16,12 +16,14 @@ namespace RuntimeFlow.Internal
 
         private readonly TimeSpan _interval;
         private readonly Action _onTick;
+        private readonly Action<Exception> _onTickFailed;
         private CancellationTokenSource? _cts;
 
-        public StallWatch(TimeSpan interval, Action onTick)
+        public StallWatch(TimeSpan interval, Action onTick, Action<Exception> onTickFailed)
         {
             _interval = interval;
             _onTick = onTick;
+            _onTickFailed = onTickFailed;
         }
 
         /// <summary>Interval short enough to honour the smallest configured stall or timeout threshold.</summary>
@@ -37,7 +39,9 @@ namespace RuntimeFlow.Internal
                 {
                     var node = nodes[i];
                     if (node.UserGated || node.TimeoutSeconds <= 0) continue;
-                    interval = Min(interval, Divide(TimeSpan.FromSeconds(node.TimeoutSeconds * options.TimeoutMultiplier)));
+                    // Compared in seconds: a huge timeout must not overflow TimeSpan on its way to the minimum.
+                    var quarter = node.TimeoutSeconds * options.TimeoutMultiplier / 4;
+                    if (quarter < interval.TotalSeconds) interval = TimeSpan.FromSeconds(quarter);
                 }
             }
 
@@ -75,7 +79,11 @@ namespace RuntimeFlow.Internal
                 }
 
                 if (token.IsCancellationRequested) return;
-                _onTick();
+
+                // The loop is fire-and-forget: an exception escaping here would silently end every later
+                // timeout and stall warning of the run, so a failing tick is reported and the loop goes on.
+                try { _onTick(); }
+                catch (Exception exception) { _onTickFailed(exception); }
             }
         }
 

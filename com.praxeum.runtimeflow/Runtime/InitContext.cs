@@ -9,6 +9,7 @@ namespace RuntimeFlow
     /// </summary>
     public sealed class InitContext
     {
+        private readonly Func<IReadOnlyCollection<string>> _degradedServices;
         private readonly Action<string> _halt;
         private readonly Action<float> _reportProgress;
         private bool _abandoned;
@@ -17,14 +18,14 @@ namespace RuntimeFlow
             string scope,
             bool isRestart,
             int generation,
-            IReadOnlyCollection<string> degradedServices,
+            Func<IReadOnlyCollection<string>> degradedServices,
             Action<string> halt,
             Action<float> reportProgress)
         {
             Scope = scope;
             IsRestart = isRestart;
             Generation = generation;
-            DegradedServices = degradedServices;
+            _degradedServices = degradedServices;
             _halt = halt;
             _reportProgress = reportProgress;
         }
@@ -39,19 +40,24 @@ namespace RuntimeFlow
         public int Generation { get; }
 
         /// <summary>
-        /// Names of optional services that have degraded, as a live view: the ones that failed so far in
-        /// this run plus the ones a parent scope (global, typically) already reported.
+        /// Names of optional services that have degraded so far: the ones that failed in this run plus the
+        /// ones a parent scope (global, typically) already reported. Every read returns an immutable
+        /// snapshot — safe to enumerate across an <c>await</c> or from another thread while further services
+        /// degrade — so read the property again to see later degradations.
         /// </summary>
-        public IReadOnlyCollection<string> DegradedServices { get; }
+        public IReadOnlyCollection<string> DegradedServices => _degradedServices();
 
         /// <summary>
         /// Stops the run gracefully without an exception and without a restart; the first call wins.
         /// </summary>
         /// <param name="reason">Short machine-readable reason, surfaced as <see cref="StartupResult.HaltReason"/>.</param>
+        /// <exception cref="ArgumentException"><paramref name="reason"/> is null or empty.</exception>
         public void Halt(string reason)
         {
             ThrowIfAbandoned();
-            _halt(reason ?? string.Empty);
+            if (string.IsNullOrEmpty(reason))
+                throw new ArgumentException("Halt reason must be a non-empty machine-readable string.", nameof(reason));
+            _halt(reason);
         }
 
         /// <summary>

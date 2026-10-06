@@ -36,5 +36,11 @@ namespace RuntimeFlow
 
         /// <summary>The run failed; <paramref name="error"/> carries every collected failure.</summary>
         void OnRunFailed(string scope, RuntimeFlowException error) { }
+
+        /// <summary>
+        /// The run was cancelled: by the caller's token, by <see cref="ScopeRun.CancelAsync"/> or teardown,
+        /// or by the host replacing it (a restart, the application quitting).
+        /// </summary>
+        void OnRunCancelled(string scope) { }
     }
 }

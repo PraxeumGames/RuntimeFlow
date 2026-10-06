@@ -56,15 +56,39 @@ namespace RuntimeFlow.Testing
         /// <paramref name="instance"/>, which also joins the initialization graph when it is an
         /// <see cref="IAsyncInitializable"/>.
         /// </summary>
+        /// <remarks>
+        /// The same instance is registered again every time its scope is built: a session override
+        /// survives restarts as one object that is initialized once per generation (and disposed in
+        /// between when it is <see cref="IAsyncDisposable"/>), with its counters carried over. Use the
+        /// <see cref="Override{T}(Func{T})"/> overload for a fresh instance per build.
+        /// </remarks>
         public TestFlow Override<T>(T instance) where T : class
         {
             if (instance == null) throw new ArgumentNullException(nameof(instance));
+            return AddOverride(typeof(T), builder => RegisterOverride(builder, instance));
+        }
+
+        /// <summary>
+        /// Replaces every registration exposing <typeparamref name="T"/> with an instance created by
+        /// <paramref name="factory"/> each time its scope is built, so every session generation of a
+        /// restart test gets a fresh object.
+        /// </summary>
+        public TestFlow Override<T>(Func<T> factory) where T : class
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
             return AddOverride(typeof(T), builder =>
             {
-                var registration = builder.RegisterInstance(instance).As(typeof(T));
-                if (instance is IAsyncInitializable && typeof(T) != typeof(IAsyncInitializable))
-                    registration.As<IAsyncInitializable>();
+                var instance = factory() ?? throw new InvalidOperationException(
+                    $"The Override<{typeof(T).Name}> factory returned null.");
+                RegisterOverride(builder, instance);
             });
+        }
+
+        private static void RegisterOverride<T>(IContainerBuilder builder, T instance) where T : class
+        {
+            var registration = builder.RegisterInstance(instance).As(typeof(T));
+            if (instance is IAsyncInitializable && typeof(T) != typeof(IAsyncInitializable))
+                registration.As<IAsyncInitializable>();
         }
 
         /// <summary>
@@ -125,10 +149,15 @@ namespace RuntimeFlow.Testing
             try
             {
                 using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                using (var timer = new CancellationTokenSource())
                 {
+                    // The timer has its own source: a caller cancellation must surface as the startup's
+                    // OperationCanceledException, not complete the delay and read as a timeout.
                     var startup = _host.StartAsync(deadline.Token);
-                    var expiry = Task.Delay(_startupTimeout, deadline.Token);
+                    var expiry = Task.Delay(_startupTimeout, timer.Token);
                     var finished = await Task.WhenAny(startup, expiry);
+                    timer.Cancel();
+                    Forget(expiry);
                     if (!ReferenceEquals(finished, startup))
                     {
                         var status = _host.GetStatus();
@@ -138,8 +167,6 @@ namespace RuntimeFlow.Testing
                             $"Startup did not finish within {Seconds(_startupTimeout)}. {Render(status)}");
                     }
 
-                    deadline.Cancel();
-                    Forget(expiry);
                     Result = await startup;
                 }
             }
@@ -221,7 +248,8 @@ namespace RuntimeFlow.Testing
         }
 
         private static void Forget(Task task)
-            => task.ContinueWith(finished => _ = finished.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            => task.ContinueWith(finished => _ = finished.Exception,
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
 
         private static string Render(RuntimeFlowStatus status)
         {

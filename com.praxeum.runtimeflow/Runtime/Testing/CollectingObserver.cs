@@ -53,5 +53,8 @@ namespace RuntimeFlow.Testing
 
         /// <inheritdoc />
         public void OnRunFailed(string scope, RuntimeFlowException error) => _events.Add($"run-failed:{scope}:{error.Service}");
+
+        /// <inheritdoc />
+        public void OnRunCancelled(string scope) => _events.Add($"run-cancelled:{scope}");
     }
 }

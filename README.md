@@ -21,7 +21,7 @@ Design rationale and exact message formats: [`docs/DESIGN.md`](docs/DESIGN.md).
 |---|---|
 | `com.praxeum.runtimeflow/` | The UPM package. `Runtime/` — public API (namespace `RuntimeFlow`); `Runtime/Internal/` — graph builder and scheduler; `Runtime/Testing/` — test harness, compiled only under `UNITY_INCLUDE_TESTS`; `Editor/` — the dashboard window; `Runtime/Plugins/` — the Microsoft.Extensions.Logging.Abstractions assembly. |
 | `RuntimeFlow.UnityTests/` | Unity project holding the authoritative test suite (`Assets/Tests`, EditMode and PlayMode) and the demo (`Assets/Demo`) that exercises the broken-flow cases. |
-| `scripts/` | `run_unity_editmode_tests.sh [playmode]`, `check_package_namespaces.sh`, `check_docs_types.sh`. |
+| `scripts/` | `run_unity_editmode_tests.sh [playmode]` (options `RUNTIMEFLOW_TEST_FILTER`, `RUNTIMEFLOW_VCONTAINER=fork`, `RUNTIMEFLOW_CHAOS_BATCHES`), `check_package_namespaces.sh`, `check_docs_types.sh`. |
 | `docs/` | [`docs/DESIGN.md`](docs/DESIGN.md) and the allowlist used by the docs gate. |
 
 There is no solution file, no `dotnet` build and no source generator; tests run only inside Unity.
@@ -50,7 +50,9 @@ above the project fails to compile with unresolved `VContainer` references. The 
 `hadashiA/VContainer`, tag 1.15.3, referenced by commit SHA
 (`f2afd2ac175a1e04ac59a8f69794df827b53b732`) so the resolved API is exactly the one the suite runs
 against. A project that already ships its own VContainer — a fork, a registry copy or an embedded one —
-keeps it and omits the second line, as long as it is a superset of 1.15.3. CI asserts that the SHA in
+keeps it and omits the second line, as long as its API is a superset of 1.15.3's — which says nothing
+about its behaviour, so run the suite against it (see [Development](#development); the Bezarius 1.19.0
+fork sfs-client ships is covered by `RUNTIMEFLOW_VCONTAINER=fork`). CI asserts that the SHA in
 `com.praxeum.runtimeflow/package.json` and the one in `RuntimeFlow.UnityTests/Packages/manifest.json`
 never drift apart.
 
@@ -127,6 +129,30 @@ RUNTIMEFLOW_TEST_FILTER=RuntimeFlow.Tests.Failure UNITY_BIN=... scripts/run_unit
 
 Results land in `RuntimeFlow.UnityTests/TestResults/`, the editor log in `RuntimeFlow.UnityTests/Logs/`.
 
+Against the VContainer fork sfs-client ships (Bezarius, 1.19.0, pinned by SHA in the script), for one
+run only — the script swaps the test project's `Packages/manifest.json` entry, drops the lock entry, and
+restores both files on every exit path, Ctrl-C included:
+
+```bash
+RUNTIMEFLOW_VCONTAINER=fork UNITY_BIN=... scripts/run_unity_editmode_tests.sh            # EditMode
+RUNTIMEFLOW_VCONTAINER=fork UNITY_BIN=... scripts/run_unity_editmode_tests.sh playmode   # PlayMode
+# offline: point at a local copy instead of the git URL (never committed)
+RUNTIMEFLOW_VCONTAINER=fork RUNTIMEFLOW_VCONTAINER_FORK=file:/path/to/jp.hadashikick.vcontainer@033b44e9f30d \
+  UNITY_BIN=... scripts/run_unity_editmode_tests.sh
+```
+
+The restart chaos fixture runs 75 seeds (three batches) plus the fixed sfs-client chains in every
+EditMode run. A full sweep is opt-in (about one second per seed):
+
+```bash
+RUNTIMEFLOW_CHAOS_BATCHES=0,30 RUNTIMEFLOW_TEST_FILTER=RuntimeFlow.Tests.Lifecycle.RestartChaosTests \
+  UNITY_BIN=... scripts/run_unity_editmode_tests.sh      # seeds 0-749, batches of 25
+```
+
+An explicit range must have a nonnegative first batch, a positive count and seeds within the integer
+range. Empty or invalid values fail before Unity starts. Missing results and runs that execute no tests
+also fail instead of reporting success.
+
 ## CI
 
 - **Package gate** runs on every push and pull request and needs no Unity: the namespace/layout guard,
@@ -143,7 +169,8 @@ Results land in `RuntimeFlow.UnityTests/TestResults/`, the editor log in `Runtim
 - Unity `2022.3` or newer is declared in `package.json`; the suite is validated on 2022.3.62f2 locally
   and in CI. 2022.2 is the floor for the UI Toolkit API the dashboard uses; older editors are not
   supported.
-- VContainer 1.15.3 or newer (upstream, or a fork that is a superset of it), declared in the consuming
+- VContainer 1.15.3 or newer (upstream, or a fork whose API is a superset of it; validated against
+  upstream 1.15.3 and the Bezarius 1.19.0 fork), declared in the consuming
   project's own `Packages/manifest.json` — see [Install](#install).
 - The package is compiled with nullable reference types enabled and uses default interface members
   (`IRuntimeFlowObserver`). On Unity 2022.3+ both API compatibility levels — ".NET Standard" (2.1) and

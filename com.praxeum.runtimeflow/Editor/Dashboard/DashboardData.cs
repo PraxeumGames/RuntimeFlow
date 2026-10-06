@@ -236,7 +236,7 @@ namespace RuntimeFlow.Editor
                 ElapsedMs = Finite(aggregate.Elapsed.TotalMilliseconds),
                 RestartCount = host.RestartCount,
                 Generation = host.Generation,
-                CanRestart = host.SessionRun != null && !host.IsQuitting,
+                CanRestart = host.CanRestart,
                 Live = true,
                 HaltReason = aggregate.HaltReason ?? string.Empty,
                 Describe = host.Describe()
