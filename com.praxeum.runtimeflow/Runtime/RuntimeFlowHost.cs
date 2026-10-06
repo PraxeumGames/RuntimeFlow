@@ -48,6 +48,7 @@ namespace RuntimeFlow
         private readonly ILogger _logger;
         private readonly bool _ownsGlobal;
         private readonly List<ChildRun> _childRuns = new List<ChildRun>();
+        private readonly List<Construction> _constructions = new List<Construction>();
         private readonly List<Exception> _entryPointErrors = new List<Exception>();
         private readonly List<RestartRequest> _restarts = new List<RestartRequest>();
         private readonly ConditionalWeakTable<IScopedObjectResolver, object> _retiredSessions =
@@ -343,6 +344,7 @@ namespace RuntimeFlow
                 return AwaitFinalAsync(_current);
             }
 
+            StopConstructions(c => c.UnderSession);
             var running = _sessionRun?.State == RunState.Running;
             _logger.Info($"[RuntimeFlow] restart requested: '{reason}' (" +
                          (_sessionRun == null ? "no session: building one"
@@ -412,34 +414,44 @@ namespace RuntimeFlow
             // Create disposes its scope, so its identity must remain retired even without a child run.
             var identity = new ChildScopeIdentity(name);
             _childScopes.Add(scope, identity);
+            var construction = ReserveConstruction(scope, underSession);
             ScopeRun run;
-            try { run = ScopeRun.Create(scope, name, _options, parents, ownsScope: true); }
+            try
+            {
+                run = await ScopeRun.CreateAsync(scope, name, _options, parents, ownsScope: true);
+
+                // A constructor may stop the host or a parent. This attempt owns its own cleanup;
+                // joining the host teardown here would deadlock the host's reservation drain.
+                var refusal = _disposed ? "the host was disposed while its services were being constructed"
+                    : _quitting ? "the application is quitting"
+                    : _building || _pending ? "a restart was requested while its services were being constructed"
+                    : construction.StopRequested || parents.Any(p => p.State != RunState.Completed)
+                        ? "a parent scope stopped while its services were being constructed"
+                    : null;
+                if (refusal != null)
+                {
+                    await run.DisposeAsync();
+                    throw new InvalidOperationException($"Scope '{name}' was refused: {refusal}. Create a new child scope once the host is idle.");
+                }
+
+                var child = new ChildRun(run, scope, underSession);
+                run.Disposing = _ =>
+                {
+                    identity.Retired = true;
+                    StopConstructions(c => IsDescendant(c.Scope, scope));
+                    foreach (var descendant in DescendantsOf(scope)) descendant.Run.Freeze();
+                };
+                run.DisposeDescendants = _ => DisposeDescendantRunsAsync(scope);
+                run.Disposed = _ => _childRuns.Remove(child);
+                _childRuns.Add(child);
+                identity.Constructing = false;
+            }
             catch
             {
                 identity.Retired = true;
                 throw;
             }
-
-            // Constructing the child's services ran user code: a constructor may have requested a restart
-            // (dooming the session this child would run on), disposed the host, or the application may be
-            // quitting. The child is not registered yet, so nothing else would freeze or cancel it.
-            var refusal = _disposed ? "the host was disposed while its services were being constructed"
-                : _quitting ? "the application is quitting"
-                : _building || _pending ? "a restart was requested while its services were being constructed"
-                : parents.Any(p => p.State != RunState.Completed) ? "a parent scope stopped while its services were being constructed"
-                : null;
-            if (refusal != null)
-            {
-                identity.Retired = true;
-                await run.DisposeAsync();
-                throw new InvalidOperationException($"Scope '{name}' was refused: {refusal}. Create a new child scope once the host is idle.");
-            }
-
-            var child = new ChildRun(run, scope, underSession);
-            run.Disposing = _ => identity.Retired = true;
-            run.Disposed = _ => _childRuns.Remove(child);
-            _childRuns.Add(child);
-            identity.Constructing = false;
+            finally { CompleteConstruction(construction); }
             await run.RunAsync(false, Generation, cancellationToken);
             return run;
         }
@@ -465,12 +477,15 @@ namespace RuntimeFlow
             if (global != null) Merge(global, services, running, ref completed);
             if (session != null) Merge(session, services, running, ref completed);
 
+            double maxWeight = 0;
+            foreach (var service in services) maxWeight = Math.Max(maxWeight, service.Weight);
             double weight = 0, done = 0;
             foreach (var service in services)
             {
-                weight += service.Weight;
-                if (service.State == ServiceState.Completed || service.State == ServiceState.Degraded) done += service.Weight;
-                else if (service.State == ServiceState.Running) done += service.Weight * service.Progress;
+                var normalizedWeight = maxWeight > 0 ? service.Weight / maxWeight : 0;
+                weight += normalizedWeight;
+                if (service.State == ServiceState.Completed || service.State == ServiceState.Degraded) done += normalizedWeight;
+                else if (service.State == ServiceState.Running) done += normalizedWeight * service.Progress;
             }
 
             var percent = weight > 0
@@ -512,6 +527,7 @@ namespace RuntimeFlow
         private async Task DisposeCoreAsync()
         {
             _disposed = true;
+            StopConstructions(_ => true);
             _quitHook.Detach();
 
             // Nothing of any run starts once DisposeAsync was called: freeze every run up front — the child
@@ -529,6 +545,9 @@ namespace RuntimeFlow
             if (_sessionRun?.State == RunState.Running) _ = _sessionRun.CancelAsync();
             if (_globalRun?.State == RunState.Running) _ = _globalRun.CancelAsync();
 
+            // Construction rollback has no cancellation grace: parent resources must remain alive
+            // until every owned asynchronous cleanup finishes, even if initialization was abandoned.
+            await DrainConstructionsAsync(_ => true);
             await AbandonChainAsync();
             await DisposeChildRunsAsync(sessionOnly: false);
 
@@ -556,6 +575,7 @@ namespace RuntimeFlow
         {
             if (_quitting || _disposed) return;
             _quitting = true;
+            StopConstructions(_ => true);
             _logger.Info("[RuntimeFlow] the application is quitting: cancelling the current run and refusing restarts.");
             // Child runs too: one frozen by an accepted restart is otherwise never cancelled when the quit
             // stops that restart before it disposes them, and its awaiter would never complete.
@@ -580,6 +600,48 @@ namespace RuntimeFlow
             "global services are not rebuilt by RestartAsync, only the session is. Do not wait on your token after " +
             "requesting a restart from the global scope: nothing cancels it, and the startup would never finish.";
 
+        private async Task<ScopeRun> BuildGlobalAsync()
+        {
+            var construction = ReserveConstruction(_global, underSession: false);
+            var graphOwnsScope = false;
+            ScopeRun? run = null;
+            try
+            {
+                if (_ownsGlobal)
+                {
+                    var builder = new ContainerBuilder();
+                    // Build callbacks and entry-point construction may throw before Build returns.
+                    // Capture first, before the installer can append any callback or dispatcher.
+                    // The provisional resolver stays private to its construction reservation.
+                    builder.RegisterBuildCallback(resolver => construction.Scope = resolver);
+                    var collector = Compose(builder, _globalInstaller!, "global", null);
+                    _entryPointErrors.Clear();
+                    _collecting = collector;
+                    try { _global = builder.Build(); }
+                    finally { _collecting = null; }
+                    construction.Scope = _global;
+                    ThrowOnEntryPointErrors("global");
+                }
+                graphOwnsScope = _ownsGlobal;
+                run = await ScopeRun.CreateAsync(_global!, "global", _options, null, _ownsGlobal, disposesServices: _ownsGlobal);
+                run.DisposesServices = _ownsGlobal;
+                ThrowIfAborted();
+                if (construction.StopRequested)
+                    throw new OperationCanceledException("The global scope was stopped while its services were being constructed.");
+                return run;
+            }
+            catch
+            {
+                var failedScope = _global ?? construction.Scope;
+                if (run != null) await DisposeRunQuietlyAsync(run);
+                else if (_ownsGlobal && !graphOwnsScope && failedScope != null)
+                    await ScopeRun.ReleaseCreatedGraphAsync(failedScope, "global", _options);
+                if (_ownsGlobal) _global = null;
+                throw;
+            }
+            finally { CompleteConstruction(construction); }
+        }
+
         private async Task<StartupResult> StartCoreAsync(CancellationToken cancellationToken)
         {
             _building = true;
@@ -594,19 +656,7 @@ namespace RuntimeFlow
                     StartupResult globalResult;
                     try
                     {
-                        if (_ownsGlobal)
-                        {
-                            var builder = new ContainerBuilder();
-                            var collector = Compose(builder, _globalInstaller!, "global", null);
-                            _entryPointErrors.Clear();
-                            _collecting = collector;
-                            try { _global = builder.Build(); }
-                            finally { _collecting = null; }
-                            ThrowOnEntryPointErrors("global");
-                        }
-
-                        _globalRun = ScopeRun.Create(_global!, "global", _options, null, _ownsGlobal);
-                        _globalRun.DisposesServices = _ownsGlobal;
+                        _globalRun = await BuildGlobalAsync();
                         globalResult = await _globalRun.RunAsync(false, 0, cancellationToken);
                         _globalDegraded = globalResult.Degraded;
                     }
@@ -657,6 +707,9 @@ namespace RuntimeFlow
                 await Task.Yield();
                 ThrowIfAborted();
 
+                StopConstructions(c => c.UnderSession);
+                await DrainConstructionsAsync(c => c.UnderSession);
+                ThrowIfAborted();
                 var previous = _sessionRun;
                 if (previous != null)
                 {
@@ -687,7 +740,7 @@ namespace RuntimeFlow
         /// Builds the session scope, publishes it and starts its run — synchronously, so no request can
         /// ever observe a built session whose run has not started.
         /// </summary>
-        private Task<StartupResult> StartSession(bool isRestart, CancellationToken cancellationToken)
+        private async Task<StartupResult> StartSession(bool isRestart, CancellationToken cancellationToken)
         {
             if (_pending)
             {
@@ -704,40 +757,48 @@ namespace RuntimeFlow
 
             _sessionBuildError = null;
             IScopedObjectResolver? scope = null;
-            ScopeRun session;
+            ScopeRun? session = null;
+            var construction = ReserveConstruction(null, underSession: true);
+            var graphOwnsScope = false;
             try
             {
                 _entryPointErrors.Clear();
                 var consumer = ConsumerHandlerOf(_global);
-                try { scope = Global.CreateScope(builder => _collecting = Compose(builder, _sessionInstaller, "session", consumer)); }
-                finally { _collecting = null; }
-
                 try
                 {
-                    ThrowOnEntryPointErrors("session");
+                    scope = Global.CreateScope(builder =>
+                    {
+                        builder.RegisterBuildCallback(resolver => construction.Scope = resolver);
+                        _collecting = Compose(builder, _sessionInstaller, "session", consumer);
+                    });
                 }
-                catch (Exception)
-                {
-                    DisposeQuietly(scope, "session");
-                    throw;
-                }
+                finally { _collecting = null; }
 
-                // A failing Create disposes the scope it was going to own.
-                session = ScopeRun.Create(scope, "session", _options, new[] { _globalRun! }, ownsScope: true);
+                construction.Scope = scope;
+                ThrowOnEntryPointErrors("session");
+                graphOwnsScope = true;
+                session = await ScopeRun.CreateAsync(scope, "session", _options, new[] { _globalRun! }, ownsScope: true);
+                ThrowIfAborted();
+                if (construction.StopRequested)
+                    throw new OperationCanceledException("The session was stopped while its services were being constructed.");
+                session.RestartCount = RestartCount;
+                _session = scope;
+                _sessionRun = session;
+                _building = false;
             }
             catch (Exception exception)
             {
-                // A failed build leaves no half-published session behind: the host reports Failed and the
-                // next RestartAsync builds a fresh one.
-                _sessionBuildError = exception;
+                if (!_disposed && !_quitting) _sessionBuildError = exception;
+                // Finish this attempt's own cleanup before releasing construction or chain awaiters.
+                var failedScope = scope ?? construction.Scope;
+                if (session != null) await DisposeRunQuietlyAsync(session);
+                else if (!graphOwnsScope && failedScope != null)
+                    await ScopeRun.ReleaseCreatedGraphAsync(failedScope, "session", _options, new[] { _globalRun! });
                 DisposeSessionToken();
+                AbortChain();
                 throw;
             }
-
-            session.RestartCount = RestartCount;
-            _session = scope;
-            _sessionRun = session;
-            _building = false;
+            finally { CompleteConstruction(construction); }
 
             if (_pending)
             {
@@ -752,7 +813,7 @@ namespace RuntimeFlow
 
             // The generation counts as started before its first InitializeAsync: a synchronous request
             // from it finds a published, running session and opens a new generation instead of joining it.
-            return session.RunAsync(isRestart, Generation, cancellationToken);
+            return await session.RunAsync(isRestart, Generation, cancellationToken);
         }
 
         /// <summary>Resets the restart state machine after a chain failed or was aborted before its session ran.</summary>
@@ -1188,6 +1249,73 @@ namespace RuntimeFlow
             }
         }
 
+        private Construction ReserveConstruction(IObjectResolver? scope, bool underSession)
+        {
+            var construction = new Construction(scope, underSession);
+            _constructions.Add(construction);
+            return construction;
+        }
+
+        private void CompleteConstruction(Construction construction)
+        {
+            _constructions.Remove(construction);
+            construction.Completion.TrySetResult(true);
+        }
+
+        private void StopConstructions(Func<Construction, bool> matches)
+        {
+            foreach (var construction in _constructions.ToArray())
+                if (matches(construction)) construction.StopRequested = true;
+        }
+
+        private async Task DrainConstructionsAsync(Func<Construction, bool> matches)
+        {
+            foreach (var construction in _constructions.ToArray())
+                if (matches(construction)) await construction.Completion.Task;
+        }
+
+        private static bool IsDescendant(IObjectResolver? scope, IScopedObjectResolver parent)
+        {
+            var ancestor = (scope as IScopedObjectResolver)?.Parent;
+            while (ancestor != null)
+            {
+                if (ReferenceEquals(ancestor, parent)) return true;
+                ancestor = ancestor.Parent;
+            }
+            return false;
+        }
+
+        private ChildRun[] DescendantsOf(IScopedObjectResolver parent)
+        {
+            var descendants = new List<ChildRun>();
+            foreach (var child in _childRuns.ToArray())
+            {
+                var ancestor = child.Scope.Parent;
+                while (ancestor != null)
+                {
+                    if (ReferenceEquals(ancestor, parent))
+                    {
+                        descendants.Add(child);
+                        break;
+                    }
+                    ancestor = ancestor.Parent;
+                }
+            }
+            return descendants.ToArray();
+        }
+
+        private async Task DisposeDescendantRunsAsync(IScopedObjectResolver parent)
+        {
+            StopConstructions(c => IsDescendant(c.Scope, parent));
+            var descendants = DescendantsOf(parent);
+            // Cancel every descendant before waiting for any one cleanup. Already disposing descendants
+            // retain their tracking and share their teardown task until all their dependencies are safe.
+            foreach (var descendant in descendants) _ = descendant.Run.CancelAsync();
+            await DrainConstructionsAsync(c => IsDescendant(c.Scope, parent));
+            for (var i = descendants.Length - 1; i >= 0; i--)
+                await DisposeRunQuietlyAsync(descendants[i].Run);
+        }
+
         private async Task DisposeRunQuietlyAsync(ScopeRun run)
         {
             try
@@ -1341,6 +1469,20 @@ namespace RuntimeFlow
 
             /// <summary>True when the scope descends from the session, so a restart disposes it.</summary>
             public bool UnderSession { get; }
+        }
+
+        private sealed class Construction
+        {
+            public Construction(IObjectResolver? scope, bool underSession)
+            {
+                Scope = scope;
+                UnderSession = underSession;
+            }
+            public IObjectResolver? Scope { get; set; }
+            public bool UnderSession { get; }
+            public bool StopRequested { get; set; }
+            public TaskCompletionSource<bool> Completion { get; } =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
         }
 
         private sealed class ChildScopeIdentity

@@ -23,18 +23,21 @@ namespace RuntimeFlow.Editor
             Add(_content);
         }
 
-        /// <summary>Raised with the scope name when a card is clicked.</summary>
+        /// <summary>Raised with the captured run identity when a card is clicked.</summary>
         public event Action<string>? ScopeSelected;
 
         /// <summary>Rebuilds the cards from a new snapshot.</summary>
         /// <param name="snapshot">The current snapshot, or null when no host is selected.</param>
         public void Refresh(DashboardSnapshot? snapshot)
         {
+            snapshot?.EnsureIdentities();
             _snapshot = snapshot;
             // Rebuilt wholesale on every tick, so keep the reader where they were scrolled to.
             var scroll = _content.scrollOffset;
             _content.Clear();
             _content.schedule.Execute(() => _content.scrollOffset = scroll);
+
+            if (_snapshot?.HasError == true) _content.Add(ViewHelpers.HostFailure(_snapshot));
 
             if (_snapshot == null || _snapshot.Scopes.Count == 0)
             {
@@ -92,7 +95,7 @@ namespace RuntimeFlow.Editor
             card.Add(list);
 
             card.Add(ViewHelpers.Hint("Click to filter the Graph tab to this scope."));
-            card.RegisterCallback<ClickEvent>(_ => ScopeSelected?.Invoke(scope.Name));
+            card.RegisterCallback<ClickEvent>(_ => ScopeSelected?.Invoke(scope.Id));
             return card;
         }
     }

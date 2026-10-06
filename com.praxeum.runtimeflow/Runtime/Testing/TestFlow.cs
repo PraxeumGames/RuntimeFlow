@@ -123,10 +123,15 @@ namespace RuntimeFlow.Testing
             return this;
         }
 
-        /// <summary>Deadline for <see cref="StartAsync"/>; the default is 30 seconds.</summary>
+        /// <summary>
+        /// Bounds the asynchronous wait in <see cref="StartAsync"/>, including failed-startup cleanup;
+        /// the default is 30 seconds. Values must fit the timer's supported range (at most
+        /// <see cref="System.Int32.MaxValue"/> milliseconds). Synchronous installer/service code cannot be interrupted.
+        /// </summary>
         public TestFlow WithStartupTimeout(TimeSpan timeout)
         {
-            if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+            if (timeout <= TimeSpan.Zero || timeout > TimeSpan.FromMilliseconds(int.MaxValue))
+                throw new ArgumentOutOfRangeException(nameof(timeout), "Startup timeout must be positive and at most Int32.MaxValue milliseconds.");
             ThrowIfStarted();
             _startupTimeout = timeout;
             return this;
@@ -136,6 +141,12 @@ namespace RuntimeFlow.Testing
         /// Builds both scopes and runs their graphs, then returns this instance so it can be awaited and
         /// disposed in one expression.
         /// </summary>
+        /// <remarks>
+        /// Failure freezes the host and starts ordered cleanup immediately. Cleanup is awaited only until
+        /// the original startup deadline, after which it continues in the background and the startup error
+        /// is rethrown unchanged. A timed-out startup surfaces <see cref="TimeoutException"/> immediately;
+        /// an explicit <see cref="DisposeAsync"/> joins the same cleanup without a deadline.
+        /// </remarks>
         /// <exception cref="TimeoutException">Startup exceeded <see cref="WithStartupTimeout"/>; the message carries the status.</exception>
         /// <exception cref="InvalidOperationException">An override matched no registration in any scope.</exception>
         public async Task<TestFlow> StartAsync(CancellationToken cancellationToken = default)
@@ -146,36 +157,43 @@ namespace RuntimeFlow.Testing
                 builder => Install(builder, _sessionInstaller, "session"),
                 _options);
 
-            try
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            using (var timer = new CancellationTokenSource())
             {
-                using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-                using (var timer = new CancellationTokenSource())
+                var expiry = Task.Delay(_startupTimeout, timer.Token);
+                Task<StartupResult>? startup = null;
+                try
                 {
                     // The timer has its own source: a caller cancellation must surface as the startup's
                     // OperationCanceledException, not complete the delay and read as a timeout.
-                    var startup = _host.StartAsync(deadline.Token);
-                    var expiry = Task.Delay(_startupTimeout, timer.Token);
+                    startup = _host.StartAsync(deadline.Token);
                     var finished = await Task.WhenAny(startup, expiry);
-                    timer.Cancel();
-                    Forget(expiry);
                     if (!ReferenceEquals(finished, startup))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var status = _host.GetStatus();
-                        deadline.Cancel();
-                        Forget(startup);
                         throw new TimeoutException(
                             $"Startup did not finish within {Seconds(_startupTimeout)}. {Render(status)}");
                     }
 
                     Result = await startup;
                 }
-            }
-            catch (Exception)
-            {
-                // A failed startup still built containers, and an override mismatch throws before the
-                // global scope was ever handed back: without this the test would leak both.
-                await _host.DisposeAsync();
-                throw;
+                catch (Exception)
+                {
+                    // DisposeAsync freezes immediately and retains the entire ordered cleanup chain;
+                    // don't dispose containers or upstream dependencies independently of that chain.
+                    // Observe both tasks even when the deadline prevents waiting for them to finish.
+                    if (startup != null) Forget(startup);
+                    var cleanup = _host.DisposeAsync().AsTask();
+                    Forget(cleanup);
+                    if (!expiry.IsCompleted) await Task.WhenAny(cleanup, expiry);
+                    throw;
+                }
+                finally
+                {
+                    timer.Cancel();
+                    Forget(expiry);
+                }
             }
 
             return this;
@@ -200,7 +218,10 @@ namespace RuntimeFlow.Testing
         /// <summary>Resolves a service from the session scope (which sees the global one).</summary>
         public T Resolve<T>() => Session.Resolve<T>();
 
-        /// <summary>Disposes the host, tearing both scopes down in order.</summary>
+        /// <summary>
+        /// Disposes the host, tearing both scopes down in order, or joins cleanup that continued after
+        /// <see cref="StartAsync"/> failed. This explicit wait is not bounded by the startup deadline.
+        /// </summary>
         public async ValueTask DisposeAsync()
         {
             if (_host == null) return;

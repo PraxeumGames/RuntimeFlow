@@ -50,12 +50,28 @@ the middle of a chain does not let the rest of the chain overtake its upstream.
 
 Whatever can be validated without constructing a service is validated first: the options, the
 lifetimes, the `[Init]` values of every concretely registered type, and the parent-scope scene
-components a service would re-inject (below). A graph error found after construction (a cycle, an
-unknown `[DependsOn]` target, a bad `[Init]` on a factory product) releases what the build constructed —
-`IAsyncDisposable` services are disposed by the framework and the scope is disposed, which lets
-VContainer dispose the `IDisposable` ones — but only when the run was going to own the scope
+components a service would re-inject (below). Every owned build failure releases already-created graph
+services, including eager builder resolutions before an early validation error, an entry-point
+failure or a container build that throws before returning its resolver. Recovery reads successful
+local catalog cache entries without resolving untouched registrations. During a graph failure,
+graph-owned async cleanup and locally tracked synchronous cleanup follow the same dependency order,
+then the scope releases remaining container resources — but only when the run was going to own the scope
 (`ownsScope: true`). A caller-owned container (`RuntimeFlowHost.From`, `ScopeRun.Create` without
 `ownsScope`) keeps its singletons untouched: they are not the framework's to dispose.
+
+`ScopeRun.CreateAsync` awaits that owned rollback before rethrowing the original error. The synchronous
+`Create` starts the same ordered rollback and can throw while it is pending; ownership has transferred,
+so the caller must retire the failed resolver. Async service cleanup is awaited sequentially, once per
+instance, with known dependency edges keeping upstream services alive, then the resolver is disposed.
+Owned construction records linked parent graph instances and already-created ancestor cache/tracker
+instances, refreshing that evidence after failure and around cleanup callbacks. Child tracker aliases of those borrowed instances
+are detached before any rollback cleanup; those instances receive neither async nor synchronous
+child cleanup. Inspection never creates an instance; a cached null factory result is not an owned
+instance. Thus a rejected factory that returned a live parent object cannot cause rollback or the
+final child resolver drain to dispose that parent.
+Within an invalid dependency cycle no internal order can satisfy every edge; dependencies outside the
+cycle are retained until that group is released. The host reserves construction before running user
+code and joins pending rollback before disposing ancestors, independently of the initializer grace.
 
 Services of parent scopes become **external** nodes: they take part in edges and in `Describe()` and
 are never scheduled. That is what makes a session graph able to depend on global services without
@@ -123,9 +139,30 @@ the edges of its `[Inject] Construct(...)` method — for the registrations VCon
 injects by reflection only. An instance (`RegisterInstance`) or a factory product
 (`Register(resolver => …)`) is never member-injected by VContainer, so it contributes its constructor
 parameters and nothing else (an `[Inject]` field there would only invent edges, and false cycles). Both
-the runtime type of the resolved instance and `Registration.ImplementationType` are inspected, which is
+the runtime type of an instance/factory product and `Registration.ImplementationType` are inspected, which is
 how a decorator registered as `Register<I>(resolver => new Decorator(inner))` still contributes its
-edges.
+constructor edges. Reflected providers follow one bound injector: the registered implementation for
+ordinary and existing-component providers, the found runtime subtype for hierarchy providers.
+Components contribute member injection only. Reading a hierarchy subtype uses its already-created
+VContainer cache entry, never a resolution; before first injection preflight knows only the declared
+type, and graph assembly checks the actual cached subtype. A reached custom nonsealed hierarchy
+registration with no created cache entry is refused when a parent's initialized identity could be
+recreated or re-injected from that child; without such an unsafe parent identity it remains allowed.
+An exact sealed type is inspectable before creation. Assembly also rejects a parent Scoped scene
+identity when a child cache entry proves injection was attempted. Existing-component and hierarchy
+providers can mutate the parent before throwing, so even a faulted entry counts without reading its
+value. An attempted hierarchy injection whose unknown subtype never produced a cached instance is
+also refused when child-cache evidence shows unsafe parent resolution. Providers that create a new
+object require a successfully created entry. Constructor
+metadata alone does not imply reinjection: an instance or closure factory can safely retain the
+initialized parent's object. Late inherited Singleton checks compare the created instance with the
+initialized parent's identity: a factory returning the same object is allowed unless the child's
+actual tracker also acquired its synchronous disposal. Existing-component injection attempts remain
+unsafe even for the same object. Reflected preflight still rejects prospective unsafe resolution
+before construction.
+That last defense cannot undo user code already run by opaque factories
+or eager VContainer build callbacks. Hidden base members omitted by the injector stay
+omitted rather than being revived by a second base-type scan.
 
 Each injected type is then resolved the way VContainer resolves it:
 
@@ -256,6 +293,12 @@ outcome and its service tokens.
 | Caller cancellation | The run's task completes cancelled; `OnRunCancelled` fires and an Info line reports it. |
 | Grace | A stopping run waits for the services still *in flight* — not for ones it already gave up on (timed out), which would stall every later stop for the whole grace. `ScopeRun.DisposeAsync` then waits for those too, again bounded by the grace, before it disposes them: teardown never disposes a service while it is still inside its `InitializeAsync`, within the grace. `Timeout.InfiniteTimeSpan` (or a value beyond what a timer can express) waits forever; zero does not wait; a negative value is rejected. `ScopeRun.CancelAsync`/`DisposeAsync` wait for a run that is already stopping (halt, failure) too. **With an infinite grace, a service that ignores its token makes `CancelAsync`, `DisposeAsync`, `RuntimeFlowHost.DisposeAsync` and every restart wait forever** — and a service that awaits its own `RestartAsync` deadlocks permanently instead of for one grace. |
 | Grace exceeded | Services still running after `CancellationGrace` are marked `Cancelled` and abandoned with an error line; teardown continues, and their `InitContext` throws `ObjectDisposedException` afterwards. A timed-out service still running when its run is disposed is reported the same way (`… still running 5.0s after cancellation: Catalog (timed out after 30.0s). …`) and disposed anyway. |
+
+A delayed watch tick settles already-completed initializer tasks rather than timing out successful
+work whose observation was queued behind it. Outcome publication is deferred through the whole expiry
+batch, including observer reentry, so timeout tokens are cancelled before a terminal run event. Raw
+unexpected cancellation that preceded the batch remains a failure. `ReportProgress(NaN)` is ignored
+without resetting the stall clock; finite weights are normalized before summation to avoid overflow.
 
 Message formats, verbatim:
 
@@ -469,39 +512,67 @@ would otherwise never be cancelled when the quit stops that restart before dispo
 new child scopes. A quit that tears the session down without a replacement leaves `State` `Cancelled`
 and a `Session` getter that says the application is quitting. Every iteration over the child runs works
 on a snapshot: a cancellation callback may dispose another child, which removes it from the list.
+Construction checks stop state after user constructors as well. Its reservation lasts until a run is
+published or failed/aborted cleanup finishes, not through initialization. Restart joins pending
+session constructions; host disposal joins all constructions before freeing their dependencies.
+These cleanup waits are not bounded by `CancellationGrace`, which bounds initializer drain only.
 
 Disposal order, top to bottom:
 
 1. Freeze the run (nothing new starts), yield, cancel it; wait out `CancellationGrace` (also when the
    run is already stopping); then wait, again up to the grace, for timed-out services still inside
    their `InitializeAsync`.
-2. `IAsyncDisposable.DisposeAsync()` on every constructed service in **reverse completion order**
-   (services that never started go last, in reverse registration order); failures are logged
-   (`disposing Foo threw InvalidOperationException; continuing teardown.`) and never rethrown.
-   Disposing everything the scope constructed mirrors VContainer disposing every `IDisposable`
-   registration: construction alone takes ownership. The services of a global supplied through
+2. Clean constructed instances **dependents before their dependencies**, including failed, cancelled
+   and unstarted services and dependency paths through phase barriers. Independent services keep
+   reverse completion order, then reverse registration order for services that never completed.
+   An owned scope combines graph-owned async services with already-created plain synchronous
+   registrations. At each physical instance, await its framework-owned async cleanup, then perform
+   its VContainer-owned synchronous cleanup. Remove matching tracker entries before calling it so
+   final resolver disposal cannot repeat it, even if it throws. Ownership comes from the actual local
+   tracker; registered instances and untracked transients do not acquire synchronous ownership.
+   Multiple registrations returning one instance share cleanup; distinct equal instances stay
+   distinct. Cleanup exceptions are logged (`disposing Foo threw InvalidOperationException;
+   continuing teardown.` for async cleanup, or `disposing Foo synchronously threw
+   InvalidOperationException; continuing teardown.` for synchronous cleanup), and other instances
+   still run. The global services supplied through
    `RuntimeFlowHost.From` are left alone — that container is its owner's.
 3. Dispose the service tokens and the run's cancellation sources; mark the generation abandoned, after
    which its `InitContext` throws `ObjectDisposedException`.
-4. `scope.Dispose()` when the run owns the scope. VContainer then disposes `IDisposable` registrations
-   in reverse creation order; one that throws is logged and the remaining ones are still disposed.
+4. Drain remaining locally tracked synchronous resources one entry at a time in VContainer's scope
+   order, preserving the same physical cleanup ledger. During failed construction, refresh ancestor
+   ownership before each callback so late aliases cannot release a parent. Once the trackers are
+   empty, `scope.Dispose()` clears the resolver's remaining state. Callback errors are logged and
+   other owned resources still run.
 
-The framework never calls `Dispose()` itself; synchronous disposal is VContainer's business and follows
-its dependency-correct order. A service implementing both `IAsyncDisposable` and `IDisposable` is
-therefore disposed twice — `DisposeAsync` by the framework, then `Dispose` by VContainer — and must
-tolerate it. Concurrent and re-entrant `DisposeAsync` calls (one from a disposal callback, say) share one
-teardown and all complete when it does. Every step runs even when an earlier one failed. A scope whose
+The owned root includes its Singleton tracker and root Scoped tracker; an owned child touches only
+its own caches and tracker. Inspection never resolves services or creates cache entries. A service
+owned asynchronously as a graph service and synchronously by the local tracker receives both calls
+and must tolerate them. Plain registrations retain synchronous ownership only. Concurrent and
+re-entrant `DisposeAsync` calls (one from a disposal callback, say) share one teardown and all complete
+when it does. Every step runs even when an earlier cleanup failed. A scope whose
 `Dispose()` throws is disposed again until it disposes cleanly (VContainer resumes with the next
 disposable), up to 64 attempts. Distinct disposables may throw the same exception object, so exception
 identity does not stop retries. Identical failures are logged once plus a count; exhausting the bound
 logs that remaining disposables could not be released.
+
+A caller-owned standalone scope retains synchronous ownership. Read-only validation before
+initialization rejects a local synchronous dependent that would need cleanup before a framework-owned
+async dependency. Use an owned scope, or expose the dependent as an `IAsyncInitializable` graph service
+and move its cleanup from `IDisposable` to `IAsyncDisposable`. An opaque
+factory or later ad hoc resolution can introduce such an edge after validation; the disposal recheck
+then faults with `InitGraphException` before releasing services and still releases run tokens. The
+caller completes the required cleanup order. This ownership violation differs from a user cleanup
+exception, which remains contained. `RuntimeFlowHost.From` leaves its borrowed global services intact
+and bypasses that validation.
 
 On the host, child runs go before the session and the session before the global run; a global container
 supplied through `RuntimeFlowHost.From` is never disposed. Child scopes (`InitializeScopeAsync`) follow
 their lineage: one below the session is disposed with it, by every restart; one below global is
 independent of the session, survives restarts and is disposed with the host. A child run disposed by
 its user remains tracked until teardown finishes, so a restart or host disposal awaits it before
-disposing its parent. Afterwards the host releases the run and retains only weak scope identity to
+disposing its parent. Direct child-parent disposal freezes its managed descendants synchronously,
+then cancels and joins their runs and pending construction cleanup before releasing parent resources;
+unmanaged intermediate scopes do not break the ancestry walk. Afterwards the host releases the run and retains only weak scope identity to
 reject another initialization of the same resolver or a child below that disposed scope.
 `InitializeScopeAsync` refuses (with `InvalidOperationException`) to
 start a child scope while a startup or restart is in flight, while any parent run has not `Completed` —
@@ -535,14 +606,22 @@ works, and degradation travels down the whole lineage.
   small. Every run ends in exactly one of `OnRunCompleted`, `OnRunHalted`, `OnRunFailed` or
   `OnRunCancelled`. Observers are wrapped: one that throws is logged and skipped. The observer set is
   snapshotted when the run starts (`RunAsync`, not `ScopeRun.Create`): an observer added between the two
-  receives the whole run, one added mid-run does not affect the run in flight.
+  receives the whole run, one added mid-run does not affect the run in flight. Reentrant notifications
+  are queued until the current observer fan finishes; a terminal run event follows all pending service
+  notifications.
 - **`FlowRegistry`** is the only static in the package holding runtime objects, it is
   diagnostics-only, it holds **weak** references, prunes them on read, and is cleared on
   `RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)`. Runtime logic never
   reads it; it exists so the editor dashboard can find live hosts without the runtime depending on an
   ambient singleton.
 - **JSON dump.** The dashboard serialises the current snapshot (scopes, services, states, timings,
-  errors) with escaping, so a bug report can carry the whole run as text.
+  errors) with escaping, so a bug report can carry the whole run as text. Per-run/node identities keep
+  selections and actual dependency links distinct across matching scope/service names. Host build
+  errors are flattened and retained even without a session service row; saved snapshots normalize
+  missing identity fields when loaded.
+- **Dashboard selection and history.** The selected host is held weakly by identity, so removing an
+  earlier registry entry cannot redirect a restart to another host. Last run prefers the stored final
+  snapshot; it shows an explicitly labelled live preview only when no stored snapshot exists.
 
 ## 5. Testing philosophy
 
@@ -568,6 +647,9 @@ works, and degradation travels down the whole lineage.
   read its `InterfaceTypes` and `ImplementationType`, drops the ones exposing the overridden type,
   forwards the rest untouched (lifetimes and parameters survive) and finally registers the replacement.
   No reflection, no internals. An override matching nothing fails the test by name.
+  Builder inspections are repeated after installer changes so later interface exposure is not hidden
+  by an earlier `Exists` query. `TestFlow` starts ordered cleanup immediately on failure and waits only
+  until the original startup deadline; cleanup continues afterwards and explicit disposal joins it.
 - **Exact messages.** Tests assert on the strings in this document, because a diagnostic that is not
   pinned degrades silently.
 - **Chaos, fast by default.** `RestartChaosTests` generates random global/session/child graphs whose

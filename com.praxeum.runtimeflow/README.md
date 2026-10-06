@@ -121,6 +121,19 @@ The walk uses the scope VContainer actually constructs each registration in: a c
 of the same implementation type can make an inherited singleton use the child's dependencies.
 If that would recreate a parent initializable service, the graph refuses it rather than treating the
 parent's initialized instance as the replacement. Distinct injected overloads keep distinct keyed edges.
+Component providers contribute injected members, not constructor parameters. Hierarchy components use
+the found object's runtime injector, including dependencies introduced by a subtype; other component
+providers use their registered implementation injector. Hidden base members that VContainer does not
+inject do not become graph edges. Inspection reads already-created hierarchy instances without resolving them.
+An attempted injection into an existing parent component is rejected even if it throws and a factory
+catches the error: the attempt may already have changed the parent object's dependencies.
+A factory returning the same initialized parent identity is allowed when the child does not also
+acquire its synchronous disposal ownership.
+A custom, uncreated hierarchy registration with a nonsealed declared type is refused when resolving
+from the child could recreate or re-inject a parent service: its unknown subtype cannot be checked
+safely. Use parent single-instance registrations without child implementation guards, or an exact
+sealed hierarchy type. Factories and VContainer build callbacks can already execute user code before
+graph validation; a later graph error cannot undo that code's effects.
 
 **Where the walk stops — add `[DependsOn]`.** Reflection sees what VContainer constructs, not what your
 code resolves. These patterns end the transitive walk, so a service behind them gets no edge to what they
@@ -164,7 +177,8 @@ below `host.Global` survives restarts and goes with the host. Initialize a child
 completed — the host refuses one while a startup or restart is in flight, or from a service of a parent
 scope that is still initializing. A grandchild scope sees every ancestor, including its parent child
 scope. A child being disposed stays tracked until its teardown completes, so its parent is released
-after it. The same child resolver cannot be initialized again, during or after disposal, and a
+after it. Directly disposing a managed child run also freezes and joins its managed descendants before
+releasing that child's services. The same child resolver cannot be initialized again, during or after disposal, and a
 descendant of that disposed child is refused. `ScopeRun.Create(resolver, name, options)` does the same for a resolver the host knows nothing
 about, so a standalone `LifetimeScope` or a headless test container works without a host.
 `RuntimeFlowHost.From(existingGlobal, sessionInstaller, options)` wraps a container somebody else built
@@ -188,11 +202,20 @@ session's entry points too (the session's handler forwards to it). Consequences 
   initialization, and in EditMode they never tick at all. When one of them throws later on the player
   loop, the host's handler logs it at Error with the exception — it never swallows it, and it never
   fails a later session build.
-- VContainer disposes `IDisposable` registrations when the scope is disposed, in reverse creation
-  order. RuntimeFlow retries a throwing scope disposal up to 64 attempts, logs identical failures
-  once plus a count, and reports if the bound leaves registrations undisposed. RuntimeFlow additionally
-  calls `IAsyncDisposable.DisposeAsync` on every service the scope constructed, started or not — a
-  service implementing both interfaces gets both calls.
+- In an owned scope, RuntimeFlow orders async service cleanup together with VContainer-owned
+  synchronous cleanup, including already-created plain dependencies. Dependents finish before their
+  dependencies, including failed, cancelled and unstarted services. Each physical instance is cleaned
+  once per owned interface. Async ownership covers graph services; a locally tracked graph service
+  implementing both gets its async call followed by its synchronous call. Plain registrations retain
+  their existing synchronous cleanup. Synchronous ownership comes from VContainer's tracker: registered instances and untracked
+  transient objects do not acquire it. Remaining container resources are released through scope
+  disposal, retried up to 64 attempts when it throws, with repeated failures logged once plus a count.
+- A standalone run over a caller-owned scope still leaves synchronous cleanup to that caller. A
+  synchronous dependent requiring earlier cleanup than an async service is a graph error before
+  initialization; use an owned scope, or expose that dependent as an `IAsyncInitializable` graph
+  service and move its cleanup from `IDisposable` to `IAsyncDisposable`.
+  Introducing an opaque dependent later is an ownership violation: disposal reports
+  `InitGraphException` before releasing services, while leaving caller resources intact.
 - Registering your own entry-point exception handler (`builder.RegisterEntryPointExceptionHandler(…)`)
   **supersedes** the host's collector: VContainer allows one handler per scope, so the host's entry is
   replaced by an inert one. From then on an `IInitializable` that throws is routed to your handler and no
@@ -234,13 +257,26 @@ negative or non-finite `Weight` / `TimeoutSeconds` / `TimeoutMultiplier`, a nega
 (and the exception its constructor threw) instead of surfacing one container exception for the whole
 scope. When the run starts, every required service that failed to construct is reported at once,
 before anything starts; an optional one degrades in its turn. Lifetimes, `[Init]` values and the
-scene-component rule are checked before anything is constructed. A graph error found after
-construction (a cycle, an unknown `[DependsOn]` target) releases what was constructed — `DisposeAsync` on
-`IAsyncDisposable` services, and the scope itself — only when the run was going to own the scope
+scene-component rule are checked before anything is constructed by the graph. Any owned build failure
+releases already-created graph services, including those resolved by builder callbacks before an
+early validation or entry-point error — `DisposeAsync` on `IAsyncDisposable` services, and the scope
+itself — only when the run was going to own the scope
 (`ownsScope: true`, the host's session and child scopes); a caller-owned container
 (`RuntimeFlowHost.From`, `ScopeRun.Create` without `ownsScope`) keeps its singletons untouched. A child
 scope whose service depends on a parent service that never initialized (a halt skipped it, it failed or
 was cancelled) fails that service at the start of the run instead of starting it on half a parent.
+
+`ScopeRun.CreateAsync` has the same arguments as `Create` and awaits owned failure cleanup before
+throwing the original graph error. Cleanup awaits services in dependent-first order where their edges
+are known, releases each instance once, and disposes the resolver last. Synchronous `Create` starts the
+same cleanup but may throw before it finishes. `ownsScope: true` transfers ownership immediately: after
+a failed build use a fresh resolver. The host uses the awaited path and keeps ancestor resources alive
+through pending construction cleanup, including during restart or disposal.
+Failure cleanup preserves known parent instances even if a factory cached or tracked the same object
+in the child: those child ownership entries are removed without releasing the parent's object.
+Ownership is checked around cleanup callbacks, including resources and aliases first created during
+cleanup. Planned and residual synchronous cleanup share one record of already released instances.
+Cached factory results that are `null` do not represent owned instances and do not interrupt cleanup.
 
 ## Progress and status
 
@@ -251,7 +287,8 @@ snapshot of a finished service and every dependency-name list are built once and
 weighted `Percent`, `Elapsed`, `RestartCount`, `HaltReason`, `HaltedBy`, `Error`. On the host, the
 snapshot spans both scopes and the percentage is weighted across all of them. A service refines its own
 share with `InitContext.ReportProgress(0f..1f)`; a report that arrives after the service finished is
-ignored. `InitContext.DegradedServices` returns an immutable snapshot on every read — safe to enumerate
+ignored, as is NaN (it does not reset the stall timer). Weighted sums are normalized so even large
+finite weights retain finite percentages. `InitContext.DegradedServices` returns an immutable snapshot on every read — safe to enumerate
 across an `await` — so read it again to see later degradations.
 
 Push notifications come from `IRuntimeFlowObserver` (every method is a default interface member, so
@@ -317,9 +354,10 @@ services stay warm and are never initialized twice.
   belongs.
 - **Ordered teardown.** The current run is cancelled, every service token with it — including tokens
   the service kept for background work after `InitializeAsync` returned. Then the child runs below the
-  session are disposed in reverse creation order, then the session run: `IAsyncDisposable.DisposeAsync` on every service in
-  reverse completion order (failures logged, never thrown), then the scope itself, where VContainer
-  disposes `IDisposable` registrations in reverse creation order.
+  session are disposed in reverse creation order, then the session run. Graph-owned async cleanup and
+  locally tracked synchronous cleanup follow dependency order, with dependent instances first;
+  independent services retain reverse completion priority. Cleanup failures are logged, and remaining
+  container resources are released through final scope disposal.
 - **Quit-aware.** After `Application.quitting` the host cancels the current run and every child run,
   refuses further restarts and child scopes instead of rebuilding into a dying player; a restart already
   in flight stops before building anything. When that leaves no session, `State` is `Cancelled` and
@@ -327,7 +365,8 @@ services stay warm and are never initialized twice.
   any scope starts after it was called), cancels them right after a yield (so a service may call it
   from its own `InitializeAsync`), waits for a chain in flight to unwind (bounded, unless the grace is
   infinite) and never lets it build on a disposed global; afterwards `Global` and `Session` throw
-  `ObjectDisposedException`.
+  `ObjectDisposedException`. Pending construction cleanup is joined before releasing ancestor resources;
+  this cleanup wait, like service `DisposeAsync`, is not bounded by `CancellationGrace`.
 - **Child scopes are refused when doomed.** `InitializeScopeAsync` refuses a child scope once the
   application is quitting, and one whose own constructors requested a restart (or disposed the host)
   while it was being built — its scope is disposed and nothing of it starts.
@@ -361,7 +400,9 @@ Assert.That(app.Resolve<PlayerProfile>().Coins, Is.EqualTo(10));
 - `LifecycleFake` without a stub returns completed tasks from `Task`/`Task<T>` members (default
   results), so awaiting an unstubbed member never throws.
 - `WithStartupTimeout` (30 s by default) turns a hang into a `TimeoutException` whose message contains
-  the status: what was running, for how long, and what each blocked service was waiting for.
+  the status: what was running, for how long, and what each blocked service was waiting for. It also
+  bounds waiting for failed-startup cleanup; ordered cleanup continues afterwards and an explicit
+  `DisposeAsync` joins it. Unsupported timer durations are rejected before allocating a host.
 - `LifecycleFake.Of<TService>(stub, cfg => …)` builds a `DispatchProxy` fake that takes part in the
   lifecycle: `FailInitializeAttempts(n)`, `FailDisposeAttempts(n)`, `DelayInitialize(span)`, `Hang()`.
   `OfHandle` also returns a `FakeInvocationLog` recording every call (`initialize#1`, `disposeAsync#1`).
@@ -381,7 +422,11 @@ scope and phase with live state, elapsed and weight, a detail card with dependen
 is waiting on, and a red card carrying the exception of a failure), Scopes (Global → Session → child
 runs with counts, percentage, restart count and uptime) and Last run (the final snapshot plus
 `Describe()` after exiting play mode). The toolbar restarts the session and copies the diagnostics as
-JSON or as `Describe()` text.
+JSON or as `Describe()` text. Selections and dependency links distinguish separate runs even when their
+scope or service names match, and removing another host preserves the selected host. Last run keeps
+the stored snapshot visible during a later run; before any snapshot is stored it shows a labelled
+live preview. A failed session build displays and exports the host exception even when there is no
+failed service row.
 
 ## Demo
 

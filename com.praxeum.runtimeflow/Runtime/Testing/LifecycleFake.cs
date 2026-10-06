@@ -152,7 +152,9 @@ namespace RuntimeFlow.Testing
             if (IsInitializeAsync(targetMethod))
                 return HandleInitializeAsync(args);
 
-            if (targetMethod.Name == "DisposeAsync" && targetMethod.ReturnType.Name.StartsWith("ValueTask", StringComparison.Ordinal))
+            if (targetMethod.Name == "DisposeAsync"
+                && targetMethod.ReturnType == typeof(ValueTask)
+                && targetMethod.GetParameters().Length == 0)
                 return HandleValueTaskDispose(targetMethod);
 
             if (targetMethod.Name == nameof(IDisposable.Dispose) && targetMethod.GetParameters().Length == 0)
@@ -177,10 +179,10 @@ namespace RuntimeFlow.Testing
             var context = args is { Length: > 0 } ? args[0] as InitContext : null;
             var cancellationToken = args is { Length: > 1 } ? (CancellationToken)args[1]! : default;
             _state.Log.Record($"initialize#{attempt}");
-            return RunInitializeAsync(context, cancellationToken);
+            return RunInitializeAsync(attempt, context, cancellationToken);
         }
 
-        private async Task RunInitializeAsync(InitContext? context, CancellationToken cancellationToken)
+        private async Task RunInitializeAsync(int attempt, InitContext? context, CancellationToken cancellationToken)
         {
             if (_state.Behavior.InitDelay > TimeSpan.Zero)
                 await Task.Delay(_state.Behavior.InitDelay, cancellationToken);
@@ -188,8 +190,8 @@ namespace RuntimeFlow.Testing
             if (_state.Behavior.Hangs)
                 await Task.Delay(Timeout.Infinite, cancellationToken);
 
-            if (_state.InitializeAttempts <= _state.Behavior.InitFailCount)
-                throw _state.Behavior.InitializeExceptionFactory!(_state.InitializeAttempts);
+            if (attempt <= _state.Behavior.InitFailCount)
+                throw _state.Behavior.InitializeExceptionFactory!(attempt);
 
             await InvokeStubInitializeAsync(context, cancellationToken);
         }

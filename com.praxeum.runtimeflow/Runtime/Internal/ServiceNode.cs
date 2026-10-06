@@ -94,6 +94,12 @@ namespace RuntimeFlow.Internal
         public CancellationTokenSource? Cts { get; set; }
         public Task? Task { get; set; }
 
+        /// <summary>True once the raw task's outcome was processed, by its observation or a watch tick.</summary>
+        public bool OutcomeObserved { get; set; }
+
+        /// <summary>Meaning of cancellation for a raw task already complete before a stop or freeze.</summary>
+        public bool? ExpectedCancellation { get; set; }
+
         /// <summary>The scheduler's bookkeeping of <see cref="Task"/>; awaited by teardown while the node is in flight.</summary>
         public Task? Observation { get; set; }
         public Exception? Error { get; set; }

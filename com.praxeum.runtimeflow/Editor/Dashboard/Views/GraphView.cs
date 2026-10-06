@@ -19,9 +19,12 @@ namespace RuntimeFlow.Editor
         private readonly TextField _filter;
         private readonly VisualElement _timeline;
         private readonly Label _timelineTitle;
+        private readonly VisualElement _hostFailure = new VisualElement();
+        private string _hostFailureSignature = string.Empty;
 
         private DashboardSnapshot? _snapshot;
         private string _scopeFilter = string.Empty;
+        private bool _scopeFilterIsIdentity;
         private string _selected = string.Empty;
         private string _detailSignature = string.Empty;
         private Label? _detailElapsed;
@@ -32,6 +35,7 @@ namespace RuntimeFlow.Editor
         public GraphView()
         {
             style.flexGrow = 1;
+            Add(_hostFailure);
 
             var split = new TwoPaneSplitView(0, 320, TwoPaneSplitViewOrientation.Horizontal);
             split.AddToClassList("rf-split-view");
@@ -77,27 +81,52 @@ namespace RuntimeFlow.Editor
             Add(timelineSection);
         }
 
-        /// <summary>Shows only the services of one scope; an empty or null name shows every scope.</summary>
-        /// <param name="scope">Name of the scope to focus, for example "session".</param>
+        /// <summary>Shows only the services of one scope; an empty or null filter shows every scope.</summary>
+        /// <param name="scope">Display name such as "session"; repeated names match every run with that name.</param>
         public void SetScopeFilter(string? scope)
         {
             _scopeFilter = scope ?? string.Empty;
+            _scopeFilterIsIdentity = false;
             Rebuild();
         }
 
-        /// <summary>Name of the scope the view is filtered to, or an empty string.</summary>
+        /// <summary>Filters one captured run, even when several consumer-provided scope names are equal.</summary>
+        public void SetScopeIdentityFilter(string id)
+        {
+            _scopeFilter = id;
+            _scopeFilterIsIdentity = true;
+            Rebuild();
+        }
+
+        /// <summary>Run identity or scope name the view is filtered to, or an empty string.</summary>
         public string ScopeFilter => _scopeFilter;
 
         /// <summary>Rebinds the list, the detail card and the timeline to a new snapshot.</summary>
         /// <param name="snapshot">The current snapshot, or null when no host is selected.</param>
         public void Refresh(DashboardSnapshot? snapshot)
         {
+            snapshot?.EnsureIdentities();
             _snapshot = snapshot;
+            // A restart replaces the session run and retires its children. A filter identifies the old
+            // run, not an arbitrary replacement with the same display name; reveal all surviving runs.
+            if (_scopeFilterIsIdentity && (_snapshot == null || !_snapshot.Scopes.Exists(scope => scope.Id == _scopeFilter)))
+            {
+                _scopeFilter = string.Empty;
+                _scopeFilterIsIdentity = false;
+            }
             Rebuild();
         }
 
         private void Rebuild()
         {
+            var failureSignature = (_snapshot?.ErrorType ?? string.Empty) + "|" +
+                (_snapshot?.ErrorMessage ?? string.Empty) + "|" + (_snapshot?.ErrorStack ?? string.Empty);
+            if (failureSignature != _hostFailureSignature)
+            {
+                _hostFailureSignature = failureSignature;
+                _hostFailure.Clear();
+                if (_snapshot?.HasError == true) _hostFailure.Add(ViewHelpers.HostFailure(_snapshot));
+            }
             var signature = BuildRows();
             if (signature != _rowSignature)
             {
@@ -123,7 +152,7 @@ namespace RuntimeFlow.Editor
             var needle = _filter.value ?? string.Empty;
             foreach (var scope in _snapshot.Scopes)
             {
-                if (_scopeFilter.Length > 0 && !string.Equals(scope.Name, _scopeFilter, StringComparison.Ordinal))
+                if (!MatchesScope(scope))
                     continue;
 
                 var matches = new List<DashboardService>();
@@ -138,12 +167,12 @@ namespace RuntimeFlow.Editor
                     "{0} — {1}/{2} done, {3} % ({4})",
                     scope.Name, scope.Done, scope.Total,
                     scope.Percent.ToString("0", CultureInfo.InvariantCulture), scope.State)));
-                signature = unchecked(signature * 31 + scope.Name.GetHashCode());
+                signature = unchecked(signature * 31 + scope.Id.GetHashCode());
 
                 foreach (var service in matches)
                 {
                     _rows.Add(Row.ForService(scope, service));
-                    signature = unchecked(signature * 31 + service.Name.GetHashCode());
+                    signature = unchecked(signature * 31 + service.Id.GetHashCode());
                 }
             }
 
@@ -158,6 +187,9 @@ namespace RuntimeFlow.Editor
                    || service.Scope.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0
                    || service.State.ToString().IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
         }
+
+        private bool MatchesScope(DashboardScope scope)
+            => _scopeFilter.Length == 0 || (_scopeFilterIsIdentity ? scope.Id == _scopeFilter : scope.Name == _scopeFilter);
 
         private static VisualElement MakeRow()
         {
@@ -248,7 +280,7 @@ namespace RuntimeFlow.Editor
             {
                 if (item is Row row && !row.IsHeader)
                 {
-                    _selected = row.Service!.Name;
+                    _selected = row.Service!.Id;
                     UpdateDetail();
                     return;
                 }
@@ -260,12 +292,13 @@ namespace RuntimeFlow.Editor
             if (_selected.Length == 0) return;
             for (var i = 0; i < _rows.Count; i++)
             {
-                if (!_rows[i].IsHeader && _rows[i].Service!.Name == _selected)
+                if (!_rows[i].IsHeader && _rows[i].Service!.Id == _selected)
                 {
                     _list.SetSelectionWithoutNotify(new[] { i });
                     return;
                 }
             }
+            _list.ClearSelection();
         }
 
         private DashboardService? SelectedService()
@@ -330,7 +363,8 @@ namespace RuntimeFlow.Editor
             }
             else
             {
-                foreach (var name in service.Dependencies) dependencies.Add(DependencyRow(name));
+                for (var i = 0; i < service.Dependencies.Count; i++)
+                    dependencies.Add(DependencyRow(service.Dependencies[i], DependencyId(service, i)));
             }
             dependencies.Add(ViewHelpers.PropertyRow("Waiting on", ViewHelpers.Join(service.WaitingOn)));
             _detail.Add(dependencies);
@@ -348,22 +382,30 @@ namespace RuntimeFlow.Editor
         private string DetailSignature(DashboardService? service)
         {
             if (service == null) return "none";
-            var text = new System.Text.StringBuilder(service.Name).Append('|').Append(service.State)
+            var text = new System.Text.StringBuilder(service.Id).Append('|').Append(service.State)
                 .Append('|').Append(service.AwaitingPlayer).Append('|').Append(service.ErrorType)
+                .Append('|').Append(service.ErrorMessage).Append('|').Append(service.ErrorStack)
+                .Append('|').Append(service.Phase).Append('|').Append(service.Weight)
+                .Append('|').Append(service.Optional).Append('|').Append(service.UserGated)
                 .Append('|').Append(string.Join(",", service.WaitingOn));
-            foreach (var name in service.Dependencies)
+            for (var i = 0; i < service.Dependencies.Count; i++)
             {
-                text.Append('|').Append(name).Append(':').Append(_snapshot?.Find(name)?.State.ToString() ?? "-");
+                var id = DependencyId(service, i);
+                text.Append('|').Append(service.Dependencies[i]).Append(':').Append(id)
+                    .Append(':').Append(_snapshot?.Find(id)?.State.ToString() ?? "-");
             }
             return text.ToString();
         }
 
-        private VisualElement DependencyRow(string name)
+        private static string DependencyId(DashboardService service, int index)
+            => service.DependencyIds != null && index < service.DependencyIds.Count ? service.DependencyIds[index] : string.Empty;
+
+        private VisualElement DependencyRow(string name, string id)
         {
             var row = new VisualElement();
             row.AddToClassList("rf-dependency-row");
 
-            var dependency = _snapshot?.Find(name);
+            var dependency = id.Length == 0 ? null : _snapshot?.Find(id);
             if (dependency != null)
             {
                 var badge = ViewHelpers.StateBadge(dependency);
@@ -423,7 +465,7 @@ namespace RuntimeFlow.Editor
             var plotted = 0;
             foreach (var scope in _snapshot.Scopes)
             {
-                if (_scopeFilter.Length > 0 && !string.Equals(scope.Name, _scopeFilter, StringComparison.Ordinal))
+                if (!MatchesScope(scope))
                     continue;
 
                 var total = scope.ElapsedMs > 1.0 ? scope.ElapsedMs : 1.0;

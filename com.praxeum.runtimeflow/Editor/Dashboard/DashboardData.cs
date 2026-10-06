@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Runtime.CompilerServices;
+using System.Threading;
 using RuntimeFlow.Internal;
 using UnityEditor;
 using UnityEngine;
@@ -14,6 +16,8 @@ namespace RuntimeFlow.Editor
     [Serializable]
     internal sealed class DashboardService
     {
+        /// <summary>Identity of this node within its run; distinct even when display names repeat.</summary>
+        public string Id = string.Empty;
         /// <summary>Service name, as reported by the run.</summary>
         public string Name = string.Empty;
 
@@ -50,6 +54,9 @@ namespace RuntimeFlow.Editor
         /// <summary>Names of every service this one waits for.</summary>
         public List<string> Dependencies = new List<string>();
 
+        /// <summary>Node identities parallel to Dependencies; empty for an uncaptured external/barrier.</summary>
+        public List<string> DependencyIds = new List<string>();
+
         /// <summary>Dependencies that had not finished at capture time.</summary>
         public List<string> WaitingOn = new List<string>();
 
@@ -70,6 +77,8 @@ namespace RuntimeFlow.Editor
     [Serializable]
     internal sealed class DashboardScope
     {
+        /// <summary>Identity of the run, independent of its consumer-provided display name.</summary>
+        public string Id = string.Empty;
         /// <summary>Name of the scope, for example "global", "session" or a child scope name.</summary>
         public string Name = string.Empty;
 
@@ -151,6 +160,12 @@ namespace RuntimeFlow.Editor
         /// <summary>Halt reason of the run, or an empty string.</summary>
         public string HaltReason = string.Empty;
 
+        /// <summary>Failure of the host, including a failed scope build with no service rows.</summary>
+        public string ErrorType = string.Empty;
+        public string ErrorMessage = string.Empty;
+        public string ErrorStack = string.Empty;
+        public bool HasError => !string.IsNullOrEmpty(ErrorType);
+
         /// <summary>Rendering of both graphs, as returned by <see cref="RuntimeFlowHost.Describe"/>.</summary>
         public string Describe = string.Empty;
 
@@ -168,16 +183,83 @@ namespace RuntimeFlow.Editor
             }
         }
 
-        /// <summary>Finds a service row by name across every scope, or null.</summary>
-        /// <param name="name">Name of the service, as shown in the graph list.</param>
-        public DashboardService? Find(string name)
+        /// <summary>Finds a service row by its captured node identity, or null.</summary>
+        /// <param name="id">Identity of the service.</param>
+        public DashboardService? Find(string id)
         {
             foreach (var scope in Scopes)
             {
                 foreach (var service in scope.Services)
                 {
-                    if (service.Name == name) return service;
+                    if (service.Id == id) return service;
                 }
+            }
+            return null;
+        }
+
+        /// <summary>Normalizes missing serialized fields and assigns identities to older stored snapshots.</summary>
+        public void EnsureIdentities()
+        {
+            // JsonUtility deserialization does not run field initializers for fields absent from old JSON.
+            HostLabel ??= string.Empty;
+            PackageVersion ??= "?";
+            UnityVersion ??= string.Empty;
+            CapturedUtc ??= string.Empty;
+            StateName ??= State.ToString();
+            HaltReason ??= string.Empty;
+            ErrorType ??= string.Empty;
+            ErrorMessage ??= string.Empty;
+            ErrorStack ??= string.Empty;
+            Describe ??= string.Empty;
+            Scopes ??= new List<DashboardScope>();
+            for (var i = 0; i < Scopes.Count; i++)
+            {
+                var scope = Scopes[i];
+                scope.Name ??= string.Empty;
+                scope.StateName ??= scope.State.ToString();
+                scope.Services ??= new List<DashboardService>();
+                if (string.IsNullOrEmpty(scope.Id)) scope.Id = "stored-scope:" + i.ToString(CultureInfo.InvariantCulture);
+                for (var j = 0; j < scope.Services.Count; j++)
+                {
+                    var service = scope.Services[j];
+                    service.Name ??= string.Empty;
+                    service.Scope ??= scope.Name;
+                    service.Phase ??= string.Empty;
+                    service.StateName ??= service.State.ToString();
+                    service.Dependencies ??= new List<string>();
+                    service.DependencyIds ??= new List<string>();
+                    service.WaitingOn ??= new List<string>();
+                    service.ErrorType ??= string.Empty;
+                    service.ErrorMessage ??= string.Empty;
+                    service.ErrorStack ??= string.Empty;
+                    if (string.IsNullOrEmpty(service.Id))
+                        service.Id = scope.Id + "/node:" + j.ToString(CultureInfo.InvariantCulture);
+                }
+            }
+        }
+    }
+
+    /// <summary>Keeps a dashboard selection attached to a host without retaining that host.</summary>
+    internal sealed class DashboardHostSelection
+    {
+        private WeakReference<RuntimeFlowHost>? _selected;
+
+        public void Select(RuntimeFlowHost host) => _selected = new WeakReference<RuntimeFlowHost>(host);
+
+        /// <summary>
+        /// Resolves the selected identity in a fresh registry snapshot. Initially selects the first host;
+        /// when a selected host disappears, no other host becomes a destructive-action target implicitly.
+        /// </summary>
+        public RuntimeFlowHost? Resolve(IReadOnlyList<RuntimeFlowHost> hosts, out int index)
+        {
+            index = -1;
+            if (_selected == null && hosts.Count > 0) Select(hosts[0]);
+            if (_selected == null || !_selected.TryGetTarget(out var selected)) return null;
+            for (var i = 0; i < hosts.Count; i++)
+            {
+                if (!ReferenceEquals(hosts[i], selected)) continue;
+                index = i;
+                return selected;
             }
             return null;
         }
@@ -194,6 +276,17 @@ namespace RuntimeFlow.Editor
         public const string LastRunKey = "RuntimeFlow.Dashboard.LastRun";
 
         private static string? _packageVersion;
+        private static readonly ConditionalWeakTable<ScopeRun, RunIdentity> RunIdentities =
+            new ConditionalWeakTable<ScopeRun, RunIdentity>();
+        private static long _nextRunIdentity;
+
+        private sealed class RunIdentity
+        {
+            // The value holds only a string: the weak key does not keep runs, graphs or services alive.
+            public readonly string Id = "run:" + Interlocked.Increment(ref _nextRunIdentity).ToString(CultureInfo.InvariantCulture);
+        }
+
+        private static string IdentityOf(ScopeRun run) => RunIdentities.GetValue(run, _ => new RunIdentity()).Id;
 
         /// <summary>Hosts that are alive right now, oldest first.</summary>
         public static IReadOnlyList<RuntimeFlowHost> LiveHosts => FlowRegistry.Live;
@@ -239,12 +332,37 @@ namespace RuntimeFlow.Editor
                 CanRestart = host.CanRestart,
                 Live = true,
                 HaltReason = aggregate.HaltReason ?? string.Empty,
+                ErrorType = aggregate.Error?.GetType().Name ?? string.Empty,
+                ErrorMessage = aggregate.Error?.Message ?? string.Empty,
+                ErrorStack = aggregate.Error?.ToString() ?? string.Empty,
                 Describe = host.Describe()
             };
 
-            AddScope(snapshot, host.GlobalRun);
-            AddScope(snapshot, host.SessionRun);
-            foreach (var child in host.ChildRuns) AddScope(snapshot, child);
+            var runs = new List<ScopeRun>();
+            if (host.GlobalRun != null) runs.Add(host.GlobalRun);
+            if (host.SessionRun != null) runs.Add(host.SessionRun);
+            runs.AddRange(host.ChildRuns);
+            var nodes = new Dictionary<ServiceNode, string>();
+            foreach (var run in runs)
+            {
+                var scope = CaptureScope(run)!;
+                snapshot.Scopes.Add(scope);
+                for (var i = 0; i < run.Graph.Services.Count; i++)
+                    nodes[run.Graph.Services[i]] = scope.Services[i].Id;
+            }
+            for (var r = 0; r < runs.Count; r++)
+            {
+                var run = runs[r];
+                for (var i = 0; i < run.Graph.Services.Count; i++)
+                {
+                    foreach (var edge in run.Graph.Services[i].Deps)
+                    {
+                        var target = edge.Target.Source ?? edge.Target;
+                        snapshot.Scopes[r].Services[i].DependencyIds.Add(
+                            nodes.TryGetValue(target, out var id) ? id : string.Empty);
+                    }
+                }
+            }
             return snapshot;
         }
 
@@ -256,6 +374,7 @@ namespace RuntimeFlow.Editor
             var status = run.GetStatus();
             var scope = new DashboardScope
             {
+                Id = IdentityOf(run),
                 Name = status.Scope,
                 State = status.State,
                 StateName = status.State.ToString(),
@@ -265,9 +384,12 @@ namespace RuntimeFlow.Editor
                 Total = status.Services.Count
             };
 
-            foreach (var service in status.Services)
+            for (var i = 0; i < status.Services.Count; i++)
             {
-                scope.Services.Add(Convert(service));
+                var service = status.Services[i];
+                var row = Convert(service);
+                row.Id = scope.Id + "/node:" + run.Graph.Services[i].Index.ToString(CultureInfo.InvariantCulture);
+                scope.Services.Add(row);
                 switch (service.State)
                 {
                     case ServiceState.Completed:
@@ -309,6 +431,7 @@ namespace RuntimeFlow.Editor
             {
                 var snapshot = JsonUtility.FromJson<DashboardSnapshot>(json);
                 if (snapshot == null) return null;
+                snapshot.EnsureIdentities();
                 snapshot.Live = false;
                 return snapshot;
             }
@@ -320,14 +443,12 @@ namespace RuntimeFlow.Editor
             }
         }
 
+        /// <summary>The last persisted run takes precedence; current data is a fallback before any run was stored.</summary>
+        public static DashboardSnapshot? LastRunOrLive(DashboardSnapshot? live)
+            => LoadLastRun() ?? (live?.Live == true ? live : null);
+
         /// <summary>Forgets the stored snapshot.</summary>
         public static void ClearLastRun() => SessionState.EraseString(LastRunKey);
-
-        private static void AddScope(DashboardSnapshot snapshot, ScopeRun? run)
-        {
-            var scope = CaptureScope(run);
-            if (scope != null) snapshot.Scopes.Add(scope);
-        }
 
         /// <summary>
         /// Replaces a non-finite number with zero. A scope whose services all carry <c>Weight = 0</c>

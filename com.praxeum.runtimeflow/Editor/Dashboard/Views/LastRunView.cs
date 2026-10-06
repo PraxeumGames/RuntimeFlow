@@ -27,6 +27,7 @@ namespace RuntimeFlow.Editor
         /// <param name="hasLiveHost">True when a host is alive right now, which the header mentions.</param>
         public void Refresh(DashboardSnapshot? snapshot, bool hasLiveHost)
         {
+            snapshot?.EnsureIdentities();
             // This tab shows a finished run, so it is rebuilt only when the states actually change:
             // a selection inside a stack trace survives the four-per-second refresh of Play Mode.
             var signature = Signature(snapshot, hasLiveHost);
@@ -51,7 +52,7 @@ namespace RuntimeFlow.Editor
             }
 
             var header = ViewHelpers.Card(
-                "Last run — " + snapshot.HostLabel + " at " + ViewHelpers.Timestamp(snapshot.CapturedUtc));
+                (snapshot.Live ? "Current run — " : "Last run — ") + snapshot.HostLabel + " at " + ViewHelpers.Timestamp(snapshot.CapturedUtc));
             header.Add(ViewHelpers.PropertyRow("State", snapshot.State.ToString()));
             header.Add(ViewHelpers.PropertyRow("Progress", ViewHelpers.Percent(snapshot.Percent)));
             header.Add(ViewHelpers.PropertyRow("Elapsed", ViewHelpers.Seconds(snapshot.ElapsedMs)));
@@ -60,9 +61,12 @@ namespace RuntimeFlow.Editor
             header.Add(ViewHelpers.PropertyRow("Unity", snapshot.UnityVersion));
             if (snapshot.HaltReason.Length > 0)
                 header.Add(ViewHelpers.PropertyRow("Halted by", snapshot.HaltReason));
-            if (hasLiveHost)
+            if (snapshot.Live)
+                header.Add(ViewHelpers.Hint("No previous run has been stored yet; this shows the current live run."));
+            else if (hasLiveHost)
                 header.Add(ViewHelpers.Hint("A host is alive right now: this is the stored snapshot, not the live one."));
             _content.Add(header);
+            if (snapshot.HasError) _content.Add(ViewHelpers.HostFailure(snapshot));
 
             foreach (var scope in snapshot.Scopes)
             {
@@ -106,14 +110,16 @@ namespace RuntimeFlow.Editor
         {
             if (snapshot == null) return "none";
             var text = new System.Text.StringBuilder(snapshot.HostLabel)
-                .Append('|').Append(snapshot.State).Append('|').Append(hasLiveHost);
+                .Append('|').Append(snapshot.State).Append('|').Append(hasLiveHost).Append('|').Append(snapshot.Live)
+                .Append('|').Append(snapshot.ErrorType).Append('|').Append(snapshot.ErrorMessage)
+                .Append('|').Append(snapshot.ErrorStack);
             foreach (var scope in snapshot.Scopes)
             {
-                text.Append('|').Append(scope.Name).Append(':').Append(scope.State);
+                text.Append('|').Append(scope.Id).Append(':').Append(scope.Name).Append(':').Append(scope.State);
                 foreach (var service in scope.Services)
                 {
-                    text.Append(',').Append(service.Name).Append('=').Append(service.State)
-                        .Append('/').Append(service.ErrorType);
+                    text.Append(',').Append(service.Id).Append(':').Append(service.Name).Append('=').Append(service.State)
+                        .Append('/').Append(service.ErrorType).Append('/').Append(service.ErrorMessage).Append('/').Append(service.ErrorStack);
                 }
             }
             return text.ToString();

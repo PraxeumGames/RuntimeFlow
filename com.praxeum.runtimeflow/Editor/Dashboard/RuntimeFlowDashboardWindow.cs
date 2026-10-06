@@ -20,6 +20,8 @@ namespace RuntimeFlow.Editor
         private const string UssPath = "Packages/com.praxeum.runtimeflow/Editor/Dashboard/RuntimeFlowDashboardWindow.uss";
 
         private readonly List<string> _hostLabels = new List<string>();
+        private readonly List<WeakReference<RuntimeFlowHost>> _hostChoices = new List<WeakReference<RuntimeFlowHost>>();
+        private readonly DashboardHostSelection _hostSelection = new DashboardHostSelection();
 
         private DropdownField? _hostDropdown;
         private Button? _restartButton;
@@ -33,7 +35,6 @@ namespace RuntimeFlow.Editor
         private LastRunView? _lastRunView;
 
         private DashboardSnapshot? _snapshot;
-        private int _selectedHost;
         private int _selectedTab;
         private double _lastRefresh;
         private bool _ready;
@@ -77,7 +78,7 @@ namespace RuntimeFlow.Editor
             _scopesView = new ScopesView();
             _scopesView.ScopeSelected += scope =>
             {
-                _graphView.SetScopeFilter(scope);
+                _graphView.SetScopeIdentityFilter(scope);
                 SelectTab(0);
             };
             _lastRunView = new LastRunView();
@@ -113,8 +114,8 @@ namespace RuntimeFlow.Editor
             _hostDropdown.RegisterValueChangedCallback(evt =>
             {
                 var index = _hostLabels.IndexOf(evt.newValue);
-                if (index < 0) return;
-                _selectedHost = index;
+                if (index < 0 || index >= _hostChoices.Count || !_hostChoices[index].TryGetTarget(out var host)) return;
+                _hostSelection.Select(host);
                 Refresh();
             });
             toolbar.Add(_hostDropdown);
@@ -228,7 +229,8 @@ namespace RuntimeFlow.Editor
             if (captured != null && captured.Scopes.Count == 0 && !EditorApplication.isPlaying) captured = null;
             _snapshot = EditorApplication.isPlaying ? captured ?? _snapshot : captured;
 
-            if (_restartButton != null) _restartButton.SetEnabled(_snapshot is { CanRestart: true });
+            if (_restartButton != null)
+                _restartButton.SetEnabled(_hostSelection.Resolve(DashboardData.LiveHosts, out _)?.CanRestart == true);
 
             RenderCurrentTab();
             UpdateStatusBar();
@@ -242,8 +244,7 @@ namespace RuntimeFlow.Editor
                     _scopesView?.Refresh(_snapshot);
                     break;
                 case 2:
-                    var live = _snapshot != null && _snapshot.Live && _snapshot.ServiceCount > 0 ? _snapshot : null;
-                    _lastRunView?.Refresh(live ?? DashboardData.LoadLastRun(), DashboardData.LiveHosts.Count > 0);
+                    _lastRunView?.Refresh(LastRunSnapshot(), DashboardData.LiveHosts.Count > 0);
                     break;
                 default:
                     _graphView?.Refresh(_snapshot);
@@ -259,18 +260,20 @@ namespace RuntimeFlow.Editor
             var labels = new List<string>(hosts.Count);
             for (var i = 0; i < hosts.Count; i++) labels.Add(DashboardData.Label(i, hosts[i]));
 
-            if (_selectedHost >= labels.Count) _selectedHost = Math.Max(0, labels.Count - 1);
+            _hostSelection.Resolve(hosts, out var selectedIndex);
+            _hostChoices.Clear();
+            foreach (var host in hosts) _hostChoices.Add(new WeakReference<RuntimeFlowHost>(host));
 
             if (!SameLabels(labels))
             {
                 _hostLabels.Clear();
                 _hostLabels.AddRange(labels);
                 _hostDropdown.choices = _hostLabels;
-                _hostDropdown.SetValueWithoutNotify(
-                    _selectedHost < _hostLabels.Count ? _hostLabels[_selectedHost] : string.Empty);
             }
+            _hostDropdown.SetValueWithoutNotify(selectedIndex >= 0 ? _hostLabels[selectedIndex] : string.Empty);
 
-            _hostDropdown.style.display = labels.Count > 1 ? DisplayStyle.Flex : DisplayStyle.None;
+            _hostDropdown.style.display = labels.Count > 1 || (labels.Count > 0 && selectedIndex < 0)
+                ? DisplayStyle.Flex : DisplayStyle.None;
         }
 
         private bool SameLabels(List<string> labels)
@@ -290,11 +293,11 @@ namespace RuntimeFlow.Editor
         private DashboardSnapshot? CaptureSelected()
         {
             var hosts = DashboardData.LiveHosts;
-            if (hosts.Count == 0) return null;
-            var index = Math.Max(0, Math.Min(_selectedHost, hosts.Count - 1));
+            var host = _hostSelection.Resolve(hosts, out var index);
+            if (host == null) return null;
             try
             {
-                return DashboardData.Capture(hosts[index], index);
+                return DashboardData.Capture(host, index);
             }
             catch (Exception exception)
             {
@@ -324,7 +327,7 @@ namespace RuntimeFlow.Editor
 
         private void CopyDiagnostics()
         {
-            var snapshot = CaptureSelected() ?? _snapshot ?? DashboardData.LoadLastRun();
+            var snapshot = _selectedTab == 2 ? LastRunSnapshot() : CaptureSelected() ?? _snapshot ?? DashboardData.LoadLastRun();
             if (snapshot == null)
             {
                 Debug.LogWarning("[RuntimeFlow] nothing to copy: no host is running and no snapshot was stored.");
@@ -335,7 +338,7 @@ namespace RuntimeFlow.Editor
 
         private void CopyDescribe()
         {
-            var snapshot = CaptureSelected() ?? _snapshot ?? DashboardData.LoadLastRun();
+            var snapshot = _selectedTab == 2 ? LastRunSnapshot() : CaptureSelected() ?? _snapshot ?? DashboardData.LoadLastRun();
             if (snapshot == null || snapshot.Describe.Length == 0)
             {
                 Debug.LogWarning("[RuntimeFlow] nothing to copy: no graph has been described yet.");
@@ -347,15 +350,18 @@ namespace RuntimeFlow.Editor
         private void RestartSelectedHost()
         {
             var hosts = DashboardData.LiveHosts;
-            if (hosts.Count == 0)
+            var host = _hostSelection.Resolve(hosts, out _);
+            if (host == null)
             {
-                Debug.LogWarning("[RuntimeFlow] no host to restart.");
+                Debug.LogWarning("[RuntimeFlow] the selected host is no longer available; select a host to restart.");
                 return;
             }
 
-            var index = Math.Max(0, Math.Min(_selectedHost, hosts.Count - 1));
-            _ = RestartAsync(hosts[index]);
+            _ = RestartAsync(host);
         }
+
+        private DashboardSnapshot? LastRunSnapshot()
+            => DashboardData.LastRunOrLive(_hostSelection.Resolve(DashboardData.LiveHosts, out _) != null ? _snapshot : null);
 
         private static async Task RestartAsync(RuntimeFlowHost host)
         {

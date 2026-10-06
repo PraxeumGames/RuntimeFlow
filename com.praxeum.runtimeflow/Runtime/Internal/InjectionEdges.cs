@@ -27,6 +27,8 @@ namespace RuntimeFlow.Internal
     {
         private static readonly ConcurrentDictionary<Type, FieldInfo?> ParameterFields =
             new ConcurrentDictionary<Type, FieldInfo?>();
+        private static readonly ConcurrentDictionary<Type, FieldInfo?> SharedInstanceFields =
+            new ConcurrentDictionary<Type, FieldInfo?>();
 
         /// <summary><c>TryGetRegistration(Type, out Registration, object key)</c>, present on VContainer 1.19+.</summary>
         private static readonly MethodInfo? KeyedLookup = typeof(IObjectResolver).GetMethod(
@@ -45,12 +47,15 @@ namespace RuntimeFlow.Internal
             new ConcurrentDictionary<Type, bool>();
         private readonly ILogger? _logger;
         private readonly string _name;
+        private readonly bool _validateParentSafety;
 
-        public InjectionEdges(IObjectResolver scope, IEnumerable<ServiceNode> nodes, ILogger? logger = null, string name = "")
+        public InjectionEdges(IObjectResolver scope, IEnumerable<ServiceNode> nodes, ILogger? logger = null, string name = "",
+            bool validateParentSafety = false)
         {
             Scope = scope;
             _logger = logger;
             _name = name;
+            _validateParentSafety = validateParentSafety;
             foreach (var node in nodes)
             {
                 if (node.Registration != null && !_nodes.ContainsKey(node.Registration)) _nodes.Add(node.Registration, node);
@@ -61,8 +66,9 @@ namespace RuntimeFlow.Internal
         public IObjectResolver Scope { get; }
 
         /// <summary>
-        /// The first scene-component node (<c>RegisterComponentInHierarchy</c>, Lifetime.Scoped) a walk reached
-        /// from a scope below the one registering it — where VContainer would create it anew — or null.
+        /// The first parent Scoped scene-component node a walk reached. Preflight reports a resolution
+        /// that would re-inject it; assembly reports only an existing child cache entry, since
+        /// instance/factory constructor fallback can describe a captured parent value instead.
         /// </summary>
         public ServiceNode? RespawnedSceneComponent { get; private set; }
 
@@ -157,6 +163,110 @@ namespace RuntimeFlow.Internal
                    || provider == "PrefabComponentProvider";
         }
 
+        /// <summary>Component providers inject members into an already created object; they never inject its constructor.</summary>
+        public static bool IsComponent(Registration registration)
+            => IsReflected(registration) && registration.Provider?.GetType().Name != "InstanceProvider";
+
+        /// <summary>
+        /// Most reflected providers bind their injector to ImplementationType. Hierarchy lookup instead
+        /// selects the found MonoBehaviour's runtime type. Read its already-created cache entry rather
+        /// than resolving it: even preflight must never construct or re-inject anything to inspect edges.
+        /// </summary>
+        public Type ReflectedType(Registration registration, IObjectResolver requester)
+        {
+            if (registration.Provider?.GetType().Name != "FindComponentProvider")
+                return registration.ImplementationType;
+
+            var instance = CreatedInstance(registration, requester);
+            if (instance != null) return instance.GetType();
+
+            if (_validateParentSafety && !registration.ImplementationType.IsSealed && HasUnsafeParentIdentity(requester))
+                throw new InitGraphException(_name,
+                    $"Cannot safely validate {registration.ImplementationType.Name} in scope '{_name}': its hierarchy " +
+                    "component has not been injected yet, so its runtime subtype is unknown and could re-inject an " +
+                    "initialized parent service. Register parent scene components as single instances and remove child " +
+                    "implementation guards, or register the exact sealed hierarchy type so preflight can inspect it. " +
+                    "RuntimeFlow will not resolve this custom hierarchy registration during preflight.");
+
+            if (!_validateParentSafety && !registration.ImplementationType.IsSealed
+                && SharedInstances(registration, requester).ContainsKey(registration)
+                && HasUnsafeParentIdentity(requester, requireResolutionEvidence: true))
+                throw new InitGraphException(_name,
+                    $"Cannot safely validate {registration.ImplementationType.Name} in scope '{_name}': its hierarchy " +
+                    "injection was attempted without producing a cached instance, so its runtime subtype is unknown, " +
+                    "and child-cache evidence also shows an unsafe parent service resolution. The failed injector " +
+                    "may already have mutated the initialized parent; the graph cannot use that parent identity. " +
+                    "RuntimeFlow will not retry the failed injection to inspect its subtype.");
+
+            // Before first injection (or after a failed construction), the actual subtype is unknowable
+            // without running user code. Assembly retries this lookup after the services are constructed.
+            return registration.ImplementationType;
+        }
+
+        private object? CreatedInstance(Registration registration, IObjectResolver requester)
+        {
+            var instances = SharedInstances(registration, requester);
+            if (instances.TryGetValue(registration, out var cached) && cached.IsValueCreated)
+                return cached.Value;
+            return null;
+        }
+
+        private ConcurrentDictionary<Registration, Lazy<object>> SharedInstances(Registration registration, IObjectResolver requester)
+        {
+            var from = InstanceScope(registration, requester);
+            var field = SharedInstanceFields.GetOrAdd(from.GetType(),
+                type => type.GetField("sharedInstances", BindingFlags.Instance | BindingFlags.NonPublic));
+            if (!(field?.GetValue(from) is ConcurrentDictionary<Registration, Lazy<object>> instances))
+                throw new InitGraphException(_name,
+                    "Unsupported VContainer resolver: cannot inspect its already-created instance cache.");
+
+            return instances;
+        }
+
+        private bool HasUnsafeResolutionEvidence(Registration registration, IObjectResolver requester, ServiceNode parent)
+        {
+            var provider = registration.Provider?.GetType().Name;
+            // These providers inject an existing object. A faulted Lazy still proves an attempt that
+            // may have mutated it before throwing. Never read Value to test that attempted injection.
+            if (provider == "ExistingComponentProvider" || provider == "FindComponentProvider")
+                return SharedInstances(registration, requester).ContainsKey(registration);
+            // Providers creating a new object need a completed instance before it can be mistaken for
+            // the initialized parent; a failed constructor alone does not establish that identity.
+            var instance = CreatedInstance(registration, requester);
+            if (instance == null) return false;
+            if (!ReferenceEquals(instance, parent.Instance)) return true;
+            // A factory can intentionally return the same initialized parent. That preserves identity,
+            // unless VContainer also made this child own its synchronous disposal.
+            return instance is IDisposable
+                && VContainerLifetimeTracker.Capture(InstanceScope(registration, requester), _name).Contains(instance);
+        }
+
+        private IObjectResolver InstanceScope(Registration registration, IObjectResolver requester)
+        {
+            var from = ConstructionScope(registration, requester);
+            // Container delegates Scoped resolution to its rootScope; its own cache holds only Singletons.
+            if (registration.Lifetime != Lifetime.Scoped || !(from is Container)) return from;
+            return from.GetType().GetField("rootScope", BindingFlags.Instance | BindingFlags.NonPublic)
+                ?.GetValue(from) as IObjectResolver
+                ?? throw new InitGraphException(_name,
+                    "Unsupported VContainer resolver: cannot inspect its root Scoped instance cache.");
+        }
+
+        private bool HasUnsafeParentIdentity(IObjectResolver requester, bool requireResolutionEvidence = false)
+        {
+            foreach (var node in _nodes.Values)
+            {
+                var registration = node.Registration;
+                if (node.Kind != NodeKind.External || registration == null) continue;
+                if (!GraphBuilder.IsSceneComponent(registration)
+                    && (registration.Lifetime != Lifetime.Singleton || HasExistingIdentity(registration))) continue;
+                var owner = NodeScope(node, requester);
+                if (!ReferenceEquals(InstanceScope(registration, requester), InstanceScope(registration, owner))
+                    && (!requireResolutionEvidence || HasUnsafeResolutionEvidence(registration, requester, node))) return true;
+            }
+            return false;
+        }
+
         private void Add(List<(ServiceNode, string)> result, HashSet<ServiceNode> seen, Registration registration,
             IObjectResolver foundIn, IObjectResolver requester)
         {
@@ -164,9 +274,18 @@ namespace RuntimeFlow.Internal
             {
                 if (node.Kind == NodeKind.External && registration.Lifetime == Lifetime.Singleton
                     && !HasExistingIdentity(registration)
-                    && !ReferenceEquals(ConstructionScope(registration, requester), ConstructionScope(registration, NodeScope(node, foundIn))))
+                    && !ReferenceEquals(ConstructionScope(registration, requester), ConstructionScope(registration, NodeScope(node, foundIn)))
+                    && (_validateParentSafety || HasUnsafeResolutionEvidence(registration, requester, node)))
                 {
-                    var reinjects = registration.Provider?.GetType().Name == "ExistingComponentProvider";
+                    var provider = registration.Provider?.GetType().Name;
+                    var reinjects = provider == "ExistingComponentProvider" || provider == "FindComponentProvider";
+                    if (!_validateParentSafety && !reinjects
+                        && ReferenceEquals(CreatedInstance(registration, requester), node.Instance))
+                        throw new InitGraphException(_name,
+                            $"Scope '{_name}' takes synchronous disposal ownership of initialized parent service {node.Name} " +
+                            $"from scope '{node.Scope}': its inherited factory returns the same parent instance, but VContainer " +
+                            "tracks its IDisposable in the child. Disposing the child would dispose the parent's live service. " +
+                            "Remove the child implementation guard or return a distinct, explicitly initialized child service.");
                     throw new InitGraphException(_name,
                         $"Scope '{_name}' {(reinjects ? "re-injects parent component" : "resolves a new instance of parent service")} {node.Name} from scope '{node.Scope}': " +
                         $"VContainer keeps its inherited Singleton registration in a child that registers {registration.ImplementationType.Name} " +
@@ -178,9 +297,12 @@ namespace RuntimeFlow.Internal
                 }
                 if (!seen.Add(node)) return;
                 result.Add((node, string.Empty));
-                // A Scoped registration is created anew by the scope that resolves it: for a scene component
-                // of a parent scope that means injecting the very same component again.
-                if (RespawnedSceneComponent == null && !ReferenceEquals(foundIn, requester) && GraphBuilder.IsSceneComponent(registration))
+                // Preflight rejects prospective reinjection. After construction, require evidence that
+                // the requester attempted to resolve it: a failed injector can already have mutated
+                // the parent. Factory/instance ctor fallback can instead represent a
+                // parent instance passed directly by the caller, with no child resolution at all.
+                if (RespawnedSceneComponent == null && !ReferenceEquals(foundIn, requester) && GraphBuilder.IsSceneComponent(registration)
+                    && (_validateParentSafety || HasUnsafeResolutionEvidence(registration, requester, node)))
                     RespawnedSceneComponent = node;
                 return;
             }
@@ -208,8 +330,9 @@ namespace RuntimeFlow.Internal
             try
             {
                 var custom = CustomParameters(registration);
-                foreach (var point in ConstructorEdges.InjectionPoints(registration.ImplementationType))
+                foreach (var point in ConstructorEdges.InjectionPoints(ReflectedType(registration, from)))
                 {
+                    if (IsComponent(registration) && point.IsConstructorParameter) continue;
                     if (Supplied(custom, point) || ConstructorEdges.IsLazy(point.Type)) continue;
                     foreach (var entry in Targets(point.Type, from, registration, point.Keyed, point.ServiceKey))
                     {

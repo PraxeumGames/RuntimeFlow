@@ -12,7 +12,7 @@ namespace RuntimeFlow
         private readonly Func<IReadOnlyCollection<string>> _degradedServices;
         private readonly Action<string> _halt;
         private readonly Action<float> _reportProgress;
-        private bool _abandoned;
+        private volatile bool _abandoned;
 
         internal InitContext(
             string scope,

@@ -208,7 +208,40 @@ now also runs against the VContainer 1.19 fork sfs-client ships.
   would re-inject the scene component into the child and dispose it with it — is a graph error.
   Inherited singleton construction follows the actual resolving scope; recreated parent services are
   rejected before child construction. Injected overloads retain distinct keyed edges, and local
-  collections exclude parent singleton elements the same way VContainer does.
+  collections exclude parent singleton elements the same way VContainer does. Optional factory
+  failures cannot hide unknown explicit dependencies. Uncreated custom hierarchy subtypes fail
+  preflight when their unknown injections could mutate an initialized parent identity. Failed child
+  injection attempts into existing parent components remain detectable when factories catch the error,
+  including paths through faulted hierarchy helpers. Parent factories returning the same identity are
+  distinguished from clones and from actual child disposal ownership.
+- **Construction and teardown.** Constructors that dispose or quit the host cannot start a new run.
+  Managed parent disposal joins descendants and pending construction cleanup. `ScopeRun.CreateAsync`
+  awaits owned graph-failure rollback; synchronous `Create` defers resolver release until ordered
+  async cleanup ends. Cleanup preserves dependency lifetimes across invalid cycles and releases
+  shared instances once in valid and invalid graphs. Failed, cancelled and unstarted dependents
+  retain their dependencies until their own cleanup finishes. Owned child graph failures detach
+  aliases of borrowed parent instances before and during rollback, preserving both parent disposal
+  interfaces. Residual callbacks cannot release late parent aliases or repeat physical sync cleanup.
+  Early validation, entry-point and container-build failures also recover already-created graph
+  services for awaited cleanup. Cached null factory results cannot interrupt that cleanup.
+- **Mixed disposal ownership.** Owned scopes interleave async service cleanup with tracked synchronous
+  cleanup, including plain registrations, so mixed dependency chains stay alive. Tracker entries are
+  removed before synchronous calls, preventing duplicate disposal. Caller-owned scopes reject unsafe
+  mixed cleanup before initialization; newly introduced opaque ownership conflicts fail closed before
+  releasing services. Borrowed globals keep their caller-owned lifetime.
+- **Scheduler outcomes and progress.** Completed raw tasks retain their outcomes when a delayed watch
+  tick runs first. Timeout batches defer terminal publication through reentrant callbacks and token
+  cancellation. Reentrant observer notifications stay ordered before run completion. Actual grace
+  abandonment invalidates its context, `NaN` progress is ignored, and
+  normalized weights prevent overflow.
+- **Tests and diagnostics.** `TestFlow` deadlines also bound failed-startup cleanup waiting and reject
+  unsupported timer durations before allocating a host. Override inspection reflects later builder
+  mutations. Lifecycle fakes forward `DisposeAsync` overload arguments and generic results without
+  consuming parameterless disposal attempts, and preserve each delayed initialization attempt's
+  failure budget and exception-factory argument. Dashboard identities distinguish matching names,
+  filters recover after restart, old snapshots normalize missing fields, and host build errors remain
+  visible and exported. Removing a
+  host preserves another host's selection; Last run retains stored history during a later run.
 - **Documentation.** The README no longer calls any fork of 1.15.3's API a safe drop-in; it lists the
   patterns that end the transitive walk and need `[DependsOn]` (factories, instances, the fork's
   `RegisterFromResolve`, delegate `WithParameter`), and the cases that wait forever with an infinite

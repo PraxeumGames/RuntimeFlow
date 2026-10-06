@@ -30,6 +30,7 @@ namespace RuntimeFlow.Internal
         private readonly List<ServiceNode> _ready = new List<ServiceNode>();
         private readonly List<ServiceNode> _inFlight = new List<ServiceNode>();
         private readonly List<ServiceNode> _completionOrder = new List<ServiceNode>();
+        private readonly Queue<Action> _notifications = new Queue<Action>();
         private readonly List<string> _degraded = new List<string>();
 
         // Copy-on-write view handed to services: replaced (never mutated) on every degradation, so a
@@ -47,6 +48,10 @@ namespace RuntimeFlow.Internal
         private StallWatch? _watch;
         private StopKind _stop = StopKind.None;
         private bool _pumping;
+        private bool _processingWatch;
+        private bool _notifying;
+        private bool _pumpPending;
+        private bool _finishPending;
         private bool _finished;
         private bool _frozen;
         private bool _isRestart;
@@ -137,7 +142,7 @@ namespace RuntimeFlow.Internal
                 }
             }
 
-            _observers.RunStarted(isRestart);
+            Notify(() => _observers.RunStarted(isRestart));
             _logger.Info(StartMessage(isRestart));
 
             if (cancellationToken.IsCancellationRequested)
@@ -169,15 +174,17 @@ namespace RuntimeFlow.Internal
                 // Transition first, notify second: an observer reacting to the failure (by cancelling the
                 // run, say) must find the run already failing.
                 Transition(StopKind.Failure);
-                foreach (var failure in _failures) _observers.ServiceFailed(Snapshot(failure.Node), failure.Error);
+                foreach (var failure in _failures)
+                    Notify(() => _observers.ServiceFailed(Snapshot(failure.Node), failure.Error));
                 CancelAndSettle();
                 return _done.Task;
             }
 
             if (_graph.Phases.Count > 0)
             {
-                _currentPhase = _graph.Phases[0];
-                _observers.PhaseStarted(_currentPhase);
+                var phase = _graph.Phases[0];
+                _currentPhase = phase;
+                Notify(() => _observers.PhaseStarted(phase));
             }
 
             _watch = new StallWatch(StallWatch.IntervalFor(_options, _graph.Services), OnWatchTick, OnWatchTickFailed);
@@ -221,6 +228,7 @@ namespace RuntimeFlow.Internal
         public void Freeze()
         {
             if (_finished || _stop != StopKind.None) return;
+            CaptureCompletedCancellationMeaning();
             _frozen = true;
             _ready.Clear();
         }
@@ -292,7 +300,11 @@ namespace RuntimeFlow.Internal
 
                 var still = unwinding.Where(n => !n.Task!.IsCompleted).ToList();
                 if (still.Count == 0) return;
-                foreach (var node in still) node.AbandonReported = true;
+                foreach (var node in still)
+                {
+                    node.AbandonReported = true;
+                    node.Context?.Abandon();
+                }
                 _logger.Error($"[RuntimeFlow] {_scope}: {still.Count.ToString(CultureInfo.InvariantCulture)} services still running " +
                               $"{Fmt.S1(_options.CancellationGrace)} after cancellation: " +
                               $"{string.Join(", ", still.Select(n => $"{n.Name} (timed out after {Fmt.S1(n.Clock.Elapsed)})"))}. " +
@@ -312,6 +324,11 @@ namespace RuntimeFlow.Internal
             var completed = 0;
             double weight = 0, done = 0;
 
+            // Finite individual weights can overflow when added. Scaling by the largest weight keeps
+            // both sums bounded by the service count without changing their ratio.
+            double scale = 0;
+            foreach (var node in _graph.Services) scale = Math.Max(scale, node.Weight);
+
             foreach (var node in _graph.Services)
             {
                 var status = Snapshot(node);
@@ -319,9 +336,10 @@ namespace RuntimeFlow.Internal
                 if (node.State == ServiceState.Running) running.Add(status);
                 if (node.IsSatisfied) completed++;
 
-                weight += node.Weight;
-                if (node.IsSatisfied) done += node.Weight;
-                else if (node.State == ServiceState.Running) done += node.Weight * node.Progress;
+                var normalized = scale > 0 ? node.Weight / scale : 0;
+                weight += normalized;
+                if (node.IsSatisfied) done += normalized;
+                else if (node.State == ServiceState.Running) done += normalized * node.Progress;
             }
 
             var percent = weight > 0
@@ -348,7 +366,13 @@ namespace RuntimeFlow.Internal
 
         private void Pump()
         {
+            if (_processingWatch || _notifying)
+            {
+                _pumpPending = true;
+                return;
+            }
             if (_pumping) return;
+            _pumpPending = false;
             _pumping = true;
             try
             {
@@ -366,7 +390,40 @@ namespace RuntimeFlow.Internal
             {
                 _pumping = false;
             }
+            _pumpPending = false;
             TryFinish();
+        }
+
+        /// <summary>
+        /// Reentrant service completion queues its event behind the current fan-out. Every observer sees
+        /// the same event order, and dependent starts or the terminal event wait for the full fan-out.
+        /// </summary>
+        private void Notify(Action notification)
+        {
+            _notifications.Enqueue(notification);
+            if (_notifying) return;
+            _notifying = true;
+            try
+            {
+                while (_notifications.Count > 0) _notifications.Dequeue()();
+            }
+            finally
+            {
+                _notifying = false;
+                DrainDeferredWork();
+            }
+        }
+
+        private void DrainDeferredWork()
+        {
+            if (_processingWatch || _notifying) return;
+            if (_finishPending)
+            {
+                _finishPending = false;
+                _pumpPending = false;
+                Finish();
+            }
+            else if (_pumpPending) Pump();
         }
 
         private void StartNode(ServiceNode node)
@@ -380,8 +437,8 @@ namespace RuntimeFlow.Internal
                 fraction => OnContext(() => ReportProgress(node, fraction)));
 
             var status = Snapshot(node);
-            _observers.ServiceStarted(status);
-            if (node.UserGated) _observers.ServiceAwaitingPlayer(status);
+            Notify(() => _observers.ServiceStarted(status));
+            if (node.UserGated) Notify(() => _observers.ServiceAwaitingPlayer(status));
             _logger.Debug($"[RuntimeFlow] {_scope}: {node.Name} started" +
                           (node.Phase != null ? $" (phase {node.Phase})" : string.Empty));
 
@@ -412,37 +469,66 @@ namespace RuntimeFlow.Internal
 
         private async Task ObserveAsync(ServiceNode node, Task task)
         {
+            Exception? error = null;
             try
             {
                 await task;
             }
-            catch (OperationCanceledException cancelled)
+            catch (Exception exception)
             {
-                if (node.State != ServiceState.Running)
-                {
-                    ReportLateOutcome(node, cancelled);
-                    return;
-                }
+                error = exception;
+            }
+            SettleOutcome(node, error);
+        }
+
+        /// <summary>
+        /// A task may have finished while its captured-context observation is still queued behind an
+        /// older watch tick. Read that completed task now; the queued observation later becomes a no-op.
+        /// </summary>
+        private void SettleCompletedTask(ServiceNode node, bool expectedCancellation)
+        {
+            Exception? error = null;
+            try { node.Task!.GetAwaiter().GetResult(); }
+            catch (Exception exception) { error = exception; }
+            SettleOutcome(node, error, expectedCancellation);
+        }
+
+        private bool IsExpectedCancellation(ServiceNode node)
+            => node.ExpectedCancellation ??
+               (_stop != StopKind.None || _frozen || node.Cts == null || node.Cts.IsCancellationRequested);
+
+        private void CaptureCompletedCancellationMeaning()
+        {
+            // A completed task may still have its observation queued on this context. A later stop
+            // cannot turn that earlier unexpected cancellation into cancellation caused by the stop.
+            foreach (var node in _inFlight)
+            {
+                if (node.State == ServiceState.Running && node.Task?.IsCompleted == true
+                    && !node.ExpectedCancellation.HasValue)
+                    node.ExpectedCancellation = IsExpectedCancellation(node);
+            }
+        }
+
+        private void SettleOutcome(ServiceNode node, Exception? error, bool? expectedCancellation = null)
+        {
+            if (node.OutcomeObserved) return;
+            node.OutcomeObserved = true;
+            if (node.State != ServiceState.Running)
+            {
+                ReportLateOutcome(node, error);
+                return;
+            }
+            if (error is OperationCanceledException cancelled)
+            {
                 // A frozen run is about to be replaced: a service that bails out with a cancellation
                 // right after requesting the replacement is cancelled, not failed.
-                if (_stop != StopKind.None || _frozen || node.Cts == null || node.Cts.IsCancellationRequested) CancelNode(node);
+                if (expectedCancellation ?? IsExpectedCancellation(node)) CancelNode(node);
                 else FailNode(node, cancelled, node.Clock.Elapsed);
                 return;
             }
-            catch (Exception exception)
+            if (error != null)
             {
-                if (node.State != ServiceState.Running)
-                {
-                    ReportLateOutcome(node, exception);
-                    return;
-                }
-                FailNode(node, exception, node.Clock.Elapsed);
-                return;
-            }
-
-            if (node.State != ServiceState.Running)
-            {
-                ReportLateOutcome(node, null);
+                FailNode(node, error, node.Clock.Elapsed);
                 return;
             }
             CompleteNode(node);
@@ -479,7 +565,7 @@ namespace RuntimeFlow.Internal
             _inFlight.Remove(node);
             _completionOrder.Add(node);
             Touch();
-            _observers.ServiceCompleted(Snapshot(node));
+            Notify(() => _observers.ServiceCompleted(Snapshot(node)));
             _logger.Debug($"[RuntimeFlow] {_scope}: {node.Name} completed in {Fmt.S2(node.Clock.Elapsed)}");
             Release(node);
             Pump();
@@ -488,14 +574,16 @@ namespace RuntimeFlow.Internal
         private void CompleteBarrier(ServiceNode node)
         {
             node.State = ServiceState.Completed;
-            if (node.Phase != null)
+            var phase = node.Phase;
+            if (phase != null)
             {
-                _observers.PhaseCompleted(node.Phase);
+                Notify(() => _observers.PhaseCompleted(phase));
                 var next = node.PhaseIndex + 1;
                 if (next < _graph.Phases.Count)
                 {
-                    _currentPhase = _graph.Phases[next];
-                    _observers.PhaseStarted(_currentPhase);
+                    var nextPhase = _graph.Phases[next];
+                    _currentPhase = nextPhase;
+                    Notify(() => _observers.PhaseStarted(nextPhase));
                 }
             }
             Release(node);
@@ -515,7 +603,7 @@ namespace RuntimeFlow.Internal
             if (!MarkFailed(node, error, elapsed)) return;
             if (node.Optional)
             {
-                _observers.ServiceFailed(Snapshot(node), error);
+                Notify(() => _observers.ServiceFailed(Snapshot(node), error));
                 Release(node);
                 Pump();
                 return;
@@ -524,7 +612,7 @@ namespace RuntimeFlow.Internal
             // The run is failing before anybody hears about it: an observer that cancels the run from
             // OnServiceFailed must not turn this failure into a cancellation.
             var stopping = Transition(StopKind.Failure);
-            _observers.ServiceFailed(Snapshot(node), error);
+            Notify(() => _observers.ServiceFailed(Snapshot(node), error));
             if (stopping) CancelAndSettle();
         }
 
@@ -596,6 +684,9 @@ namespace RuntimeFlow.Internal
             // Progress posted from a worker thread can land after the service finished; a finished node
             // keeps its final progress.
             if (node.State != ServiceState.Running) return;
+            // NaN is neither below zero nor above one. Ignore it rather than corrupting every weighted
+            // snapshot, and do not count an invalid report as progress for the stall timer.
+            if (float.IsNaN(fraction)) return;
             node.Progress = fraction < 0f ? 0f : (fraction > 1f ? 1f : fraction);
             Touch();
         }
@@ -616,6 +707,7 @@ namespace RuntimeFlow.Internal
         private bool Transition(StopKind kind)
         {
             if (_stop != StopKind.None || _finished) return false;
+            CaptureCompletedCancellationMeaning();
             _stop = kind;
             State = kind == StopKind.Failure ? RunState.Failed
                 : kind == StopKind.Halt ? RunState.Halted
@@ -665,6 +757,14 @@ namespace RuntimeFlow.Internal
             try
             {
                 await Task.Yield();
+
+                // Raw tasks that already finished need no grace period, even if their original
+                // observations are delayed. Preserve their pre-stop cancellation meaning and settle
+                // them now, rather than abandoning a completed task when the grace is zero.
+                foreach (var node in _inFlight.ToList())
+                {
+                    if (node.Task?.IsCompleted == true) SettleCompletedTask(node, IsExpectedCancellation(node));
+                }
 
                 // Wait for the bookkeeping (ObserveAsync) of the services still in flight, not just their
                 // raw tasks: the failure list is written there. Services the run already gave up on (timed
@@ -718,6 +818,13 @@ namespace RuntimeFlow.Internal
         private void Finish()
         {
             if (_finished) return;
+            if (_processingWatch || _notifying)
+            {
+                _finishPending = true;
+                return;
+            }
+            _finishPending = false;
+            _pumpPending = false;
             _finished = true;
 
             // Whatever happens below — a logger, an observer, a framework bug — the run's task completes:
@@ -764,6 +871,7 @@ namespace RuntimeFlow.Internal
                 node.State = ServiceState.Cancelled;
                 node.Clock.Stop();
                 node.AbandonReported = true;
+                node.Context?.Abandon();
             }
             _inFlight.Clear();
 
@@ -780,7 +888,7 @@ namespace RuntimeFlow.Internal
                     State = RunState.Completed;
                     var result = new StartupResult(StartupOutcome.Completed, _scope, elapsed, degraded);
                     _logger.Info(CompletedMessage(elapsed, degraded));
-                    _observers.RunCompleted(result);
+                    Notify(() => _observers.RunCompleted(result));
                     return () => _done!.TrySetResult(result);
                 }
                 case StopKind.Halt:
@@ -788,7 +896,7 @@ namespace RuntimeFlow.Internal
                     var result = new StartupResult(StartupOutcome.Halted, _scope, elapsed, degraded, _haltReason, _haltedBy);
                     _logger.Info(HaltMessage(elapsed));
                     WarnAboutFailuresWhileStopping("halting");
-                    _observers.RunHalted(result);
+                    Notify(() => _observers.RunHalted(result));
                     return () => _done!.TrySetResult(result);
                 }
                 case StopKind.Failure:
@@ -802,14 +910,14 @@ namespace RuntimeFlow.Internal
                     var error = RuntimeFlowException.Create(_scope, phase, elapsed, completed, unfinished, failures);
                     Error = error;
                     _logger.Error($"[RuntimeFlow] {_scope}: {error.Message}");
-                    _observers.RunFailed(error);
+                    Notify(() => _observers.RunFailed(error));
                     return () => _done!.TrySetException(error);
                 }
                 default:
                 {
                     _logger.Info(CancelledMessage(elapsed));
                     WarnAboutFailuresWhileStopping("being cancelled");
-                    _observers.RunCancelled();
+                    Notify(() => _observers.RunCancelled());
                     var token = _callerToken.IsCancellationRequested ? _callerToken : CancellationToken.None;
                     return () => _done!.TrySetCanceled(token);
                 }
@@ -944,45 +1052,71 @@ namespace RuntimeFlow.Internal
 
         private void OnWatchTick()
         {
-            if (_stop != StopKind.None || State != RunState.Running || _finished) return;
-
-            if (_options.TimeoutMultiplier > 0)
+            if (_stop != StopKind.None || State != RunState.Running || _finished || _processingWatch) return;
+            _processingWatch = true;
+            try
             {
-                // Transition every expired service first, then release or stop once, and cancel the
-                // tokens last: a cancellation continuation may run inline inside Cancel(), and it must
-                // find its node already timed out — not complete it, and not have the first required
-                // failure report the remaining ones as merely cancelled.
-                List<ServiceNode>? expired = null;
-                foreach (var node in _inFlight.OrderBy(n => n.Index).ToList())
-                {
-                    if (node.UserGated || node.TimeoutSeconds <= 0 || node.State != ServiceState.Running) continue;
-                    var limit = node.TimeoutSeconds * _options.TimeoutMultiplier;
-                    var elapsed = node.Clock.Elapsed;
-                    if (elapsed.TotalSeconds < limit) continue;
+                ProcessWatchTick();
+            }
+            finally
+            {
+                // Notifications and cancellation callbacks can settle other nodes inline. Their Pump
+                // and Finish calls wait until every token in this timeout batch was cancelled.
+                _processingWatch = false;
+                _pumpPending = true;
+                DrainDeferredWork();
+            }
+        }
 
-                    if (MarkFailed(node, new TimeoutException(TimeoutMessage(node, limit)), elapsed))
-                        (expired ??= new List<ServiceNode>()).Add(node);
-                }
+        private void ProcessWatchTick()
+        {
+            List<(ServiceNode Node, bool ExpectedCancellation)>? completed = null;
+            List<ServiceNode>? expired = null;
+            // Take one view of the in-flight set before any callback can release dependents. Completed
+            // raw tasks are settled below, rather than timed out because their observations are queued.
+            // Capture cancellation's meaning before this batch introduces its own stop/token cancellation.
+            var inFlight = _inFlight.OrderBy(n => n.Index).ToList();
+            foreach (var node in inFlight)
+            {
+                if (node.State == ServiceState.Running && node.Task?.IsCompleted == true)
+                    (completed ??= new List<(ServiceNode, bool)>()).Add((node, IsExpectedCancellation(node)));
+            }
+            foreach (var node in inFlight)
+            {
+                if (node.State != ServiceState.Running || node.Task?.IsCompleted == true) continue;
+                if (!(_options.TimeoutMultiplier > 0) || node.UserGated || node.TimeoutSeconds <= 0) continue;
+                var limit = node.TimeoutSeconds * _options.TimeoutMultiplier;
+                var elapsed = node.Clock.Elapsed;
+                if (elapsed.TotalSeconds < limit) continue;
 
-                if (expired != null)
-                {
-                    var required = expired.Exists(n => !n.Optional);
-                    var stopping = required && Transition(StopKind.Failure);
-                    foreach (var node in expired) _observers.ServiceFailed(Snapshot(node), node.Error!);
-                    foreach (var node in expired)
-                    {
-                        if (node.Optional) Release(node);
-                    }
-
-                    // Every step below runs whatever the cancellation callbacks (user code) do: the
-                    // released dependents must start, and a failing run must settle.
-                    foreach (var node in expired) Cancellation.Cancel(node.Cts, _logger, _scope, node.Name);
-                    if (stopping) CancelAndSettle();
-                    else if (!required) Pump();
-                    return;
-                }
+                if (MarkFailed(node, new TimeoutException(TimeoutMessage(node, limit)), elapsed))
+                    (expired ??= new List<ServiceNode>()).Add(node);
             }
 
+            if (expired != null)
+            {
+                // Transition every expiry first, then notify, release and cancel tokens: callbacks cannot
+                // misreport a second expiry as merely cancelled. Settle completed tasks afterwards so a
+                // successful run is never published before its timed-out service tokens are cancelled.
+                var required = expired.Exists(n => !n.Optional);
+                var stopping = required && Transition(StopKind.Failure);
+                foreach (var node in expired) Notify(() => _observers.ServiceFailed(Snapshot(node), node.Error!));
+                foreach (var node in expired)
+                {
+                    if (node.Optional) Release(node);
+                }
+
+                foreach (var node in expired) Cancellation.Cancel(node.Cts, _logger, _scope, node.Name);
+                if (stopping) CancelAndSettle();
+                if (completed != null)
+                    foreach (var outcome in completed) SettleCompletedTask(outcome.Node, outcome.ExpectedCancellation);
+                if (!required) Pump();
+                return;
+            }
+
+            if (completed != null)
+                foreach (var outcome in completed) SettleCompletedTask(outcome.Node, outcome.ExpectedCancellation);
+            if (_stop != StopKind.None || State != RunState.Running || _finished) return;
             if (_options.StallWarningAfter <= TimeSpan.Zero) return;
             var since = _clock.Elapsed - _lastProgress;
             if (since < _options.StallWarningAfter) return;

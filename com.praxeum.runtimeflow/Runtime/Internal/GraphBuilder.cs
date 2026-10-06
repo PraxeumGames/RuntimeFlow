@@ -55,16 +55,13 @@ namespace RuntimeFlow.Internal
         /// <param name="name">Scope name used in messages.</param>
         /// <param name="options">Phases, logger and option values to validate.</param>
         /// <param name="parents">Graphs of the linked parent runs, or null.</param>
-        /// <param name="ownsServices">
-        /// True when the run will own the scope: a graph error found after construction then releases the
-        /// services it constructed. A caller-owned container keeps its singletons untouched.
-        /// </param>
+        /// <param name="services">Caller-owned capture of constructed nodes, retained even on validation failure.</param>
         public static ServiceGraph Build(
             IObjectResolver scope,
             string name,
             RuntimeFlowOptions options,
             IReadOnlyList<ServiceGraph>? parents,
-            bool ownsServices)
+            List<ServiceNode> services)
         {
             var declaredPhases = options.Phases ?? Array.Empty<string>();
             if (options.DefaultPhase != null && !Contains(declaredPhases, options.DefaultPhase))
@@ -110,7 +107,6 @@ namespace RuntimeFlow.Internal
             var externals = Externals(scope, name, parents);
             RejectRecreatedParentServices(scope, name, registrations, externals, options.Logger);
 
-            var services = new List<ServiceNode>();
             var sources = new List<Type>();
             var index = 0;
 
@@ -139,17 +135,73 @@ namespace RuntimeFlow.Internal
                 sources.Add(registration.ImplementationType);
             }
 
-            try
+            return Assemble(scope, name, options, declaredPhases, services, externals, sources, index);
+        }
+
+        /// <summary>Recovers already-created graph cleanup evidence after failed construction, without resolving a graph.</summary>
+        internal static void CaptureCreatedForRollback(IObjectResolver scope, string name, RuntimeFlowOptions options,
+            List<ServiceNode> services)
+        {
+            var catalog = LocalRegistrations(scope, name);
+            var snapshot = VContainerLifetimeTracker.Capture(scope, name);
+            // Catalog membership, rather than the runtime interface alone, grants async ownership.
+            // Retain catalog order and aliases; read only cache entries that already hold a value.
+            foreach (var registration in catalog)
+                foreach (var entry in snapshot.Created)
+                {
+                    if (!ReferenceEquals(entry.Registration, registration)) continue;
+                    var alreadyCaptured = false;
+                    foreach (var node in services)
+                        if (ReferenceEquals(node.Registration, registration)) { alreadyCaptured = true; break; }
+                    if (!alreadyCaptured)
+                    {
+                        var type = entry.Instance.GetType();
+                        services.Add(new ServiceNode(services.Count, NodeKind.Service, type.Name, type, name)
+                        { Instance = entry.Instance, Service = entry.Instance as IAsyncInitializable, Registration = registration });
+                    }
+                    break;
+                }
+
+            // Unknown or uncached targets cannot contribute a cleanup edge. Do not run graph
+            // validation: the entry-point exception remains the primary failure.
+            foreach (var node in services)
             {
-                return Assemble(scope, name, options, declaredPhases, services, externals, sources, index);
+                var registeredType = node.Registration!.ImplementationType;
+                var attributes = new List<DependsOnAttribute>(node.Type.GetCustomAttributes<DependsOnAttribute>(true));
+                if (registeredType != node.Type)
+                    attributes.AddRange(registeredType.GetCustomAttributes<DependsOnAttribute>(true));
+                foreach (var attribute in attributes)
+                    foreach (var candidate in services)
+                        if (!ReferenceEquals(node, candidate) && attribute.ServiceType != null
+                            && attribute.ServiceType.IsAssignableFrom(candidate.Type)) AddEdge(node, candidate, "DependsOn");
             }
-            catch (Exception)
+
+            var phases = new List<string>();
+            if (options.Phases != null)
+                foreach (var phase in options.Phases)
+                    if (!string.IsNullOrWhiteSpace(phase) && !Contains(phases, phase)) phases.Add(phase);
+            if (phases.Count == 0) return;
+            var anyKnownPhase = false;
+            foreach (var node in services)
             {
-                // No run will ever own these services: release what the run would have released — unless
-                // they belong to a container the caller owns, whose singletons are not ours to dispose.
-                if (ownsServices) ReleaseConstructed(services, options.Logger, name);
-                throw;
+                var declared = InitAttributeOf(node, node.Registration!.ImplementationType)?.Phase;
+                if (declared != null && Contains(phases, declared)) { anyKnownPhase = true; break; }
             }
+            if (!anyKnownPhase) return;
+            foreach (var node in services)
+            {
+                var declared = InitAttributeOf(node, node.Registration!.ImplementationType)?.Phase;
+                // Invalid explicit/default phase values have no valid ordering evidence.
+                var phase = declared ?? options.DefaultPhase ?? phases[phases.Count - 1];
+                if (!Contains(phases, phase)) continue;
+                node.Phase = phase;
+                node.PhaseIndex = IndexOf(phases, phase);
+            }
+            var nodes = new List<ServiceNode>(services);
+            var index = nodes.Count;
+            AddPhaseBarriers(nodes, services, phases, name, ref index);
+            // MixedTeardown later recovers reflected injection edges for every created local
+            // lifetime vertex, including plain helpers, using the existing injection semantics.
         }
 
         private static ServiceGraph Assemble(
@@ -174,12 +226,19 @@ namespace RuntimeFlow.Internal
             // the last phase. The "unmarked lands in the last phase" rule applies from the first label on.
             var phases = AnyPhaseDeclared(services, sources) ? declaredPhases : Array.Empty<string>();
 
-            for (var i = 0; i < services.Count; i++)
-                ReadAttributes(services[i], sources[i], name, phases, options.DefaultPhase);
-
             var edges = new InjectionEdges(scope, all, options.Logger, name);
             for (var i = 0; i < services.Count; i++)
+            {
                 AddInjectionEdges(services[i], sources[i], edges, options.Logger, name);
+                if (edges.RespawnedSceneComponent is ServiceNode component)
+                {
+                    var origin = services[i].Deps.First(edge => ReferenceEquals(edge.Target, component)).Origin;
+                    throw ParentSceneDependencyError(name, services[i].Name, component, origin);
+                }
+            }
+
+            for (var i = 0; i < services.Count; i++)
+                ReadAttributes(services[i], sources[i], name, phases, options.DefaultPhase);
 
             for (var i = 0; i < services.Count; i++)
                 AddDependsOnEdges(services[i], sources[i], scope, name, all, services, externals);
@@ -237,13 +296,14 @@ namespace RuntimeFlow.Internal
         {
             if (externals.Count == 0) return;
 
-            var edges = new InjectionEdges(scope, externals, logger, name);
+            var edges = new InjectionEdges(scope, externals, logger, name, validateParentSafety: true);
             foreach (var registration in registrations)
             {
                 if (!InjectionEdges.IsReflected(registration)) continue;
                 var custom = InjectionEdges.CustomParameters(registration);
-                foreach (var point in ConstructorEdges.InjectionPoints(registration.ImplementationType))
+                foreach (var point in ConstructorEdges.InjectionPoints(edges.ReflectedType(registration, scope)))
                 {
+                    if (InjectionEdges.IsComponent(registration) && point.IsConstructorParameter) continue;
                     if (InjectionEdges.Supplied(custom, point) || ConstructorEdges.IsLazy(point.Type)) continue;
                     var targets = edges.Targets(point, scope, registration);
                     var component = edges.RespawnedSceneComponent;
@@ -254,16 +314,20 @@ namespace RuntimeFlow.Internal
                     {
                         if (ReferenceEquals(target.Target, component)) via = target.Via;
                     }
-                    throw new InitGraphException(name,
-                        $"{registration.ImplementationType.Name} in scope '{name}' depends on {component.Name} " +
-                        $"({point.Origin}{(via.Length == 0 ? string.Empty : " via " + via)}), which scope '{component.Scope}' registers " +
-                        "with RegisterComponentInHierarchy (Lifetime.Scoped). VContainer creates a Scoped registration anew in " +
-                        $"every scope that resolves it, so '{name}' would inject that scene component again with its own " +
-                        $"dependencies and dispose it with itself. Register it in '{component.Scope}' as a single instance " +
-                        "instead: RegisterComponent(instance), for example RegisterComponent(Object.FindObjectOfType<T>(true)).");
+                    throw ParentSceneDependencyError(name, registration.ImplementationType.Name, component,
+                        point.Origin + (via.Length == 0 ? string.Empty : " via " + via));
                 }
             }
         }
+
+        private static InitGraphException ParentSceneDependencyError(string name, string service, ServiceNode component, string origin)
+            => new InitGraphException(name,
+                $"{service} in scope '{name}' depends on {component.Name} ({origin}), which scope '{component.Scope}' registers " +
+                "with RegisterComponentInHierarchy (Lifetime.Scoped). VContainer creates a Scoped registration anew in " +
+                $"every scope that resolves it. Resolving it from '{name}' re-injects that scene component with child " +
+                "dependencies and disposes it with the child; the graph cannot use its initialized parent identity. " +
+                $"Register it in '{component.Scope}' as a single instance instead: RegisterComponent(instance), " +
+                "for example RegisterComponent(Object.FindObjectOfType<T>(true)).");
 
         private static InitGraphException ConstructionError(Registration registration, string name, Exception exception)
         {
@@ -287,38 +351,6 @@ namespace RuntimeFlow.Internal
         {
             var text = message.TrimEnd();
             return text.EndsWith(".", StringComparison.Ordinal) ? text : text + ".";
-        }
-
-        /// <summary>
-        /// Releases the services of a graph that failed validation: <see cref="IAsyncDisposable"/> ones are
-        /// disposed here (VContainer only knows <see cref="IDisposable"/>), in reverse construction order.
-        /// </summary>
-        private static void ReleaseConstructed(List<ServiceNode> services, ILogger logger, string name)
-        {
-            for (var i = services.Count - 1; i >= 0; i--)
-            {
-                if (!(services[i].Instance is IAsyncDisposable disposable)) continue;
-                var service = services[i].Name;
-                try
-                {
-                    var pending = disposable.DisposeAsync();
-                    if (!pending.IsCompleted) _ = ObserveDisposal(pending.AsTask(), logger, name, service);
-                    else if (pending.IsFaulted) _ = ObserveDisposal(pending.AsTask(), logger, name, service);
-                }
-                catch (Exception exception)
-                {
-                    logger.Error($"[RuntimeFlow] {name}: disposing {service} threw {exception.GetType().Name}; continuing teardown.", exception);
-                }
-            }
-        }
-
-        private static async Task ObserveDisposal(Task disposal, ILogger logger, string name, string service)
-        {
-            try { await disposal; }
-            catch (Exception exception)
-            {
-                logger.Error($"[RuntimeFlow] {name}: disposing {service} threw {exception.GetType().Name}; continuing teardown.", exception);
-            }
         }
 
         private static List<Registration> LocalRegistrations(IObjectResolver scope, string name)
@@ -514,7 +546,8 @@ namespace RuntimeFlow.Internal
         /// Edges of one service from everything VContainer injects into it — constructor parameters and
         /// [Inject] methods, fields and properties — resolved the way VContainer resolves them.
         /// </summary>
-        private static void AddInjectionEdges(ServiceNode node, Type registeredType, InjectionEdges edges, ILogger logger, string scope)
+        internal static void AddInjectionEdges(ServiceNode node, Type registeredType, InjectionEdges edges, ILogger logger, string scope,
+            bool reportAmbiguity = true)
         {
             var seen = new HashSet<(MemberInfo Member, int Position)>();
             var custom = InjectionEdges.CustomParameters(node.Registration);
@@ -523,14 +556,16 @@ namespace RuntimeFlow.Internal
             // instance (RegisterInstance) or a factory product (Register(resolver => …)) never gets them, so
             // only its constructor parameters count — the documented choice that keeps a decorator's edges.
             var reflected = node.Registration == null || InjectionEdges.IsReflected(node.Registration);
-            foreach (var type in InspectedTypes(node, registeredType))
+            var component = node.Registration != null && InjectionEdges.IsComponent(node.Registration);
+            foreach (var type in InspectedTypes(node, registeredType, reflected))
             {
-                var ambiguity = ConstructorEdges.Ambiguity(type);
-                if (ambiguity != null) logger.Warn($"[RuntimeFlow] {scope}: {ambiguity}");
+                var ambiguity = component ? null : ConstructorEdges.Ambiguity(type);
+                if (reportAmbiguity && ambiguity != null) logger.Warn($"[RuntimeFlow] {scope}: {ambiguity}");
 
                 foreach (var point in ConstructorEdges.InjectionPoints(type))
                 {
                     if (!reflected && !point.IsConstructorParameter) continue;
+                    if (component && point.IsConstructorParameter) continue;
                     if (!seen.Add(point.Key)) continue;
                     if (InjectionEdges.Supplied(custom, point)) continue;
 
@@ -549,8 +584,17 @@ namespace RuntimeFlow.Internal
             }
         }
 
-        private static IEnumerable<Type> InspectedTypes(ServiceNode node, Type registeredType)
+        private static IEnumerable<Type> InspectedTypes(ServiceNode node, Type registeredType, bool reflected)
         {
+            if (reflected)
+            {
+                // Hierarchy lookup binds its injector to the found runtime subtype. Every other
+                // reflected provider binds it to ImplementationType. Analyze that one injector only:
+                // separately analyzing its base type would revive hidden or overridden [Inject] members.
+                yield return node.Registration?.Provider?.GetType().Name == "FindComponentProvider"
+                    ? node.Type : registeredType;
+                yield break;
+            }
             yield return node.Type;
             if (registeredType != node.Type && registeredType.IsClass && !registeredType.IsAbstract)
                 yield return registeredType;
@@ -582,9 +626,9 @@ namespace RuntimeFlow.Internal
                 if (matched) continue;
 
                 // A service that failed to construct through a factory is only known by its contract
-                // type, so the target may well be that very service: its construction error, which fails
-                // the run, is the real explanation — a derived graph error would only hide it.
-                if (services.Any(s => s.ConstructionError != null && (s.Type.IsInterface || s.Type.IsAbstract))) continue;
+                // type, so the target may well be that very service. A required construction error fails
+                // the run and remains the explanation; an optional one cannot excuse an unknown target.
+                if (services.Any(s => s.ConstructionError != null && !s.Optional && (s.Type.IsInterface || s.Type.IsAbstract))) continue;
 
                 // The target resolves but is not part of any graph: the registration simply forgot to
                 // expose IAsyncInitializable. That is a far more common mistake than a missing service,

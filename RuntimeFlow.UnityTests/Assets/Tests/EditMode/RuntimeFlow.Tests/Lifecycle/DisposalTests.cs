@@ -10,7 +10,7 @@ using VContainer;
 
 namespace RuntimeFlow.Tests.Lifecycle
 {
-    /// <summary>Teardown disposes services in reverse completion order and never throws.</summary>
+    /// <summary>Teardown preserves dependencies, uses completion priority for independent services, and contains cleanup failures.</summary>
     [TestFixture]
     public sealed class DisposalTests
     {
@@ -61,7 +61,7 @@ namespace RuntimeFlow.Tests.Lifecycle
             public Instanced(Recorder recorder) : base(recorder) { }
         }
 
-        /// <summary>Synchronously disposable only: VContainer owns its disposal, the framework must not touch it.</summary>
+        /// <summary>Synchronously disposable only: an owned run releases it once from its verified VContainer tracker.</summary>
         public sealed class SyncOnly : IAsyncInitializable, IDisposable
         {
             private readonly Recorder _recorder;
@@ -162,7 +162,7 @@ namespace RuntimeFlow.Tests.Lifecycle
 
         [Test]
         [Timeout(10000)]
-        public async Task AServiceThatOnlyImplementsIDisposableIsDisposedOnceByTheContainer()
+        public async Task OwnedSynchronousServiceIsReleasedOnceFromTheContainerTracker()
         {
             var global = _tracker.Build(b => b.RegisterInstance(_recorder));
             var session = global.CreateScope(
@@ -176,7 +176,7 @@ namespace RuntimeFlow.Tests.Lifecycle
             await run.DisposeAsync();
 
             Assert.That(service.Disposals, Is.EqualTo(1),
-                "the framework disposes IAsyncDisposable only; a plain IDisposable belongs to scope.Dispose()");
+                "an owned run releases each tracked IDisposable once before the residual scope drain");
             Assert.That(_recorder.Disposed, Is.EqualTo(new[] { nameof(SyncOnly) }));
 
             await run.DisposeAsync();

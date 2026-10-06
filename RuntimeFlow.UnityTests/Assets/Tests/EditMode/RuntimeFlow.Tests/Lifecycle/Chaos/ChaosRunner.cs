@@ -59,7 +59,7 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
     /// </summary>
     public static class ChaosRunner
     {
-        private static readonly Regex DisposingService = new Regex(@"^\[RuntimeFlow\] (\S+): disposing (\S+) threw ");
+        private static readonly Regex DisposingService = new Regex(@"^\[RuntimeFlow\] (\S+): disposing (\S+)( synchronously)? threw (\S+); continuing teardown\.$");
         private const int SettleBoundMs = 5000;
         private const int QuiescenceBoundMs = 4000;
 
@@ -410,7 +410,7 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
             }
         }
 
-        private static bool ExpectedError(ChaosWorld world, string message)
+        internal static bool ExpectedError(ChaosWorld world, string message)
         {
             if (message.Contains(": Initialization of scope '")) return true;
             if (message.Contains(" services still running ") && message.Contains("after cancellation")) return true;
@@ -419,9 +419,18 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
             var match = DisposingService.Match(message);
             if (match.Success)
             {
+                var scope = match.Groups[1].Value;
                 var name = match.Groups[2].Value;
-                return world.Scenario.AllSlots.Any(s => s.Name == name && s.AsyncDisposeThrows
-                                                        && (s.Disposal == ChaosDisposal.Async || s.Disposal == ChaosDisposal.Both));
+                var synchronous = match.Groups[3].Success;
+                // Chaos deliberately throws this exact exception. The scope and disposal mode
+                // must match an instance that actually exists, rather than some other slot's plan.
+                if (match.Groups[4].Value != nameof(InvalidOperationException)) return false;
+                return world.Instances.Any(instance => instance.ScopeName == scope && instance.Slot.Name == name
+                    && (synchronous
+                        ? instance.Slot.SyncDisposeThrows
+                          && (instance.Slot.Disposal == ChaosDisposal.Sync || instance.Slot.Disposal == ChaosDisposal.Both)
+                        : instance.Slot.AsyncDisposeThrows
+                          && (instance.Slot.Disposal == ChaosDisposal.Async || instance.Slot.Disposal == ChaosDisposal.Both)));
             }
             return false;
         }

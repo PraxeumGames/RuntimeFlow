@@ -205,7 +205,7 @@ namespace RuntimeFlow.Tests.Lifecycle
 
             Assert.That(restart.Outcome, Is.EqualTo(StartupOutcome.Completed));
             Assert.That(_journal.Entries, Does.Contain("recorder-disposed"), "the remaining disposables still ran");
-            Assert.That(_log.Has(LogLevel.Error, "disposing the scope threw InvalidOperationException"), Is.True, _log.Dump());
+            Assert.That(_log.Has(LogLevel.Error, "session: disposing ThrowsOnDispose synchronously threw InvalidOperationException"), Is.True, _log.Dump());
 
             await host.DisposeAsync();
             Assert.That(host.State, Is.EqualTo(RunState.Disposed));

@@ -43,8 +43,6 @@ namespace RuntimeFlow.Testing
         private readonly ILogger _logger;
         private readonly string _scope;
         private readonly List<RegistrationBuilder> _buffered = new List<RegistrationBuilder>();
-        private readonly Dictionary<RegistrationBuilder, Registration?> _peeked =
-            new Dictionary<RegistrationBuilder, Registration?>();
 
         public OverridingContainerBuilder(
             IContainerBuilder inner,
@@ -157,8 +155,9 @@ namespace RuntimeFlow.Testing
 
         private Registration? Peek(RegistrationBuilder builder)
         {
-            if (_peeked.TryGetValue(builder, out var cached)) return cached;
-
+            // A builder remains mutable throughout the installer. Exists() can inspect it before its
+            // first As<T>() creates an interface list, so a cached Registration would retain null and
+            // miss the final contract when Flush() checks overrides.
             Registration? registration;
             try
             {
@@ -174,7 +173,6 @@ namespace RuntimeFlow.Testing
                               $"({exception.GetType().Name}); it is forwarded unchanged.");
             }
 
-            _peeked[builder] = registration;
             return registration;
         }
     }
