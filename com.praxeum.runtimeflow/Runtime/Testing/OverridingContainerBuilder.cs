@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using Microsoft.Extensions.Logging;
-using RuntimeFlow.Internal;
 using VContainer;
 using VContainer.Diagnostics;
 using ILogger = Microsoft.Extensions.Logging.ILogger;
@@ -202,8 +201,11 @@ namespace RuntimeFlow.Testing
                 // A registration this harness cannot inspect (a component builder needing a
                 // LifetimeScope, for example) is forwarded untouched and never overridden. Saying so is
                 // what turns a silently un-overridden service into a one-line explanation.
-                _logger.Debug($"[RuntimeFlow] {_scope}: a registration could not be inspected for overrides " +
-                              $"({exception.GetType().Name}); it is forwarded unchanged.");
+                var message = $"[RuntimeFlow] {_scope}: a registration could not be inspected for overrides " +
+                              $"({exception.GetType().Name}); it is forwarded unchanged.";
+                // Plain ILogger.Log (no message template), contained like every RuntimeFlow log call.
+                try { _logger.Log(LogLevel.Debug, default, message, null, (state, _) => state); }
+                catch (Exception) { }
                 return null;
             }
         }
