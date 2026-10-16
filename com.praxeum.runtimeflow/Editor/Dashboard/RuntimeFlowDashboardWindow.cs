@@ -206,6 +206,15 @@ namespace RuntimeFlow.Editor
 
         private void OnPlayModeChanged(PlayModeStateChange change)
         {
+            if (change == PlayModeStateChange.EnteredPlayMode)
+            {
+                // The registry drops every subscriber when the player loop starts (with or without a
+                // domain reload); subscribe again, exactly once. Hosts created before this point are
+                // picked up by the Refresh below.
+                FlowRegistry.Changed -= OnRegistryChanged;
+                FlowRegistry.Changed += OnRegistryChanged;
+            }
+
             if (change == PlayModeStateChange.ExitingPlayMode)
             {
                 var snapshot = CaptureSelected() ?? _snapshot;

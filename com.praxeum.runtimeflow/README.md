@@ -107,14 +107,16 @@ Use `builder.RegisterInitializable<Catalog>()`, or add `.As<IAsyncInitializable>
 type is an error rather than a warning, because the ordering it asks for cannot be honoured at all.
 The check reads registrations, not instances, so a factory registration (`Register<ICatalog>(resolver => …)`)
 whose product implements `IAsyncInitializable` without exposing it cannot be detected — expose it on
-the factory registration.
+the factory registration. An open generic registration (`Register(typeof(Repo<>), …)`) can never expose
+`IAsyncInitializable` — VContainer only exposes it under open generic interfaces — so none of its closed
+instances is initialized; the graph warns and asks for closed registrations instead.
 
 **Edges.** Three sources, all rendered by `Describe()` with their origin:
 
 | Source | Rule |
 |---|---|
-| Injected dependency | Whatever VContainer injects: the constructor it would pick (single `[Inject]`, otherwise the first with the most parameters — equal-arity constructors without `[Inject]` log a warning asking for one) plus `[Inject]` methods, fields and properties — the latter only for registrations VContainer constructs or injects itself; an instance (`RegisterInstance`) or a factory product (`Register(resolver => …)`) contributes its constructor parameters only, since VContainer never injects its members. Each is resolved the way VContainer resolves it: a single type to the registration VContainer picks (nearest scope, last registration; with the 1.19 fork's `[Key(x)]`, the registration keyed `x`) — not to every class that happens to be assignable; `IEnumerable<T>` / `IReadOnlyList<T>` to every registration of `T` here and in the parents — the barrier idiom (other collection shapes are not resolvable by VContainer). A dependency that is a plain, non-initializable registration is walked through, so `Profile(IProfileApi)` → `ProfileApi(Auth)` makes `Profile` wait for `Auth` (`ctor: IProfileApi api via ProfileApi`). A parameter supplied by `WithParameter(...)` is no edge; `ContainerLocal<T>` follows local resolution, so a wrapped collection excludes parent singleton elements. A lookup that throws while the edges are derived (an open generic that cannot be closed for the requested arguments, say) is no edge — resolving the service fails the same way and reports it as a construction error. |
-| `[DependsOn(typeof(T))]` | An ordering edge to every service assignable to `T`, in this scope or a parent. A target that matches nothing is a graph error listing the known services per scope. |
+| Injected dependency | Whatever VContainer injects: the constructor it would pick (single `[Inject]`, otherwise the first with the most parameters — equal-arity constructors without `[Inject]` log a warning asking for one) plus `[Inject]` methods, fields and properties — the latter only for registrations VContainer constructs or injects itself; an instance (`RegisterInstance`) or a factory product (`Register(resolver => …)`) contributes its constructor parameters only, since VContainer never injects its members. Those constructor edges are an inference (VContainer never resolved the parameters), so one that would close a cycle is dropped with a warning instead of failing the graph with a cycle that does not exist. Each is resolved the way VContainer resolves it: a single type to the registration VContainer picks (nearest scope, last registration; with the 1.19 fork's `[Key(x)]`, the registration keyed `x`) — not to every class that happens to be assignable; `IEnumerable<T>` / `IReadOnlyList<T>` to every registration of `T` here and in the parents — the barrier idiom (other collection shapes are not resolvable by VContainer). A dependency that is a plain, non-initializable registration is walked through, so `Profile(IProfileApi)` → `ProfileApi(Auth)` makes `Profile` wait for `Auth` (`ctor: IProfileApi api via ProfileApi`). A parameter supplied by `WithParameter(...)` is no edge; `ContainerLocal<T>` follows local resolution, so a wrapped collection excludes parent singleton elements. A lookup that throws while the edges are derived (an open generic that cannot be closed for the requested arguments, say) is no edge — resolving the service fails the same way and reports it as a construction error. |
+| `[DependsOn(typeof(T))]` | An ordering edge to every service assignable to `T`, in this scope or a parent. A target that matches nothing is a graph error listing the known services per scope; so is `[DependsOn(null)]` or an open generic target — name the closed type. |
 | Phases | `RuntimeFlowOptions.Phases` is an ordered name list, empty by default. Each phase gets a synthetic barrier: every service of phase *i* must finish before any service of phase *i+1* starts. |
 
 The walk uses the scope VContainer actually constructs each registration in: a child registration
@@ -166,7 +168,7 @@ list is empty — is a graph error.
 |---|---|
 | `Optional` | A failure degrades instead of failing the run: warning, state `Degraded`, dependents still start and see the name in `InitContext.DegradedServices` — including dependents in child scopes, since a parent-scope service that degraded stays `Degraded` there. |
 | `UserGated` | The service is waiting for the player: reported as `AwaitingPlayer`, exempt from timeouts and from the stall warning (a run with only gated services in flight logs an informational line instead). Combining it with `TimeoutSeconds` is a graph error. |
-| `TimeoutSeconds` | Deadline in seconds, multiplied by `RuntimeFlowOptions.TimeoutMultiplier` (`1.0` by default, `0` disables every timeout). Must be finite and `>= 0` (`0` means none). There is no default timeout: a service without the attribute is never killed. |
+| `TimeoutSeconds` | Deadline in seconds, multiplied by `RuntimeFlowOptions.TimeoutMultiplier` (`1.0` by default, `0` disables every timeout). Must be finite and `>= 0` (`0` means none). There is no default timeout: a service without the attribute is never killed. The deadline counts only time the application is active: while it is suspended — in the background on a mobile platform, or unfocused with `Application.runInBackground` off — it stands still, and so does the stall timer, so a player who leaves the game during loading does not return to a timed-out service. `ServiceStatus.Elapsed` and `StartupResult.Elapsed` stay wall-clock. |
 | `Weight` | Relative share of `RuntimeFlowStatus.Percent`; `1.0` by default, `0` removes the service from the progress bar. Must be finite and `>= 0`. |
 
 **Scopes.** `RuntimeFlowHost` owns two: a Global container built once and kept warm, and a Session
@@ -180,7 +182,11 @@ scope. A child being disposed stays tracked until its teardown completes, so its
 after it. Directly disposing a managed child run also freezes and joins its managed descendants before
 releasing that child's services. The same child resolver cannot be initialized again, during or after disposal, and a
 descendant of that disposed child is refused. `ScopeRun.Create(resolver, name, options)` does the same for a resolver the host knows nothing
-about, so a standalone `LifetimeScope` or a headless test container works without a host.
+about, so a standalone `LifetimeScope` or a headless test container works without a host. Without
+`parents` a standalone child run infers its parent services from the parent containers: one that
+constructs counts as initialized (with one warning naming those this scope depends on, since nothing
+here ran their `InitializeAsync`), one whose construction throws counts as failed, so its dependents fail
+with that error instead of starting.
 `RuntimeFlowHost.From(existingGlobal, sessionInstaller, options)` wraps a container somebody else built
 and never disposes it or its services; if its global phase fails, that host cannot retry it (the
 singletons are half-initialized) — build a new container and host.
@@ -210,6 +216,10 @@ session's entry points too (the session's handler forwards to it). Consequences 
   their existing synchronous cleanup. Synchronous ownership comes from VContainer's tracker: registered instances and untracked
   transient objects do not acquire it. Remaining container resources are released through scope
   disposal, retried up to 64 attempts when it throws, with repeated failures logged once plus a count.
+  Ownership is read from VContainer's private lifetime state; if that layout cannot be read (an
+  unsupported VContainer build), teardown logs one error and falls back to disposing the graph's
+  `IAsyncDisposable` services in dependency order followed by plain scope disposal, instead of leaking
+  the scope. A cleanup error raised while the scope drains never replaces an earlier teardown error.
 - A standalone run over a caller-owned scope still leaves synchronous cleanup to that caller. A
   synchronous dependent requiring earlier cleanup than an async service is a graph error before
   initialization; use an owned scope, or expose that dependent as an `IAsyncInitializable` graph
@@ -287,7 +297,9 @@ snapshot of a finished service and every dependency-name list are built once and
 weighted `Percent`, `Elapsed`, `RestartCount`, `HaltReason`, `HaltedBy`, `Error`. On the host, the
 snapshot spans both scopes and the percentage is weighted across all of them. A service refines its own
 share with `InitContext.ReportProgress(0f..1f)`; a report that arrives after the service finished is
-ignored, as is NaN (it does not reset the stall timer). Weighted sums are normalized so even large
+ignored, as is NaN (it does not reset the stall timer). Once a run has concluded, its status no longer
+changes and every later poll returns the same snapshot instance, on the host as well, so a UI that keeps
+polling after loading allocates nothing. Weighted sums are normalized so even large
 finite weights retain finite percentages. `InitContext.DegradedServices` returns an immutable snapshot on every read — safe to enumerate
 across an `await` — so read it again to see later degradations.
 
@@ -324,7 +336,11 @@ services stay warm and are never initialized twice.
   await it there: the returned task completes only after the current run has been cancelled and torn
   down, and teardown waits out `CancellationGrace` for the very service that is awaiting — the service
   would be waiting for itself (forever, with `Timeout.InfiniteTimeSpan`). Fire it and return; observers
-  and `InitContext.IsRestart` report the new generation.
+  and `InitContext.IsRestart` report the new generation. The host cannot tell whether that task is
+  awaited, so it is returned as usual. `StartAsync`, which only joins the chain, is refused instead:
+  called from inside the `InitializeAsync` of a global or session service while the startup or restart
+  that waits for that service is in flight, it returns a task faulted with `InvalidOperationException`
+  rather than one that never completes.
 - **Coalesced.** Requests arriving while a restart is already pending join it; ten clicks produce one
   rebuild. `StartAsync` and `RestartAsync` both return the result of the *last* run in the chain, so an
   awaiter started before a restart still sees the final outcome. A request arriving before a session
@@ -349,6 +365,11 @@ services stay warm and are never initialized twice.
   button works. `State` is `Running` for the whole restart, teardown included.
 - **Budgeted.** `MaxRestartsPerWindow` within `RestartWindow`; exceeding it fails with the list of
   reasons instead of looping forever.
+- **Refusals are tasks.** Every refusal — not started, quitting, halted global, budget, a disposed host
+  (`ObjectDisposedException`) — comes back as a faulted task; only a null reason throws synchronously.
+- **Main thread.** `StartAsync`, `RestartAsync` and the first `DisposeAsync` refuse a thread without a
+  `SynchronizationContext` with a faulted task (`InvalidOperationException`) before building or tearing
+  down anything: every continuation of the host runs on the caller's context.
 - **Visible.** Services see `InitContext.IsRestart` and `InitContext.Generation` (0 for the first run,
   +1 per restart); observers see `OnRunStarted(scope, isRestart: true)`, which is where a UI cover
   belongs.

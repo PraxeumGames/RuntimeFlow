@@ -99,10 +99,14 @@ namespace RuntimeFlow.Internal
             foreach (var registration in registrations)
             {
                 var type = registration.ImplementationType;
+                foreach (var dependsOn in type.GetCustomAttributes<DependsOnAttribute>(true))
+                    ValidateDependsOn(dependsOn, type.Name, name);
                 if (!type.IsClass || type.IsAbstract) continue;
                 var attribute = type.GetCustomAttribute<InitAttribute>(true);
                 if (attribute != null) ValidateInitAttribute(attribute, type.Name, name, declaredPhases);
             }
+
+            WarnAboutOpenGenerics(scope, name, options.Logger);
 
             var externals = Externals(scope, name, parents);
             RejectRecreatedParentServices(scope, name, registrations, externals, options.Logger);
@@ -224,12 +228,15 @@ namespace RuntimeFlow.Internal
             var phases = services.Any(node => InitAttributeOf(node)?.Phase != null) ? declaredPhases : Array.Empty<string>();
 
             var edges = new InjectionEdges(scope, all, options.Logger, name);
+            var unresolved = new List<UnresolvedEdge>();
             foreach (var node in services)
             {
-                AddInjectionEdges(node, node.Registration!.ImplementationType, edges, options.Logger, name);
+                AddInjectionEdges(node, node.Registration!.ImplementationType, edges, options.Logger, name,
+                    unresolved: unresolved);
                 if (edges.RespawnedSceneComponent is ServiceNode component)
                 {
-                    var origin = node.Deps.First(edge => ReferenceEquals(edge.Target, component)).Origin;
+                    var origin = node.Deps.FirstOrDefault(edge => ReferenceEquals(edge.Target, component)).Origin
+                                 ?? unresolved.First(edge => ReferenceEquals(edge.From, node) && ReferenceEquals(edge.To, component)).Origin;
                     throw ParentSceneDependencyError(name, node.Name, component, origin);
                 }
             }
@@ -242,6 +249,10 @@ namespace RuntimeFlow.Internal
 
             var nodes = new List<ServiceNode>(services);
             if (phases.Count > 0) AddPhaseBarriers(nodes, services, phases, name, ref index);
+
+            AddUnresolvedEdges(unresolved, options.Logger, name);
+            FailOnFailedInferredExternals(services, name);
+            WarnAboutInferredExternals(services, name, options.Logger);
 
             Link(nodes);
             DetectCycles(nodes, name);
@@ -400,21 +411,27 @@ namespace RuntimeFlow.Internal
                     // already holds (or constructs now, as the child would on first use) names the service.
                     var type = registration.ImplementationType;
                     object? instance = null;
+                    InitGraphException? failure = null;
                     try
                     {
                         instance = current.Resolve(registration);
                         type = instance?.GetType() ?? type;
                     }
-                    catch (Exception)
+                    catch (Exception exception)
                     {
-                        // The parent cannot construct it either; its own run reports that.
+                        // The parent cannot construct it either. Without a linked run nobody else reports
+                        // it, and a dependent must never start against a service that does not exist.
+                        failure = ConstructionError(registration, scopeName, exception);
                     }
 
+                    // Without a linked run nothing is known about initialization: a constructed parent
+                    // service counts as initialized (see WarnAboutInferredExternals), a failed one as failed.
                     externals.Add(new ServiceNode(index--, NodeKind.External, type.Name, type, scopeName)
                     {
                         Instance = instance,
                         Registration = registration,
-                        State = ServiceState.Completed
+                        State = failure == null ? ServiceState.Completed : ServiceState.Failed,
+                        Error = failure
                     });
                 }
                 current = current.Parent;
@@ -533,8 +550,10 @@ namespace RuntimeFlow.Internal
         /// Edges of one service from everything VContainer injects into it — constructor parameters and
         /// [Inject] methods, fields and properties — resolved the way VContainer resolves them.
         /// </summary>
+        /// <param name="unresolved">When given, the constructor edges of an instance or factory product — parameters
+        /// VContainer never resolved — are collected here instead of being added; see <see cref="AddUnresolvedEdges"/>.</param>
         internal static void AddInjectionEdges(ServiceNode node, Type registeredType, InjectionEdges edges, ILogger logger, string scope,
-            bool reportAmbiguity = true)
+            bool reportAmbiguity = true, List<UnresolvedEdge>? unresolved = null)
         {
             var seen = new HashSet<(MemberInfo Member, int Position)>();
             var custom = InjectionEdges.CustomParameters(node.Registration);
@@ -565,10 +584,116 @@ namespace RuntimeFlow.Internal
                     foreach (var (target, via) in edges.Targets(point, edges.Scope, node.Registration))
                     {
                         if (ReferenceEquals(target, node)) continue;
-                        AddEdge(node, target, via.Length == 0 ? point.Origin : point.Origin + " via " + via);
+                        var origin = via.Length == 0 ? point.Origin : point.Origin + " via " + via;
+                        if (!reflected && unresolved != null) unresolved.Add(new UnresolvedEdge(node, target, origin));
+                        else AddEdge(node, target, origin);
                     }
                 }
             }
+        }
+
+        /// <summary>A constructor edge of an instance or factory product, inferred from a parameter VContainer never resolved.</summary>
+        internal readonly struct UnresolvedEdge
+        {
+            public UnresolvedEdge(ServiceNode from, ServiceNode to, string origin)
+            {
+                From = from;
+                To = to;
+                Origin = origin;
+            }
+
+            public ServiceNode From { get; }
+            public ServiceNode To { get; }
+            public string Origin { get; }
+        }
+
+        /// <summary>
+        /// Adds the constructor edges of instances and factory products once every other edge is known.
+        /// They usually describe what the object holds (a decorator and what it wraps) and are kept, in
+        /// their original position at the front of the edge list. VContainer never resolved those
+        /// parameters, though, so one that would close a cycle is evidence of nothing: it is dropped with
+        /// a warning instead of failing the graph with a cycle that does not exist.
+        /// </summary>
+        private static void AddUnresolvedEdges(List<UnresolvedEdge> unresolved, ILogger logger, string scope)
+        {
+            var inserted = new Dictionary<ServiceNode, int>();
+            foreach (var edge in unresolved)
+            {
+                if (edge.From.DepTargets.Contains(edge.To)) continue;
+                if (Reaches(edge.To, edge.From))
+                {
+                    logger.Warn($"[RuntimeFlow] {scope}: ignoring the edge {edge.From.Name} -> {edge.To.DisplayName} ({edge.Origin}): " +
+                                $"{edge.From.Name} is a registered instance or factory product, so VContainer never resolved that " +
+                                "constructor parameter, and the edge would close a cycle. Add [DependsOn] only if the order is real.");
+                    continue;
+                }
+                // Constructor edges were always first; DependsOn and phase edges were appended after them.
+                inserted.TryGetValue(edge.From, out var position);
+                edge.From.DepTargets.Add(edge.To);
+                edge.From.Deps.Insert(position, new Edge(edge.To, edge.Origin));
+                inserted[edge.From] = position + 1;
+            }
+        }
+
+        /// <summary>True when <paramref name="goal"/> is reachable from <paramref name="start"/> along the edges added so far.</summary>
+        private static bool Reaches(ServiceNode start, ServiceNode goal)
+        {
+            var pending = new Stack<ServiceNode>();
+            var seen = new HashSet<ServiceNode>();
+            pending.Push(start);
+            while (pending.Count > 0)
+            {
+                var node = pending.Pop();
+                if (ReferenceEquals(node, goal)) return true;
+                if (node.Kind == NodeKind.External || !seen.Add(node)) continue;
+                foreach (var edge in node.Deps) pending.Push(edge.Target);
+            }
+            return false;
+        }
+
+        /// <summary>
+        /// A parent service inferred without a linked run that its container could not construct: a
+        /// dependent fails (or, when optional, degrades) with that construction error instead of starting.
+        /// </summary>
+        private static void FailOnFailedInferredExternals(List<ServiceNode> services, string scope)
+        {
+            foreach (var node in services)
+            {
+                if (node.ConstructionError != null) continue;
+                foreach (var edge in node.Deps)
+                {
+                    var target = edge.Target;
+                    if (target.Kind != NodeKind.External || target.Source != null || target.State != ServiceState.Failed) continue;
+                    node.ConstructionError = new InitGraphException(scope,
+                        $"{node.Name} depends on {target.Name} ({edge.Origin}), which parent scope '{target.Scope}' could not " +
+                        $"construct: {target.Error?.Message ?? "unknown error."} {node.Name} cannot start without it.",
+                        target.Error);
+                    break;
+                }
+            }
+        }
+
+        /// <summary>
+        /// Parent services inferred from the parent containers (no linked runs) count as initialized, but
+        /// nothing in this run ran their <see cref="IAsyncInitializable.InitializeAsync"/>. Warns once, naming
+        /// those this scope actually depends on.
+        /// </summary>
+        private static void WarnAboutInferredExternals(List<ServiceNode> services, string scope, ILogger logger)
+        {
+            var names = new List<string>();
+            var seen = new HashSet<ServiceNode>();
+            foreach (var node in services)
+                foreach (var edge in node.Deps)
+                {
+                    var target = edge.Target;
+                    if (target.Kind != NodeKind.External || target.Source != null || target.State != ServiceState.Completed
+                        || !(target.Instance is IAsyncInitializable) || !seen.Add(target)) continue;
+                    names.Add(target.Name);
+                }
+            if (names.Count == 0) return;
+            logger.Warn($"[RuntimeFlow] {scope}: depends on parent-scope services without a linked parent run " +
+                        $"({Fmt.Capped(names, 5)}); they are treated as initialized, but this run cannot know whether their " +
+                        "InitializeAsync ran. Pass the parent runs (ScopeRun.Create parents:) or use RuntimeFlowHost.InitializeScopeAsync.");
         }
 
         private static IEnumerable<Type> InspectedTypes(ServiceNode node, Type registeredType, bool reflected)
@@ -602,6 +727,8 @@ namespace RuntimeFlow.Internal
 
             foreach (var attribute in attributes)
             {
+                // Factory products are only known once constructed; their attributes are checked here.
+                ValidateDependsOn(attribute, node.Name, scope);
                 var matched = false;
                 foreach (var candidate in all)
                 {
@@ -637,6 +764,49 @@ namespace RuntimeFlow.Internal
                     "A target must implement IAsyncInitializable and live in the same scope or a parent scope; " +
                     "a parent scope can never depend on a child scope. " +
                     KnownServices(scope, services, externals));
+            }
+        }
+
+        /// <summary>A [DependsOn] target must be a closed type; anything else is a graph error, not a crash.</summary>
+        private static void ValidateDependsOn(DependsOnAttribute attribute, string service, string scope)
+        {
+            var target = attribute.ServiceType;
+            if (target == null)
+            {
+                throw new InitGraphException(scope,
+                    $"{service} declares [DependsOn(null)]; name the service type it waits for, for example [DependsOn(typeof(IAuth))].");
+            }
+            if (target.ContainsGenericParameters)
+            {
+                throw new InitGraphException(scope,
+                    $"{service} declares [DependsOn(typeof({Fmt.Type(target)}))], an open generic type. VContainer only " +
+                    "initializes closed types, so an open generic target can never match a service; name the closed " +
+                    "type the service waits for, for example [DependsOn(typeof(IRepository<Player>))].");
+            }
+        }
+
+        /// <summary>
+        /// An open generic registration (<c>Register(typeof(Repo&lt;&gt;), …)</c>) can never be exposed as
+        /// <see cref="IAsyncInitializable"/>: VContainer only exposes it under open generic interfaces, so
+        /// its closed instances are never discovered or initialized. Warns once per such type; best effort,
+        /// since reading the local registrations depends on VContainer's private layout.
+        /// </summary>
+        private static void WarnAboutOpenGenerics(IObjectResolver scope, string name, ILogger logger)
+        {
+            IReadOnlyList<Registration> local;
+            try { local = VContainerLifetimeTracker.LocalRegistrations(scope, name); }
+            catch (Exception) { return; }
+
+            var warned = new HashSet<Type>();
+            foreach (var registration in local)
+            {
+                var type = registration.ImplementationType;
+                if (type == null || !type.IsGenericTypeDefinition
+                    || Array.IndexOf(type.GetInterfaces(), typeof(IAsyncInitializable)) < 0 || !warned.Add(type)) continue;
+                logger.Warn($"[RuntimeFlow] {name}: {Fmt.Type(type)} implements IAsyncInitializable but is registered as an open " +
+                            "generic; VContainer cannot expose an open generic as IAsyncInitializable, so none of its closed " +
+                            "instances is ever initialized. Register each closed type the game uses instead, for example " +
+                            $"RegisterInitializable<{type.Name.Split('`')[0]}<Player>>().");
             }
         }
 

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace RuntimeFlow
 {
@@ -203,6 +204,7 @@ namespace RuntimeFlow
 
         /// <inheritdoc />
         public override string ToString()
-            => $"{Scope}: {State} {CompletedCount}/{TotalCount} ({Percent:0.0}%)";
+            => string.Format(CultureInfo.InvariantCulture, "{0}: {1} {2}/{3} ({4:0.0}%)",
+                Scope, State, CompletedCount, TotalCount, Percent);
     }
 }

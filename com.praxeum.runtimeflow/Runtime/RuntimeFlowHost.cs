@@ -42,6 +42,9 @@ namespace RuntimeFlow
         private static readonly FieldInfo? EntryPointHandlerDelegate =
             EntryPointHandlerType?.GetField("handler", BindingFlags.Instance | BindingFlags.NonPublic);
 
+        /// <summary>Non-zero once a failure to read VContainer's handler was reported; it is reported once per process.</summary>
+        private static int _entryPointReflectionWarned;
+
         private readonly Action<IContainerBuilder>? _globalInstaller;
         private readonly Action<IContainerBuilder> _sessionInstaller;
         private readonly RuntimeFlowOptions _options;
@@ -68,6 +71,12 @@ namespace RuntimeFlow
         private ScopeRun? _sessionRun;
         private Exception? _sessionBuildError;
         private CancellationTokenSource? _sessionTokenSource;
+
+        // The last GetStatus snapshot and what it was merged from.
+        private RuntimeFlowStatus? _status;
+        private RuntimeFlowStatus? _statusGlobal;
+        private RuntimeFlowStatus? _statusSession;
+        private Exception? _statusBuildError;
         private Task<StartupResult>? _current;
         private Task? _disposal;
 
@@ -115,7 +124,7 @@ namespace RuntimeFlow
             _logger = _options.Logger;
             _ownsGlobal = ownsGlobal;
             _quitHook = new QuitHook(this);
-            FlowRegistry.Add(this);
+            FlowRegistry.Add(this, _logger);
         }
 
 
@@ -229,11 +238,19 @@ namespace RuntimeFlow
         /// <param name="cancellationToken">Cancels both runs.</param>
         /// <returns>
         /// The result of the last run in the chain — a restart requested mid-startup redirects this awaiter.
-        /// <see cref="StartupResult.Degraded"/> covers both scopes, global services first.
+        /// <see cref="StartupResult.Degraded"/> covers both scopes, global services first. A faulted task
+        /// with <see cref="InvalidOperationException"/> when called on a thread without a
+        /// <see cref="SynchronizationContext"/>, or from inside the <see cref="IAsyncInitializable.InitializeAsync"/>
+        /// of a global or session service while the startup or restart that waits for it is in flight:
+        /// awaiting the chain from inside it would never finish.
         /// </returns>
         public Task<StartupResult> StartAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
+            var offThread = RequireContext(nameof(StartAsync));
+            if (offThread != null) return Task.FromException<StartupResult>(offThread);
+            var reentrant = ReentrantStart();
+            if (reentrant != null) return Task.FromException<StartupResult>(reentrant);
             if (_current != null) return AwaitFinalAsync(_current);
             if (_externalGlobalFailed)
             {
@@ -263,6 +280,7 @@ namespace RuntimeFlow
         /// on its own token afterwards: nothing cancels it, and the startup would never finish.</para>
         /// <para>After a session failed to build, a restart builds a fresh one; this is how a "Retry"
         /// button recovers.</para>
+        /// <para>Every refusal but a null reason is reported through the returned task, never thrown.</para>
         /// </remarks>
         /// <param name="reason">Short machine-readable reason, logged and listed in budget errors.</param>
         /// <param name="cancellationToken">
@@ -274,15 +292,28 @@ namespace RuntimeFlow
         /// <returns>
         /// The result of the last run in the chain; <see cref="StartupResult.Degraded"/> covers both scopes.
         /// </returns>
+        /// <exception cref="ArgumentNullException"><paramref name="reason"/> is null; thrown synchronously.</exception>
         /// <exception cref="RuntimeFlowException">More restarts than <see cref="RuntimeFlowOptions.MaxRestartsPerWindow"/>.</exception>
         /// <exception cref="InvalidOperationException">
-        /// The host was not started, the application is quitting, or the global scope was halted (the
-        /// global scope is never rebuilt, so there is nothing a restart could build a session on).
+        /// The host was not started, the application is quitting, the global scope was halted (the
+        /// global scope is never rebuilt, so there is nothing a restart could build a session on), or the
+        /// call came from a thread without a <see cref="SynchronizationContext"/>.
         /// </exception>
+        /// <exception cref="ObjectDisposedException">The host has been disposed.</exception>
         public Task<StartupResult> RestartAsync(string reason, CancellationToken cancellationToken = default)
         {
-            ThrowIfDisposed();
             if (reason == null) throw new ArgumentNullException(nameof(reason));
+
+            if (_disposed)
+            {
+                // A refusal like every other: a faulted task, never a synchronous throw.
+                _logger.Warn($"[RuntimeFlow] restart '{reason}' refused: the host has been disposed.");
+                return Task.FromException<StartupResult>(new ObjectDisposedException(nameof(RuntimeFlowHost),
+                    $"The host has been disposed; the restart '{reason}' was refused."));
+            }
+
+            var offThread = RequireContext(nameof(RestartAsync));
+            if (offThread != null) return Task.FromException<StartupResult>(offThread);
 
             if (_quitting)
             {
@@ -464,6 +495,25 @@ namespace RuntimeFlow
         {
             var global = _globalRun?.GetStatus();
             var session = _sessionRun?.GetStatus();
+
+            // A concluded run returns the same snapshot on every poll; so does the host while neither run
+            // nor anything of its own changed, instead of merging both lists again every frame.
+            var cached = _status;
+            var state = State;
+            if (cached != null && global != null && ReferenceEquals(global, _statusGlobal) && ReferenceEquals(session, _statusSession)
+                && cached.State == state && cached.RestartCount == RestartCount && ReferenceEquals(_sessionBuildError, _statusBuildError))
+                return cached;
+
+            var status = MergeStatus(global, session);
+            _status = status;
+            _statusGlobal = global;
+            _statusSession = session;
+            _statusBuildError = _sessionBuildError;
+            return status;
+        }
+
+        private RuntimeFlowStatus MergeStatus(RuntimeFlowStatus? global, RuntimeFlowStatus? session)
+        {
             var primary = session ?? global;
             if (primary == null)
             {
@@ -520,9 +570,18 @@ namespace RuntimeFlow
         /// unbounded when the grace is <see cref="Timeout.InfiniteTimeSpan"/>), so it never builds a scope on
         /// a disposed host; its awaiters complete with <see cref="ObjectDisposedException"/> or a
         /// cancellation. Afterwards <see cref="Global"/> and <see cref="Session"/> throw
-        /// <see cref="ObjectDisposedException"/>. Teardown never throws; concurrent calls share it.
+        /// <see cref="ObjectDisposedException"/>. Teardown never throws; concurrent calls share it. The
+        /// first call must come from a thread with a <see cref="SynchronizationContext"/> (the Unity main
+        /// thread): elsewhere it returns a task faulted with <see cref="InvalidOperationException"/> and
+        /// tears nothing down, since the teardown would otherwise continue on the thread pool.
         /// </summary>
-        public ValueTask DisposeAsync() => new ValueTask(_disposal ??= DisposeCoreAsync());
+        public ValueTask DisposeAsync()
+        {
+            if (_disposal != null) return new ValueTask(_disposal);
+            var offThread = RequireContext(nameof(DisposeAsync));
+            if (offThread != null) return new ValueTask(Task.FromException(offThread));
+            return new ValueTask(_disposal = DisposeCoreAsync());
+        }
 
         private async Task DisposeCoreAsync()
         {
@@ -567,7 +626,7 @@ namespace RuntimeFlow
 
             _session = null;
             _global = null;
-            FlowRegistry.Remove(this);
+            FlowRegistry.Remove(this, _logger);
         }
 
         /// <summary>Reacts to <see cref="Application.quitting"/>; exposed for tests that simulate a quit.</summary>
@@ -595,6 +654,38 @@ namespace RuntimeFlow
 
         /// <summary>True when <see cref="RestartAsync"/> would be accepted (budget aside); read by the editor dashboard.</summary>
         internal bool CanRestart => !_disposed && !_quitting && _current != null;
+
+        /// <summary>
+        /// The refusal of a call made on a thread without a <see cref="SynchronizationContext"/>, or null.
+        /// Checked before anything is built: every await of the host continues on the caller's context, and
+        /// without one the global container would be built and run on the thread pool.
+        /// </summary>
+        private static InvalidOperationException? RequireContext(string member)
+        {
+            if (SynchronizationContext.Current != null) return null;
+            return new InvalidOperationException(
+                $"RuntimeFlowHost.{member} must be called on a thread with a SynchronizationContext (the Unity main thread); " +
+                "SynchronizationContext.Current is null, so its continuations would run concurrently on the thread pool.");
+        }
+
+        /// <summary>
+        /// The refusal of a <see cref="StartAsync"/> issued from inside the still running
+        /// <see cref="IAsyncInitializable.InitializeAsync"/> of a global or session service while the chain
+        /// is in flight, or null. That chain waits for the very service that would wait for the chain.
+        /// </summary>
+        private InvalidOperationException? ReentrantStart()
+        {
+            if (_current == null || _current.IsCompleted) return null;
+            if (!Scheduler.TryGetInitializingToken(out var token)) return null;
+            var scope = _globalRun != null && _globalRun.OwnsToken(token) ? "global"
+                : _sessionRun != null && _sessionRun.OwnsToken(token) ? "session"
+                : null;
+            if (scope == null) return null;
+            return new InvalidOperationException(
+                $"RuntimeFlowHost.StartAsync was called from inside the InitializeAsync of a {scope} service while the " +
+                "startup or restart in flight waits for that very service: awaiting it would never finish. Return from " +
+                "InitializeAsync and read the outcome from the caller of StartAsync or from an IRuntimeFlowObserver.");
+        }
 
         private const string GlobalRestartAdvice =
             "global services are not rebuilt by RestartAsync, only the session is. Do not wait on your token after " +
@@ -762,7 +853,8 @@ namespace RuntimeFlow
             try
             {
                 _entryPointErrors.Clear();
-                var consumer = ConsumerHandlerOf(_global);
+                var consumer = ConsumerHandlerOf(_global, EntryPointHandlerType, EntryPointHandlerDelegate, _logger,
+                    ref _entryPointReflectionWarned);
                 try
                 {
                     scope = Global.CreateScope(builder =>
@@ -908,7 +1000,19 @@ namespace RuntimeFlow
                 else
                 {
                     var remaining = bound - clock.Elapsed;
-                    winner = remaining > TimeSpan.Zero ? await Task.WhenAny(chain, Task.Delay(remaining)) : Task.CompletedTask;
+                    if (remaining > TimeSpan.Zero)
+                    {
+                        using (var timer = new CancellationTokenSource())
+                        {
+                            winner = await Task.WhenAny(chain, Task.Delay(remaining, timer.Token));
+                            // Release the bound's timer as soon as the chain unwound.
+                            timer.Cancel();
+                        }
+                    }
+                    else
+                    {
+                        winner = Task.CompletedTask;
+                    }
                 }
 
                 if (!ReferenceEquals(winner, chain))
@@ -995,34 +1099,59 @@ namespace RuntimeFlow
         /// The consumer's entry-point exception handler that <paramref name="scope"/> (or a scope above it)
         /// resolves, or null: none, the host's own collector without a consumer behind it, or VContainer
         /// 1.19's default <c>Debug.LogException</c>, which only logs and is not a consumer's decision.
+        /// VContainer keeps the handler internal; when its type or its delegate field cannot be found or
+        /// read (a VContainer version that renamed them, code stripping), a warning is logged once per
+        /// process through <paramref name="logger"/> and the host's collector takes charge.
         /// </summary>
-        private static Action<Exception>? ConsumerHandlerOf(IObjectResolver? scope)
+        /// <param name="handlerType">VContainer's internal handler type, or null when it was not found.</param>
+        /// <param name="handlerField">Its private delegate field, or null when it was not found.</param>
+        /// <param name="warned">Set once the warning was logged; shared by every caller of a process.</param>
+        internal static Action<Exception>? ConsumerHandlerOf(IObjectResolver? scope, Type? handlerType, FieldInfo? handlerField,
+            ILogger logger, ref int warned)
         {
-            if (scope == null || EntryPointHandlerType == null || EntryPointHandlerDelegate == null) return null;
+            if (scope == null) return null;
+            if (handlerType == null || handlerField == null)
+            {
+                WarnEntryPointReflection(logger, ref warned, handlerType == null
+                    ? "the type VContainer.Unity.EntryPointExceptionHandler was not found"
+                    : $"the field '{handlerType.FullName}.handler' was not found");
+                return null;
+            }
             try
             {
-                if (!HasEntryPointHandler(scope)) return null;
-                var handler = scope.Resolve(EntryPointHandlerType);
-                if (!(EntryPointHandlerDelegate.GetValue(handler) is Action<Exception> action)) return null;
+                if (!HasEntryPointHandler(scope, handlerType)) return null;
+                var handler = scope.Resolve(handlerType);
+                if (!(handlerField.GetValue(handler) is Action<Exception> action)) return null;
                 if (action.Target is EntryPointCollector collector) return collector.Consumer;
                 var method = action.Method;
                 if (action.Target == null && method.DeclaringType == typeof(UnityEngine.Debug) && method.Name == "LogException")
                     return null;
                 return action;
             }
-            catch (Exception)
+            catch (Exception exception)
             {
                 // Diagnostics only: without a readable handler the host's collector takes charge.
+                WarnEntryPointReflection(logger, ref warned,
+                    $"reading the registered handler threw {exception.GetType().Name} ({exception.Message})");
                 return null;
             }
         }
 
-        private static bool HasEntryPointHandler(IObjectResolver resolver)
+        private static void WarnEntryPointReflection(ILogger logger, ref int warned, string problem)
+        {
+            if (Interlocked.Exchange(ref warned, 1) != 0) return;
+            logger.Warn($"[RuntimeFlow] cannot read VContainer's entry-point exception handler: {problem}. An " +
+                        "EntryPointExceptionHandler registered in the global scope is not forwarded to the session scope; " +
+                        "session entry-point exceptions fail the session (or are logged once it was built) instead. " +
+                        "This VContainer version may be unsupported, or the member was stripped.");
+        }
+
+        private static bool HasEntryPointHandler(IObjectResolver resolver, Type handlerType)
         {
             IObjectResolver? current = resolver;
             while (current != null)
             {
-                if (current.TryGetRegistration(EntryPointHandlerType!, out _)) return true;
+                if (current.TryGetRegistration(handlerType, out _)) return true;
                 current = (current as IScopedObjectResolver)?.Parent;
             }
             return false;
@@ -1477,9 +1606,17 @@ namespace RuntimeFlow
             public bool Constructing { get; set; } = true;
         }
 
-        /// <summary>Takes the place of the host's collector in a scope whose installer registered its own handler; never resolved.</summary>
+        /// <summary>
+        /// Takes the place of the host's collector in a scope whose installer registered its own handler;
+        /// never resolved. Referenced only through <c>typeof</c>, so it is preserved from code stripping.
+        /// </summary>
+        [UnityEngine.Scripting.Preserve]
         private sealed class SupersededEntryPointCollector
         {
+            [UnityEngine.Scripting.Preserve]
+            public SupersededEntryPointCollector()
+            {
+            }
         }
 
         /// <summary>

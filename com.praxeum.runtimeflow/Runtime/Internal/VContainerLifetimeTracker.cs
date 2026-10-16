@@ -34,8 +34,15 @@ namespace RuntimeFlow.Internal
 
         private VContainerLifetimeTracker() { }
 
+        /// <summary>
+        /// Test seam: invoked with every resolver before it is captured, so a test can simulate an
+        /// unreadable VContainer layout by throwing. Null in production.
+        /// </summary>
+        internal static Action<IObjectResolver>? CaptureHook { get; set; }
+
         public static VContainerLifetimeTracker Capture(IObjectResolver scope, string name)
         {
+            CaptureHook?.Invoke(scope);
             ValidateResolver(scope, name);
             var snapshot = new VContainerLifetimeTracker();
             snapshot.AddOwner(scope, name);

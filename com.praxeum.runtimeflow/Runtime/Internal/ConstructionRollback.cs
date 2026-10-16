@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using VContainer;
@@ -19,18 +20,24 @@ namespace RuntimeFlow.Internal
                     "Cannot safely release a failed child scope: ancestor instance ownership could not be inspected."));
                 return;
             }
-            MixedTeardown.OwnedCleanup? ownership = null;
+            // An unreadable lifetime adapter must not leak the failed container: fall back to the graph's
+            // own async services and VContainer's plain disposal of everything it tracks.
+            var ownership = MixedTeardown.TryOwn(scope, logger, name, protectedInstances, refreshProtected);
+            if (ownership == null)
+            {
+                await MixedTeardown.ReleaseUntrackedAsync(scope, services, logger, name, null,
+                    protectedInstances, refreshProtected);
+                return;
+            }
             try
             {
-                ownership = new MixedTeardown.OwnedCleanup(scope, logger, name, protectedInstances, refreshProtected);
                 await MixedTeardown.ReleaseAsync(scope, services, logger, name, ownsScope: true, ownership: ownership);
             }
             catch (Exception exception) { MixedTeardown.Log(logger, name, "constructed services", exception); }
             finally
             {
-                if (ownership != null)
-                    try { ownership.DrainScope(); }
-                    catch (Exception exception) { MixedTeardown.Log(logger, name, "scope", exception); }
+                try { ownership.DrainScope(); }
+                catch (Exception exception) { MixedTeardown.Log(logger, name, "scope", exception); }
             }
         }
 
@@ -50,97 +57,176 @@ namespace RuntimeFlow.Internal
 
             // Registration and completion order can disagree with dependency lifetime. Collapse
             // strongly connected services and aliases before ordering their acyclic component graph.
-            var remaining = Components(services);
-            foreach (var component in remaining)
-                component.Sort((left, right) => priority[left].CompareTo(priority[right]));
-            var order = new List<ServiceNode>();
-            var released = new List<object>();
-            while (remaining.Count > 0)
+            // Each service's dependency set is computed once, so ordering stays near-linear in the edges.
+            var dependencies = DirectDependencies(services);
+            var components = Components(services, dependencies);
+            foreach (var component in components)
+                component.Sort((left, right) => priority[services[left]].CompareTo(priority[services[right]]));
+
+            var componentOf = new int[services.Count];
+            for (var c = 0; c < components.Count; c++)
+                foreach (var member in components[c]) componentOf[member] = c;
+
+            // A component is released once no remaining component depends on it; among those the
+            // earliest priority wins (ties keep component discovery order, as a linear scan did).
+            var targets = new List<int>[components.Count];
+            var dependents = new int[components.Count];
+            for (var c = 0; c < components.Count; c++)
             {
-                var next = -1;
-                var earliest = int.MaxValue;
-                for (var i = 0; i < remaining.Count; i++)
+                var distinct = new HashSet<int>();
+                foreach (var member in components[c])
+                    foreach (var dependency in dependencies[member])
+                    {
+                        var target = componentOf[dependency];
+                        if (target != c && distinct.Add(target)) dependents[target]++;
+                    }
+                targets[c] = new List<int>(distinct);
+            }
+            var ready = new SortedSet<(int Rank, int Component)>();
+            for (var c = 0; c < components.Count; c++)
+                if (dependents[c] == 0) ready.Add((priority[services[components[c][0]]], c));
+
+            var order = new List<ServiceNode>();
+            var released = new HashSet<object>(InstanceIdentity.Instance);
+            while (ready.Count > 0)
+            {
+                var next = ready.Min; // The component graph is always acyclic.
+                ready.Remove(next);
+                foreach (var member in components[next.Component])
                 {
-                    if (HasDependent(remaining[i], remaining)) continue;
-                    var rank = priority[remaining[i][0]];
-                    if (rank >= earliest) continue;
-                    next = i;
-                    earliest = rank;
-                }
-                var component = remaining[next]; // The component graph is always acyclic.
-                foreach (var node in component)
-                {
-                    if (node.Instance == null || ContainsIdentity(released, node.Instance)) continue;
-                    released.Add(node.Instance);
+                    var node = services[member];
+                    if (node.Instance == null || !released.Add(node.Instance)) continue;
                     order.Add(node);
                 }
-                remaining.RemoveAt(next);
+                foreach (var target in targets[next.Component])
+                    if (--dependents[target] == 0) ready.Add((priority[services[components[target][0]]], target));
             }
             return order;
         }
 
-        private static List<List<ServiceNode>> Components(IReadOnlyList<ServiceNode> services)
+        /// <summary>
+        /// For every service, the indices of the services it depends on in the sense of
+        /// <see cref="DependsOn"/>: one walk per service through synthetic barriers, matched by node
+        /// identity or by physical instance identity. May contain the service's own index.
+        /// </summary>
+        private static List<int>[] DirectDependencies(IReadOnlyList<ServiceNode> services)
         {
-            var links = new List<int>[services.Count];
+            var byNode = new Dictionary<ServiceNode, List<int>>();
+            var byInstance = new Dictionary<object, List<int>>(InstanceIdentity.Instance);
             for (var i = 0; i < services.Count; i++)
             {
-                links[i] = new List<int>();
-                for (var j = 0; j < services.Count; j++)
-                {
-                    if (i == j) continue;
-                    // Aliases are one cleanup vertex: all of their discovered edges must be retained.
-                    var alias = services[i].Instance != null
-                        && ReferenceEquals(services[i].Instance, services[j].Instance);
-                    if (alias || DependsOn(services[i], services[j])) links[i].Add(j);
-                }
+                Group(byNode, services[i], i);
+                if (services[i].Instance != null) Group(byInstance, services[i].Instance!, i);
             }
 
-            var components = new List<List<ServiceNode>>();
+            var result = new List<int>[services.Count];
+            var pending = new Stack<ServiceNode>();
+            var seen = new HashSet<ServiceNode>();
+            var found = new HashSet<int>();
+            for (var i = 0; i < services.Count; i++)
+            {
+                pending.Clear();
+                seen.Clear();
+                found.Clear();
+                foreach (var edge in services[i].Deps) pending.Push(edge.Target);
+                while (pending.Count > 0)
+                {
+                    var dependency = pending.Pop();
+                    if (dependency.Kind == NodeKind.External || !seen.Add(dependency)) continue;
+                    if (byNode.TryGetValue(dependency, out var same)) found.UnionWith(same);
+                    if (dependency.Instance != null && byInstance.TryGetValue(dependency.Instance, out var aliases))
+                        found.UnionWith(aliases);
+                    // Same traversal as DependsOn: only synthetic barriers are walked through.
+                    if (dependency.Kind != NodeKind.Barrier) continue;
+                    foreach (var edge in dependency.Deps) pending.Push(edge.Target);
+                }
+                var sorted = new List<int>(found);
+                sorted.Sort();
+                result[i] = sorted;
+            }
+            return result;
+        }
+
+        private static void Group<TKey>(Dictionary<TKey, List<int>> groups, TKey key, int index) where TKey : notnull
+        {
+            if (!groups.TryGetValue(key, out var group)) groups.Add(key, group = new List<int>());
+            group.Add(index);
+        }
+
+        /// <summary>Strongly connected services (dependencies and physical aliases), as service indices.</summary>
+        private static List<List<int>> Components(IReadOnlyList<ServiceNode> services, List<int>[] dependencies)
+        {
+            var byInstance = new Dictionary<object, List<int>>(InstanceIdentity.Instance);
+            for (var i = 0; i < services.Count; i++)
+                if (services[i].Instance != null) Group(byInstance, services[i].Instance!, i);
+
+            var links = new List<int>[services.Count];
+            var linked = new HashSet<int>();
+            for (var i = 0; i < services.Count; i++)
+            {
+                linked.Clear();
+                foreach (var j in dependencies[i]) if (j != i) linked.Add(j);
+                // Aliases are one cleanup vertex: all of their discovered edges must be retained.
+                if (services[i].Instance != null)
+                    foreach (var j in byInstance[services[i].Instance!]) if (j != i) linked.Add(j);
+                var sorted = new List<int>(linked);
+                sorted.Sort();
+                links[i] = sorted;
+            }
+
+            // Tarjan's algorithm with an explicit call stack, so a long dependency chain cannot
+            // overflow the thread stack. Components come out in the same order as the recursive form.
+            var components = new List<List<int>>();
             var indices = new int[services.Count];
             var low = new int[services.Count];
             var active = new bool[services.Count];
             var stack = new Stack<int>();
+            var calls = new Stack<(int Node, int Next)>();
             for (var i = 0; i < indices.Length; i++) indices[i] = -1;
             var index = 0;
-            void Visit(int current)
+            for (var root = 0; root < services.Count; root++)
             {
-                indices[current] = low[current] = index++;
-                stack.Push(current);
-                active[current] = true;
-                foreach (var target in links[current])
+                if (indices[root] >= 0) continue;
+                Enter(root);
+                while (calls.Count > 0)
                 {
-                    if (indices[target] < 0)
+                    var (current, next) = calls.Pop();
+                    if (next < links[current].Count)
                     {
-                        Visit(target);
-                        low[current] = Math.Min(low[current], low[target]);
+                        calls.Push((current, next + 1));
+                        var target = links[current][next];
+                        if (indices[target] < 0) Enter(target);
+                        else if (active[target]) low[current] = Math.Min(low[current], indices[target]);
+                        continue;
                     }
-                    else if (active[target]) low[current] = Math.Min(low[current], indices[target]);
+                    if (low[current] == indices[current])
+                    {
+                        var component = new List<int>();
+                        int member;
+                        do
+                        {
+                            member = stack.Pop();
+                            active[member] = false;
+                            component.Add(member);
+                        } while (member != current);
+                        components.Add(component);
+                    }
+                    if (calls.Count > 0)
+                    {
+                        var caller = calls.Peek().Node;
+                        low[caller] = Math.Min(low[caller], low[current]);
+                    }
                 }
-                if (low[current] != indices[current]) return;
-                var component = new List<ServiceNode>();
-                int member;
-                do
-                {
-                    member = stack.Pop();
-                    active[member] = false;
-                    component.Add(services[member]);
-                } while (member != current);
-                components.Add(component);
             }
-            for (var i = 0; i < services.Count; i++) if (indices[i] < 0) Visit(i);
             return components;
-        }
 
-        private static bool HasDependent(List<ServiceNode> component, List<List<ServiceNode>> remaining)
-        {
-            foreach (var candidate in remaining)
+            void Enter(int node)
             {
-                if (ReferenceEquals(candidate, component)) continue;
-                foreach (var dependent in candidate)
-                    foreach (var target in component)
-                        if (DependsOn(dependent, target)) return true;
+                indices[node] = low[node] = index++;
+                stack.Push(node);
+                active[node] = true;
+                calls.Push((node, 0));
             }
-            return false;
         }
 
         internal static bool DependsOn(ServiceNode from, ServiceNode target)
@@ -162,11 +248,12 @@ namespace RuntimeFlow.Internal
             return false;
         }
 
-        private static bool ContainsIdentity(List<object> instances, object instance)
+        /// <summary>Reference identity for physical instances, whatever their own Equals says.</summary>
+        internal sealed class InstanceIdentity : IEqualityComparer<object>
         {
-            foreach (var candidate in instances) if (ReferenceEquals(candidate, instance)) return true;
-            return false;
+            public static readonly InstanceIdentity Instance = new InstanceIdentity();
+            public new bool Equals(object? x, object? y) => ReferenceEquals(x, y);
+            public int GetHashCode(object obj) => RuntimeHelpers.GetHashCode(obj);
         }
-
     }
 }

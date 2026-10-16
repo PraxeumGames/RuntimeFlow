@@ -90,6 +90,15 @@ namespace RuntimeFlow.Internal
         public int PendingDeps { get; set; }
         public ServiceState State { get; set; } = ServiceState.Pending;
         public Stopwatch Clock { get; } = new Stopwatch();
+
+        /// <summary>
+        /// <see cref="AppSuspension.ActiveTime"/> when the node started: its timeout counts from here and
+        /// excludes the time the application spent suspended, unlike the wall-clock <see cref="Clock"/>.
+        /// </summary>
+        public TimeSpan ActiveStart { get; set; }
+
+        /// <summary>Time the node has been running while the application was not suspended.</summary>
+        public TimeSpan ActiveElapsed => AppSuspension.ActiveTime - ActiveStart;
         public float Progress { get; set; }
         public CancellationTokenSource? Cts { get; set; }
         public Task? Task { get; set; }

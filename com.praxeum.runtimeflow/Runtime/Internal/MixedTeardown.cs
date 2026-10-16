@@ -10,10 +10,21 @@ namespace RuntimeFlow.Internal
     internal static class MixedTeardown
     {
         internal static void ValidateBorrowed(IObjectResolver scope, IReadOnlyList<ServiceNode> services,
-            ILogger logger, string name, bool includeUncreated)
+            ILogger logger, string name, bool includeUncreated, bool tolerateAdapterFailure = false)
         {
             if (!HasAsync(services)) return;
-            var plan = Build(scope, services, logger, name, null, includeUncreated);
+            Plan plan;
+            try { plan = Build(scope, services, logger, name, null, includeUncreated); }
+            catch (Exception exception) when (tolerateAdapterFailure)
+            {
+                // Teardown must still release the graph's async services; the boundary was already
+                // accepted when the run was created and before it started.
+                AdapterFailed(logger, name, exception, "the borrowed ownership boundary cannot be re-checked; " +
+                    "releasing the graph's asynchronous services in dependency order");
+                return;
+            }
+            var asyncOwned = AsyncOwned(services);
+            var reachability = new Reachability(plan.Nodes);
             foreach (var dependent in plan.Nodes)
             {
                 var sync = dependent.Instance is IDisposable
@@ -22,9 +33,9 @@ namespace RuntimeFlow.Internal
                 if (!sync) continue;
                 foreach (var dependency in plan.Nodes)
                 {
-                    if (!IsAsyncOwned(dependency.Instance, services)
+                    if (!IsAsyncOwned(dependency.Instance, asyncOwned)
                         || ReferenceEquals(dependent.Instance, dependency.Instance)) continue;
-                    if (!Reaches(dependent, dependency, plan.Nodes)) continue;
+                    if (!reachability.Reaches(dependent, dependency)) continue;
                     throw new InitGraphException(name,
                         $"Caller-owned scope '{name}' cannot release {dependency.Name} asynchronously while " +
                         $"synchronous dependent {dependent.Name} remains owned by its container. Create the run with " +
@@ -42,7 +53,7 @@ namespace RuntimeFlow.Internal
             {
                 // This check precedes every user cleanup: late factory products must not invalidate
                 // the boundary accepted before initialization and then lose their live dependencies.
-                ValidateBorrowed(scope, services, logger, name, includeUncreated: false);
+                ValidateBorrowed(scope, services, logger, name, includeUncreated: false, tolerateAdapterFailure: true);
                 foreach (var node in ConstructionRollback.TeardownOrder(services, preferred))
                     if (node.Instance is IAsyncDisposable disposable)
                         try { await disposable.DisposeAsync(); }
@@ -54,12 +65,28 @@ namespace RuntimeFlow.Internal
             // Protection cannot depend on successful lifetime planning: a graph error may have
             // escaped before its parent edge was attached, and planning can itself fail.
             ownership.RefreshProtection();
-            var plan = Build(scope, services, logger, name, preferred, includeUncreated: false);
-            foreach (var node in ConstructionRollback.TeardownOrder(plan.Nodes, plan.Preferred))
+            IReadOnlyList<ServiceNode> nodes;
+            IReadOnlyList<ServiceNode>? order;
+            try
+            {
+                var plan = Build(scope, services, logger, name, preferred, includeUncreated: false);
+                nodes = plan.Nodes;
+                order = plan.Preferred;
+            }
+            catch (Exception exception)
+            {
+                // The tracker is still readable (ownership was captured), so synchronous ownership keeps
+                // its policy; only the plain helpers between graph services lose their ordering edges.
+                AdapterFailed(logger, name, exception, "ordering the graph services by their own edges only");
+                nodes = services;
+                order = preferred;
+            }
+            var asyncOwned = AsyncOwned(services);
+            foreach (var node in ConstructionRollback.TeardownOrder(nodes, order))
             {
                 ownership.RefreshProtection();
                 if (ownership.IsProtected(node.Instance)) continue;
-                if (IsAsyncOwned(node.Instance, services) && node.Instance is IAsyncDisposable asyncDisposable)
+                if (IsAsyncOwned(node.Instance, asyncOwned) && node.Instance is IAsyncDisposable asyncDisposable)
                 {
                     try { await asyncDisposable.DisposeAsync(); }
                     catch (Exception exception) { Log(logger, name, node.Name, exception); }
@@ -68,6 +95,79 @@ namespace RuntimeFlow.Internal
                 // never gain synchronous ownership merely by appearing in a graph or cache.
                 if (node.Instance != null) ownership.ReleaseSync(node.Instance, node.Name);
             }
+        }
+
+        /// <summary>
+        /// Takes owned cleanup of <paramref name="scope"/>, or returns null (logging why) when the
+        /// VContainer lifetime adapter cannot read the scope; the caller then uses
+        /// <see cref="ReleaseUntrackedAsync"/> and plain scope disposal instead of leaking it.
+        /// </summary>
+        internal static OwnedCleanup? TryOwn(IObjectResolver scope, ILogger logger, string name,
+            IReadOnlyList<object>? protectedInstances = null, Func<bool>? refreshProtected = null)
+        {
+            try { return new OwnedCleanup(scope, logger, name, protectedInstances, refreshProtected); }
+            catch (Exception exception)
+            {
+                AdapterFailed(logger, name, exception, "falling back to plain teardown: the graph's asynchronous " +
+                    "services in dependency order, then the container's own disposal");
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Fallback teardown without the lifetime adapter: disposes the graph's <see cref="IAsyncDisposable"/>
+        /// services after their dependents, then, when <paramref name="scope"/> is given, disposes it so
+        /// VContainer releases every <see cref="IDisposable"/> it tracks. Protected ancestor instances
+        /// are skipped; when their evidence cannot be refreshed, nothing further is released.
+        /// </summary>
+        internal static async Task ReleaseUntrackedAsync(IObjectResolver? scope, IReadOnlyList<ServiceNode> services,
+            ILogger logger, string name, IReadOnlyList<ServiceNode>? preferred = null,
+            IReadOnlyList<object>? protectedInstances = null, Func<bool>? refreshProtected = null)
+        {
+            var safe = true;
+            try
+            {
+                foreach (var node in ConstructionRollback.TeardownOrder(services, preferred))
+                {
+                    if (!(node.Instance is IAsyncDisposable disposable)) continue;
+                    if (!Refresh()) { safe = false; break; }
+                    if (Contains(protectedInstances, disposable)) continue;
+                    try { await disposable.DisposeAsync(); }
+                    catch (Exception exception) { Log(logger, name, node.Name, exception); }
+                }
+            }
+            catch (Exception exception) { Log(logger, name, "constructed services", exception); }
+            finally
+            {
+                if (scope != null)
+                {
+                    if (safe && Refresh()) ScopeDisposal.Dispose(scope, logger, name);
+                    else Log(logger, name, "scope", new InitGraphException(name,
+                        "Cannot safely release a failed child scope: ancestor instance ownership could not be inspected."));
+                }
+            }
+
+            bool Refresh()
+            {
+                if (refreshProtected == null) return true;
+                try { return refreshProtected(); }
+                catch { return false; }
+            }
+        }
+
+        private static bool Contains(IReadOnlyList<object>? instances, object instance)
+        {
+            if (instances == null) return false;
+            foreach (var candidate in instances) if (ReferenceEquals(candidate, instance)) return true;
+            return false;
+        }
+
+        /// <summary>Logs a lifetime adapter failure once per teardown, with the fallback taken.</summary>
+        internal static void AdapterFailed(ILogger logger, string name, Exception exception, string fallback)
+        {
+            try { logger.Error($"[RuntimeFlow] {name}: the VContainer lifetime adapter failed " +
+                $"({exception.GetType().Name}: {exception.Message}); {fallback}.", exception); }
+            catch { }
         }
 
         private static Plan Build(IObjectResolver scope, IReadOnlyList<ServiceNode> services, ILogger logger,
@@ -95,12 +195,10 @@ namespace RuntimeFlow.Internal
                 var node = Add(entry.Instance.GetType(), entry.Instance, entry.Registration, entry.Resolver);
                 registrations.Add(entry.Registration, node);
             }
+            var present = new HashSet<object>(ConstructionRollback.InstanceIdentity.Instance);
+            foreach (var node in nodes) if (node.Instance != null) present.Add(node.Instance);
             foreach (var instance in tracker.Tracked)
-            {
-                var found = false;
-                foreach (var node in nodes) if (ReferenceEquals(node.Instance, instance)) { found = true; break; }
-                if (!found) Add(instance.GetType(), instance, null, scope);
-            }
+                if (present.Add(instance)) Add(instance.GetType(), instance, null, scope);
             if (includeUncreated)
                 foreach (var registration in VContainerLifetimeTracker.LocalRegistrations(scope, name))
                 {
@@ -142,29 +240,63 @@ namespace RuntimeFlow.Internal
         // Validation must follow every local lifetime vertex, including non-disposable helpers.
         // The ordering planner deliberately keeps its direct component edges; only the borrowed
         // ownership boundary needs transitive reachability to an asynchronously released resource.
-        private static bool Reaches(ServiceNode from, ServiceNode target, IReadOnlyList<ServiceNode> nodes)
+        // Each dependent's closure is walked once and cached, instead of once per candidate dependency.
+        private sealed class Reachability
         {
-            var pending = new Stack<ServiceNode>();
-            var seen = new HashSet<ServiceNode>();
-            foreach (var edge in from.Deps) pending.Push(edge.Target);
-            while (pending.Count > 0)
+            private readonly Dictionary<object, List<ServiceNode>> _byInstance =
+                new Dictionary<object, List<ServiceNode>>(ConstructionRollback.InstanceIdentity.Instance);
+            private readonly Dictionary<object, List<ServiceNode>> _byRegistration =
+                new Dictionary<object, List<ServiceNode>>(ConstructionRollback.InstanceIdentity.Instance);
+            private readonly Dictionary<ServiceNode, Closure> _closures = new Dictionary<ServiceNode, Closure>();
+
+            public Reachability(IReadOnlyList<ServiceNode> nodes)
             {
-                var dependency = pending.Pop();
-                if (dependency.Kind == NodeKind.External || !seen.Add(dependency)) continue;
-                if (ReferenceEquals(dependency, target)
-                    || (target.Instance != null && ReferenceEquals(dependency.Instance, target.Instance))) return true;
-                foreach (var edge in dependency.Deps) pending.Push(edge.Target);
-                // A copied graph edge may point at an original node, and physical aliases can
-                // carry different registration edges. Follow the complete local alias group.
-                foreach (var alias in nodes)
+                foreach (var node in nodes)
                 {
-                    var sameInstance = dependency.Instance != null && ReferenceEquals(alias.Instance, dependency.Instance);
-                    var sameRegistration = dependency.Registration != null
-                        && ReferenceEquals(alias.Registration, dependency.Registration);
-                    if ((sameInstance || sameRegistration) && !seen.Contains(alias)) pending.Push(alias);
+                    if (node.Instance != null) Group(_byInstance, node.Instance, node);
+                    if (node.Registration != null) Group(_byRegistration, node.Registration, node);
                 }
             }
-            return false;
+
+            public bool Reaches(ServiceNode from, ServiceNode target)
+            {
+                if (!_closures.TryGetValue(from, out var closure)) _closures.Add(from, closure = Walk(from));
+                return closure.Nodes.Contains(target)
+                       || (target.Instance != null && closure.Instances.Contains(target.Instance));
+            }
+
+            private Closure Walk(ServiceNode from)
+            {
+                var closure = new Closure();
+                var pending = new Stack<ServiceNode>();
+                foreach (var edge in from.Deps) pending.Push(edge.Target);
+                while (pending.Count > 0)
+                {
+                    var dependency = pending.Pop();
+                    if (dependency.Kind == NodeKind.External || !closure.Nodes.Add(dependency)) continue;
+                    if (dependency.Instance != null) closure.Instances.Add(dependency.Instance);
+                    foreach (var edge in dependency.Deps) pending.Push(edge.Target);
+                    // A copied graph edge may point at an original node, and physical aliases can
+                    // carry different registration edges. Follow the complete local alias group.
+                    if (dependency.Instance != null && _byInstance.TryGetValue(dependency.Instance, out var aliases))
+                        foreach (var alias in aliases) if (!closure.Nodes.Contains(alias)) pending.Push(alias);
+                    if (dependency.Registration != null && _byRegistration.TryGetValue(dependency.Registration, out var shared))
+                        foreach (var alias in shared) if (!closure.Nodes.Contains(alias)) pending.Push(alias);
+                }
+                return closure;
+            }
+
+            private static void Group(Dictionary<object, List<ServiceNode>> groups, object key, ServiceNode node)
+            {
+                if (!groups.TryGetValue(key, out var group)) groups.Add(key, group = new List<ServiceNode>());
+                group.Add(node);
+            }
+
+            private sealed class Closure
+            {
+                public readonly HashSet<ServiceNode> Nodes = new HashSet<ServiceNode>();
+                public readonly HashSet<object> Instances = new HashSet<object>(ConstructionRollback.InstanceIdentity.Instance);
+            }
         }
 
         /// <summary>One owned teardown's tracker access, protection boundary and physical sync-cleanup ledger.</summary>
@@ -248,12 +380,15 @@ namespace RuntimeFlow.Internal
             return false;
         }
 
-        private static bool IsAsyncOwned(object? instance, IReadOnlyList<ServiceNode> services)
+        private static HashSet<object> AsyncOwned(IReadOnlyList<ServiceNode> services)
         {
-            if (!(instance is IAsyncDisposable)) return false;
-            foreach (var service in services) if (ReferenceEquals(service.Instance, instance)) return true;
-            return false;
+            var owned = new HashSet<object>(ConstructionRollback.InstanceIdentity.Instance);
+            foreach (var service in services) if (service.Instance is IAsyncDisposable disposable) owned.Add(disposable);
+            return owned;
         }
+
+        private static bool IsAsyncOwned(object? instance, HashSet<object> asyncOwned)
+            => instance is IAsyncDisposable && asyncOwned.Contains(instance);
 
         internal static void Log(ILogger logger, string scope, string service, Exception exception, bool synchronous = false)
         {

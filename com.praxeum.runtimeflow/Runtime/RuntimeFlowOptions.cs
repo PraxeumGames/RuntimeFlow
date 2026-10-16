@@ -18,7 +18,10 @@ namespace RuntimeFlow
         /// <summary>Phase used by services without <see cref="InitAttribute.Phase"/>; null means the last phase.</summary>
         public string? DefaultPhase { get; set; }
 
-        /// <summary>How long a run may make no progress before a warning is logged; <see cref="TimeSpan.Zero"/> disables it.</summary>
+        /// <summary>
+        /// How long a run may make no progress before a warning is logged; <see cref="TimeSpan.Zero"/> disables it.
+        /// Time the application spends suspended (backgrounded, or unfocused without Run In Background) does not count.
+        /// </summary>
         public TimeSpan StallWarningAfter { get; set; } = TimeSpan.FromSeconds(10);
 
         /// <summary>
@@ -28,7 +31,10 @@ namespace RuntimeFlow
         /// </summary>
         public TimeSpan CancellationGrace { get; set; } = TimeSpan.FromSeconds(5);
 
-        /// <summary>Scales every <see cref="InitAttribute.TimeoutSeconds"/>; 0 disables timeouts entirely.</summary>
+        /// <summary>
+        /// Scales every <see cref="InitAttribute.TimeoutSeconds"/>; 0 disables timeouts entirely. Timeouts count
+        /// only the time the application is not suspended (see <see cref="InitAttribute.TimeoutSeconds"/>).
+        /// </summary>
         public double TimeoutMultiplier { get; set; } = 1.0;
 
         /// <summary>

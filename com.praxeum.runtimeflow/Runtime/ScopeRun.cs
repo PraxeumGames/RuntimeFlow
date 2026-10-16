@@ -42,8 +42,9 @@ namespace RuntimeFlow
         /// <param name="parents">Runs of the ancestor scopes, whose services become pre-completed external nodes.
         /// Pass the host's runs (as <see cref="RuntimeFlowHost.InitializeScopeAsync"/> does) to propagate
         /// parent degradation: a parent service that degraded stays degraded here. A standalone
-        /// <c>Create</c> on a child resolver only sees the parent containers, so its externals always
-        /// count as initialized.</param>
+        /// <c>Create</c> on a child resolver only sees the parent containers: an external that constructs
+        /// counts as initialized (with a warning when this scope depends on it), one whose construction
+        /// throws counts as failed and fails its dependents.</param>
         /// <param name="ownsScope">When true <see cref="DisposeAsync"/> also disposes the resolver — and so does a
         /// failing <c>Create</c>, since no run is left to own it. When false the resolver and its services stay
         /// the caller's, also when <c>Create</c> fails.</param>
@@ -323,6 +324,9 @@ namespace RuntimeFlow
         /// after a yield, so a service may dispose its own run from inside its <c>InitializeAsync</c>.
         /// Concurrent, repeated and re-entrant calls share one teardown and all complete when it does. With
         /// an infinite grace a service that ignores its token keeps the teardown pending forever.
+        /// When VContainer's private lifetime state cannot be read, teardown logs one error and falls back to
+        /// disposing the graph's <see cref="IAsyncDisposable"/> services in dependency order, then (when owned)
+        /// the resolver itself.
         /// </summary>
         /// <exception cref="InitGraphException">A caller-owned scope acquired a synchronous dependent of a
         /// graph-owned asynchronous service after validation. Teardown stops before releasing any service,
@@ -390,12 +394,29 @@ namespace RuntimeFlow
             await _scheduler.WaitForAbandonedAsync();
 
             MixedTeardown.OwnedCleanup? ownership = null;
+            var untracked = false;
+            Exception? primary = null;
             try
             {
-                if (_ownsScope) ownership = new MixedTeardown.OwnedCleanup(_scope, _options.Logger, Name);
+                if (_ownsScope)
+                {
+                    // An unreadable lifetime adapter degrades to plain disposal instead of leaking the scope.
+                    ownership = MixedTeardown.TryOwn(_scope, _options.Logger, Name);
+                    untracked = ownership == null;
+                }
                 if (DisposesServices)
-                    await MixedTeardown.ReleaseAsync(_scope, _graph.Services, _options.Logger, Name,
-                        _ownsScope, TeardownOrder(), ownership);
+                {
+                    if (untracked)
+                        await MixedTeardown.ReleaseUntrackedAsync(null, _graph.Services, _options.Logger, Name, TeardownOrder());
+                    else
+                        await MixedTeardown.ReleaseAsync(_scope, _graph.Services, _options.Logger, Name,
+                            _ownsScope, TeardownOrder(), ownership);
+                }
+            }
+            catch (Exception exception)
+            {
+                primary = exception;
+                throw;
             }
             finally
             {
@@ -404,9 +425,19 @@ namespace RuntimeFlow
                 {
                     _options.Logger.Error($"[RuntimeFlow] {Name}: releasing the run's tokens threw {exception.GetType().Name}; continuing teardown.", exception);
                 }
-                // Keep the planned and residual calls in the same physical cleanup ledger.
-                // Successful local registration ownership retains its established policy.
-                if (ownership != null) ownership.DrainScope();
+                try
+                {
+                    // Keep the planned and residual calls in the same physical cleanup ledger.
+                    // Successful local registration ownership retains its established policy.
+                    if (ownership != null) ownership.DrainScope();
+                    else if (untracked) ScopeDisposal.Dispose(_scope, _options.Logger, Name);
+                }
+                catch (Exception exception) when (primary != null)
+                {
+                    // The teardown error already in flight stays the one awaiters observe.
+                    _options.Logger.Error($"[RuntimeFlow] {Name}: draining the scope threw {exception.GetType().Name} " +
+                        $"after teardown failed with {primary!.GetType().Name}; preserving the original error.", exception);
+                }
             }
         }
 

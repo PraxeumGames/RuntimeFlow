@@ -21,6 +21,13 @@ namespace RuntimeFlow.Internal
     {
         private enum StopKind { None, Failure, Halt, Cancel }
 
+        /// <summary>
+        /// The node whose <see cref="IAsyncInitializable.InitializeAsync"/> the current asynchronous flow
+        /// belongs to: set around the call, it flows into every continuation of that service, so the host can
+        /// refuse a call that would wait for the very run the caller is part of.
+        /// </summary>
+        private static readonly AsyncLocal<ServiceNode?> Initializing = new AsyncLocal<ServiceNode?>();
+
         private readonly ServiceGraph _graph;
         private readonly RuntimeFlowOptions _options;
         private readonly ILogger _logger;
@@ -60,7 +67,13 @@ namespace RuntimeFlow.Internal
         private string? _haltReason;
         private string? _haltedBy;
         private string? _currentPhase;
+
+        // In AppSuspension.ActiveTime, like every stall and timeout measurement: background time never counts.
         private TimeSpan _lastProgress;
+
+        // Set once the run concluded: its status no longer changes, so one snapshot serves every later poll.
+        private bool _concluded;
+        private RuntimeFlowStatus? _concludedStatus;
 
         public Scheduler(ServiceGraph graph, RuntimeFlowOptions options)
         {
@@ -82,6 +95,28 @@ namespace RuntimeFlow.Internal
 
         /// <summary>Failure of the run, or null.</summary>
         public Exception? Error { get; private set; }
+
+        /// <summary>
+        /// The token of the service whose still running <see cref="IAsyncInitializable.InitializeAsync"/>
+        /// the calling flow belongs to (any run, any scope), or false when it belongs to none.
+        /// </summary>
+        public static bool TryGetInitializingToken(out CancellationToken token)
+        {
+            token = default;
+            var node = Initializing.Value;
+            if (node == null || node.State != ServiceState.Running) return false;
+            var cts = node.Cts;
+            if (cts == null) return false;
+            try
+            {
+                token = cts.Token;
+                return true;
+            }
+            catch (ObjectDisposedException)
+            {
+                return false;
+            }
+        }
 
         /// <summary>Runs the graph to completion, a halt, a failure or cancellation.</summary>
         /// <exception cref="InvalidOperationException">The run was started already, or there is no synchronization context.</exception>
@@ -106,7 +141,7 @@ namespace RuntimeFlow.Internal
             _done = new TaskCompletionSource<StartupResult>(TaskCreationOptions.RunContinuationsAsynchronously);
             _runCts = new CancellationTokenSource();
             _clock.Restart();
-            _lastProgress = TimeSpan.Zero;
+            _lastProgress = AppSuspension.ActiveTime;
 
             // A parent run may have finished after this graph was built: read the parents' states now.
             foreach (var external in _graph.Externals)
@@ -292,7 +327,13 @@ namespace RuntimeFlow.Internal
                 var observations = new List<Task>(unwinding.Count);
                 foreach (var node in unwinding) observations.Add(node.Observation ?? node.Task!);
                 var all = Task.WhenAll(observations);
-                if (ReferenceEquals(await Task.WhenAny(all, Grace()), all))
+                Task winner;
+                using (var timer = new CancellationTokenSource())
+                {
+                    winner = await Task.WhenAny(all, Grace(timer.Token));
+                    timer.Cancel();
+                }
+                if (ReferenceEquals(winner, all))
                 {
                     _ = all.Exception;
                     return;
@@ -319,6 +360,10 @@ namespace RuntimeFlow.Internal
         /// <summary>Immutable snapshot of the run, safe to poll at any time.</summary>
         public RuntimeFlowStatus GetStatus()
         {
+            // UIs keep polling after loading: a concluded run hands out the same snapshot every time.
+            var cached = _concludedStatus;
+            if (cached != null && cached.RestartCount == RestartCount) return cached;
+
             var services = new List<ServiceStatus>(_graph.Services.Count);
             var running = new List<ServiceStatus>();
             var completed = 0;
@@ -331,9 +376,9 @@ namespace RuntimeFlow.Internal
 
             foreach (var node in _graph.Services)
             {
-                var status = Snapshot(node);
-                services.Add(status);
-                if (node.State == ServiceState.Running) running.Add(status);
+                var service = Snapshot(node);
+                services.Add(service);
+                if (node.State == ServiceState.Running) running.Add(service);
                 if (node.IsSatisfied) completed++;
 
                 var normalized = scale > 0 ? node.Weight / scale : 0;
@@ -345,8 +390,10 @@ namespace RuntimeFlow.Internal
             var percent = weight > 0
                 ? done / weight * 100.0
                 : (services.Count == 0 || completed == services.Count ? 100.0 : 0.0);
-            return new RuntimeFlowStatus(State, _scope, _currentPhase, services, running,
+            var status = new RuntimeFlowStatus(State, _scope, _currentPhase, services, running,
                 completed, services.Count, percent, _clock.Elapsed, RestartCount, _haltReason, Error, _haltedBy);
+            if (_concluded) _concludedStatus = status;
+            return status;
         }
 
         /// <summary>
@@ -430,6 +477,7 @@ namespace RuntimeFlow.Internal
         {
             node.State = ServiceState.Running;
             node.Clock.Restart();
+            node.ActiveStart = AppSuspension.ActiveTime;
             _inFlight.Add(node);
             node.Cts = CancellationTokenSource.CreateLinkedTokenSource(_runCts!.Token);
             node.Context = new InitContext(_scope, _isRestart, _generation, () => _degradedSnapshot,
@@ -443,6 +491,10 @@ namespace RuntimeFlow.Internal
                           (node.Phase != null ? $" (phase {node.Phase})" : string.Empty));
 
             Task task;
+            // Set synchronously and restored right after the call: the value flows into the service's own
+            // continuations only, never into the scheduler code that runs after this method.
+            var outer = Initializing.Value;
+            Initializing.Value = node;
             try
             {
                 task = node.Service?.InitializeAsync(node.Context, node.Cts.Token) ?? Task.CompletedTask;
@@ -450,6 +502,10 @@ namespace RuntimeFlow.Internal
             catch (Exception exception)
             {
                 task = Task.FromException(exception);
+            }
+            finally
+            {
+                Initializing.Value = outer;
             }
 
             node.Task = task;
@@ -691,7 +747,7 @@ namespace RuntimeFlow.Internal
             Touch();
         }
 
-        private void Touch() => _lastProgress = _clock.Elapsed;
+        private void Touch() => _lastProgress = AppSuspension.ActiveTime;
 
         private void BeginStop(StopKind kind)
         {
@@ -778,7 +834,13 @@ namespace RuntimeFlow.Internal
                 if (pending.Count > 0)
                 {
                     var all = Task.WhenAll(pending);
-                    var winner = await Task.WhenAny(all, Grace());
+                    Task winner;
+                    using (var timer = new CancellationTokenSource())
+                    {
+                        winner = await Task.WhenAny(all, Grace(timer.Token));
+                        // The grace timer is not needed once the services settled; release it now.
+                        timer.Cancel();
+                    }
                     if (ReferenceEquals(winner, all))
                     {
                         // Service outcomes are caught inside ObserveAsync, so a fault here is a framework
@@ -805,14 +867,15 @@ namespace RuntimeFlow.Internal
         /// <summary>
         /// The wait granted to cancelled services: <see cref="RuntimeFlowOptions.CancellationGrace"/>, where
         /// <see cref="Timeout.InfiniteTimeSpan"/> (or anything beyond what a timer can express) waits forever
-        /// and zero or less does not wait.
+        /// and zero or less does not wait. <paramref name="stop"/> releases the timer early (the task then
+        /// ends cancelled, which nobody observes).
         /// </summary>
-        private Task Grace()
+        private Task Grace(CancellationToken stop)
         {
             var grace = _options.CancellationGrace;
             if (grace == Timeout.InfiniteTimeSpan || grace.TotalMilliseconds > int.MaxValue)
                 return new TaskCompletionSource<bool>().Task;
-            return Task.Delay(grace > TimeSpan.Zero ? grace : TimeSpan.Zero);
+            return Task.Delay(grace > TimeSpan.Zero ? grace : TimeSpan.Zero, stop);
         }
 
         private void Finish()
@@ -840,6 +903,8 @@ namespace RuntimeFlow.Internal
             }
             finally
             {
+                // Every node, the state and the error are final now; awaiters resume after this point.
+                _concluded = true;
                 if (complete != null) complete();
                 else _done!.TrySetException(new InvalidOperationException($"The '{_scope}' run could not be finished; see the log."));
             }
@@ -1089,10 +1154,11 @@ namespace RuntimeFlow.Internal
                 if (node.State != ServiceState.Running || node.Task?.IsCompleted == true) continue;
                 if (!(_options.TimeoutMultiplier > 0) || node.UserGated || node.TimeoutSeconds <= 0) continue;
                 var limit = node.TimeoutSeconds * _options.TimeoutMultiplier;
-                var elapsed = node.Clock.Elapsed;
-                if (elapsed.TotalSeconds < limit) continue;
+                // Counted without the time the application spent suspended (backgrounded on a phone): the
+                // service could not run then, and timing it out on resume would fail a healthy startup.
+                if (node.ActiveElapsed.TotalSeconds < limit) continue;
 
-                if (MarkFailed(node, new TimeoutException(TimeoutMessage(node, limit)), elapsed))
+                if (MarkFailed(node, new TimeoutException(TimeoutMessage(node, limit)), node.Clock.Elapsed))
                     (expired ??= new List<ServiceNode>()).Add(node);
             }
 
@@ -1118,7 +1184,7 @@ namespace RuntimeFlow.Internal
             if (expired != null) return;
             if (_stop != StopKind.None || State != RunState.Running || _finished) return;
             if (_options.StallWarningAfter <= TimeSpan.Zero) return;
-            var since = _clock.Elapsed - _lastProgress;
+            var since = AppSuspension.ActiveTime - _lastProgress;
             if (since < _options.StallWarningAfter) return;
 
             var running = _inFlight.Where(n => !n.UserGated).OrderBy(n => n.Index).ToList();

@@ -81,7 +81,8 @@ types to about 25, and every 0.x concept below is gone.
 - `RuntimeFlowStatus`, `ServiceStatus`, `ServiceState`, `RunState` — pull snapshots with weighted
   `Percent`, `WaitingOn`, elapsed, errors, `HaltReason` and `HaltedBy`.
 - `UnityConsoleLogger` — the default Microsoft.Extensions.Logging sink for the Unity console.
-- `RuntimeFlowRegistrationExtensions.RegisterInitializable<T>()` — optional registration sugar.
+- `RuntimeFlowRegistrationExtensions.RegisterInitializable<T>()` — optional registration sugar, always
+  `Lifetime.Singleton` (the lifetime parameter is gone: any other lifetime was always a graph error).
 - `RuntimeFlow.Testing`: `TestFlow` (headless host with `Override<T>` — instance or per-build factory —,
   `Override<T, TImpl>`, `Configure`, `ObserveWith`,
   `WithStartupTimeout`, captured `Log`), `LifecycleFake` (+ `LifecycleFakeHandle`, `FakeBehavior`,
@@ -252,6 +253,42 @@ now also runs against the VContainer 1.19 fork sfs-client ships.
   subset. A stale results file can no longer be reported as the current run's. Invalid explicit chaos
   ranges, missing results and runs that execute no tests fail. Disposing child runs remain tracked until
   completion, while weak scope identity rejects their reuse afterwards; host status preserves `HaltedBy`.
+- **Backgrounded loading.** Timeouts and the stall warning no longer count time the application spent
+  suspended (in the background on a mobile platform, or unfocused without Run In Background): a player
+  who left the game during loading came back to required services that had timed out. Reported
+  durations (`StartupResult.Elapsed`, `ServiceStatus.Elapsed`) stay wall-clock.
+- **Re-entrant startup.** `StartAsync` awaited from inside the `InitializeAsync` of a global or session
+  service while the chain was in flight hung forever; it now returns a task faulted with
+  `InvalidOperationException`. `RestartAsync` keeps its fire-and-forget contract.
+- **Main thread.** `StartAsync`, `RestartAsync` and the first `DisposeAsync` refuse a thread without a
+  `SynchronizationContext` before anything is built or torn down; before, the global container could be
+  built and run on the thread pool.
+- **Host diagnostics.** Failing to read VContainer's internal entry-point exception handler (renamed or
+  stripped member) is logged once as a warning instead of silently disabling the global handler's
+  forwarding; the inert placeholder registration is preserved from code stripping. A throwing
+  dashboard-registry subscriber no longer breaks a host's construction or `DisposeAsync`; the registry
+  is thread-safe and drops its subscribers when a player-loop session starts. `RestartAsync` on a
+  disposed host returns a faulted task (`ObjectDisposedException`) like every other refusal.
+  `StartupResult` and `RuntimeFlowStatus` render culture-invariant. Grace and dispose-bound timers are
+  released as soon as they are no longer needed, and a concluded run (and an idle host) returns the
+  same status snapshot on every poll instead of allocating a new one.
+
+### Fixed (teardown and discovery hardening)
+
+- **Teardown no longer leaks when VContainer's private lifetime state cannot be read.** An owned run's
+  disposal and a failed owned build log one error and fall back to disposing the graph's
+  `IAsyncDisposable` services in dependency order, then the scope itself; before, the scope and every
+  disposable in it leaked. A scope-drain error no longer replaces an earlier teardown error.
+- **Teardown ordering is near-linear.** Dependencies are computed once per service instead of once per
+  pair and step (cubic, with allocations per check); the resulting order is unchanged.
+- **Standalone child runs and failing parent services.** Without `parents`, a parent service whose
+  construction throws is now a failed external (its dependents fail with that error) instead of an
+  initialized one with no instance; depending on inferred parent services logs one warning.
+- **No false cycles from instances and factories.** An inferred constructor edge of a `RegisterInstance`
+  object or factory product that would close a cycle is dropped with a warning.
+- **`[DependsOn]` edge cases.** `[DependsOn(null)]` and an open generic target are `InitGraphException`s
+  with a fix instead of a `NullReferenceException` or a silent mismatch; an open generic registration
+  implementing `IAsyncInitializable` (never discoverable) logs a warning.
 
 ### Removed
 
