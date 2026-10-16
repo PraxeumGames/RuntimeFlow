@@ -48,10 +48,28 @@ namespace RuntimeFlow.Tests.Graph
         public sealed class GlobalNeedsSession : AutoService { }
 
         /// <summary>Implements IAsyncInitializable, but a registration may still forget to expose it.</summary>
-        public sealed class HiddenInitializable : AutoService { }
+        public interface IHiddenContract { }
+
+        public sealed class HiddenInitializable : AutoService, IHiddenContract { }
 
         [DependsOn(typeof(HiddenInitializable))]
         public sealed class NeedsHidden : AutoService { }
+
+        [DependsOn(typeof(SelfDependent))]
+        public sealed class SelfDependent : AutoService { }
+
+        [DependsOn(null!)]
+        public sealed class NullDependsOnService : AutoService { }
+
+        public sealed class ConstructCounter
+        {
+            public int Count { get; set; }
+        }
+
+        public sealed class CountedService : AutoService
+        {
+            public CountedService(ConstructCounter counter) => counter.Count++;
+        }
 
         public interface IDupA : IAsyncInitializable { }
 
@@ -150,6 +168,55 @@ namespace RuntimeFlow.Tests.Graph
                 "NeedsHidden declares [DependsOn(typeof(HiddenInitializable))]; HiddenInitializable implements " +
                 "IAsyncInitializable but is not registered as one, so it is never initialized. Register it with " +
                 "RegisterInitializable<T>() or add .As<IAsyncInitializable>() to its registration."));
+        }
+
+        [Test]
+        public void ADependsOnConcreteTargetRegisteredOnlyAsAnotherInterfaceStillSaysSo()
+        {
+            var container = _tracker.Build(b =>
+            {
+                b.Add<NeedsHidden>();
+                b.Register<HiddenInitializable>(Lifetime.Singleton).As<IHiddenContract>();
+            });
+
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
+
+            Assert.That(error!.Message, Is.EqualTo(
+                "NeedsHidden declares [DependsOn(typeof(HiddenInitializable))]; HiddenInitializable implements " +
+                "IAsyncInitializable but is not registered as one, so it is never initialized. Register it with " +
+                "RegisterInitializable<T>() or add .As<IAsyncInitializable>() to its registration."));
+        }
+
+        [Test]
+        public void SelfDependsOnTargetDoesNotFalselyClaimItIsNotRegisteredAsInitializable()
+        {
+            var container = _tracker.Build(b => b.Add<SelfDependent>());
+
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
+
+            Assert.That(error!.Message, Is.EqualTo(
+                "SelfDependent declares [DependsOn(typeof(SelfDependent))], but no initializable service assignable to " +
+                "SelfDependent is registered in scope 'session' or its parents. A target must implement IAsyncInitializable " +
+                "and live in the same scope or a parent scope; a parent scope can never depend on a child scope. " +
+                "Known services — session: SelfDependent."));
+        }
+
+        [Test]
+        public void NullDependsOnTargetIsRejectedBeforeConstructingServices()
+        {
+            var counter = new ConstructCounter();
+            var container = _tracker.Build(b =>
+            {
+                b.RegisterInstance(counter);
+                b.Add<CountedService>();
+                b.Add<NullDependsOnService>();
+            });
+
+            var error = Assert.Throws<InitGraphException>(() => _tracker.Create(container, "session", _options));
+
+            Assert.That(error!.Message, Is.EqualTo(
+                "NullDependsOnService declares [DependsOn(null)]; name the service type it waits for, for example [DependsOn(typeof(IAuth))]."));
+            Assert.That(counter.Count, Is.Zero, "pre-construction validation must reject [DependsOn(null)] before resolving services");
         }
 
         [Test]

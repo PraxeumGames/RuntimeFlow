@@ -65,9 +65,14 @@ namespace RuntimeFlow.Internal
             return text.ToString();
         }
 
-        /// <summary>Scope and state of an external node, for example "[global, initialized]" or "[global, degraded]".</summary>
+        /// <summary>
+        /// Scope and state of an external node, for example "[global, initialized]", "[global, degraded]" or,
+        /// for a parent service its run never initialized, "[global, skipped]".
+        /// </summary>
         private static string ExternalTag(ServiceNode node)
-            => "[" + node.Scope + ", " + (node.State == ServiceState.Degraded ? "degraded" : "initialized") + "]";
+            => "[" + node.Scope + ", " + (node.State == ServiceState.Degraded ? "degraded"
+                : node.State == ServiceState.Completed ? "initialized"
+                : Fmt.State(node.State)) + "]";
 
         private static string PhaseCell(ServiceNode node) => node.Phase == null ? "[-]" : "[" + node.Phase + "]";
 

@@ -56,15 +56,39 @@ namespace RuntimeFlow.Testing
         /// <paramref name="instance"/>, which also joins the initialization graph when it is an
         /// <see cref="IAsyncInitializable"/>.
         /// </summary>
+        /// <remarks>
+        /// The same instance is registered again every time its scope is built: a session override
+        /// survives restarts as one object that is initialized once per generation (and disposed in
+        /// between when it is <see cref="IAsyncDisposable"/>), with its counters carried over. Use the
+        /// <see cref="Override{T}(Func{T})"/> overload for a fresh instance per build.
+        /// </remarks>
         public TestFlow Override<T>(T instance) where T : class
         {
             if (instance == null) throw new ArgumentNullException(nameof(instance));
-            return AddOverride(typeof(T), builder =>
+            return AddOverride(typeof(T), (builder, contracts) => RegisterOverride(builder, instance, contracts));
+        }
+
+        /// <summary>
+        /// Replaces every registration exposing <typeparamref name="T"/> with an instance created by
+        /// <paramref name="factory"/> each time its scope is built, so every session generation of a
+        /// restart test gets a fresh object.
+        /// </summary>
+        public TestFlow Override<T>(Func<T> factory) where T : class
+        {
+            if (factory == null) throw new ArgumentNullException(nameof(factory));
+            return AddOverride(typeof(T), (builder, contracts) =>
             {
-                var registration = builder.RegisterInstance(instance).As(typeof(T));
-                if (instance is IAsyncInitializable && typeof(T) != typeof(IAsyncInitializable))
-                    registration.As<IAsyncInitializable>();
+                var instance = factory() ?? throw new InvalidOperationException(
+                    $"The Override<{typeof(T).Name}> factory returned null.");
+                RegisterOverride(builder, instance, contracts);
             });
+        }
+
+        private static void RegisterOverride<T>(IContainerBuilder builder, T instance, IReadOnlyList<Type> contracts)
+            where T : class
+        {
+            var registration = builder.RegisterInstance(instance).As(typeof(T));
+            ExposeMatchingContracts(registration, instance.GetType(), typeof(T), contracts);
         }
 
         /// <summary>
@@ -73,12 +97,32 @@ namespace RuntimeFlow.Testing
         /// </summary>
         public TestFlow Override<T, TImpl>() where TImpl : class, T
         {
-            return AddOverride(typeof(T), builder =>
+            return AddOverride(typeof(T), (builder, contracts) =>
             {
                 var registration = builder.Register<TImpl>(Lifetime.Singleton).As<T>();
-                if (typeof(IAsyncInitializable).IsAssignableFrom(typeof(TImpl)) && typeof(T) != typeof(IAsyncInitializable))
-                    registration.As<IAsyncInitializable>();
+                ExposeMatchingContracts(registration, typeof(TImpl), typeof(T), contracts);
             });
+        }
+
+        private static void ExposeMatchingContracts(
+            RegistrationBuilder registration,
+            Type implementationType,
+            Type primaryContract,
+            IReadOnlyList<Type> replacedContracts)
+        {
+            if (typeof(IAsyncInitializable).IsAssignableFrom(implementationType)
+                && primaryContract != typeof(IAsyncInitializable))
+            {
+                registration.As<IAsyncInitializable>();
+            }
+
+            for (var i = 0; i < replacedContracts.Count; i++)
+            {
+                var contract = replacedContracts[i];
+                if (contract == primaryContract || contract == typeof(IAsyncInitializable)) continue;
+                if (contract.IsAssignableFrom(implementationType))
+                    registration.As(contract);
+            }
         }
 
         /// <summary>Adjusts the options the host runs with; the capturing logger is replaced if you set one.</summary>
@@ -99,10 +143,15 @@ namespace RuntimeFlow.Testing
             return this;
         }
 
-        /// <summary>Deadline for <see cref="StartAsync"/>; the default is 30 seconds.</summary>
+        /// <summary>
+        /// Bounds the asynchronous wait in <see cref="StartAsync"/>, including failed-startup cleanup;
+        /// the default is 30 seconds. Values must fit the timer's supported range (at most
+        /// <see cref="System.Int32.MaxValue"/> milliseconds). Synchronous installer/service code cannot be interrupted.
+        /// </summary>
         public TestFlow WithStartupTimeout(TimeSpan timeout)
         {
-            if (timeout <= TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(timeout));
+            if (timeout <= TimeSpan.Zero || timeout > TimeSpan.FromMilliseconds(int.MaxValue))
+                throw new ArgumentOutOfRangeException(nameof(timeout), "Startup timeout must be positive and at most Int32.MaxValue milliseconds.");
             ThrowIfStarted();
             _startupTimeout = timeout;
             return this;
@@ -112,6 +161,12 @@ namespace RuntimeFlow.Testing
         /// Builds both scopes and runs their graphs, then returns this instance so it can be awaited and
         /// disposed in one expression.
         /// </summary>
+        /// <remarks>
+        /// Failure freezes the host and starts ordered cleanup immediately. Cleanup is awaited only until
+        /// the original startup deadline, after which it continues in the background and the startup error
+        /// is rethrown unchanged. A timed-out startup surfaces <see cref="TimeoutException"/> immediately;
+        /// an explicit <see cref="DisposeAsync"/> joins the same cleanup without a deadline.
+        /// </remarks>
         /// <exception cref="TimeoutException">Startup exceeded <see cref="WithStartupTimeout"/>; the message carries the status.</exception>
         /// <exception cref="InvalidOperationException">An override matched no registration in any scope.</exception>
         public async Task<TestFlow> StartAsync(CancellationToken cancellationToken = default)
@@ -122,33 +177,43 @@ namespace RuntimeFlow.Testing
                 builder => Install(builder, _sessionInstaller, "session"),
                 _options);
 
-            try
+            using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+            using (var timer = new CancellationTokenSource())
             {
-                using (var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
+                var expiry = Task.Delay(_startupTimeout, timer.Token);
+                Task<StartupResult>? startup = null;
+                try
                 {
-                    var startup = _host.StartAsync(deadline.Token);
-                    var expiry = Task.Delay(_startupTimeout, deadline.Token);
+                    // The timer has its own source: a caller cancellation must surface as the startup's
+                    // OperationCanceledException, not complete the delay and read as a timeout.
+                    startup = _host.StartAsync(deadline.Token);
                     var finished = await Task.WhenAny(startup, expiry);
                     if (!ReferenceEquals(finished, startup))
                     {
+                        cancellationToken.ThrowIfCancellationRequested();
                         var status = _host.GetStatus();
-                        deadline.Cancel();
-                        Forget(startup);
                         throw new TimeoutException(
                             $"Startup did not finish within {Seconds(_startupTimeout)}. {Render(status)}");
                     }
 
-                    deadline.Cancel();
-                    Forget(expiry);
                     Result = await startup;
                 }
-            }
-            catch (Exception)
-            {
-                // A failed startup still built containers, and an override mismatch throws before the
-                // global scope was ever handed back: without this the test would leak both.
-                await _host.DisposeAsync();
-                throw;
+                catch (Exception)
+                {
+                    // DisposeAsync freezes immediately and retains the entire ordered cleanup chain;
+                    // don't dispose containers or upstream dependencies independently of that chain.
+                    // Observe both tasks even when the deadline prevents waiting for them to finish.
+                    if (startup != null) Forget(startup);
+                    var cleanup = _host.DisposeAsync().AsTask();
+                    Forget(cleanup);
+                    if (!expiry.IsCompleted) await Task.WhenAny(cleanup, expiry);
+                    throw;
+                }
+                finally
+                {
+                    timer.Cancel();
+                    Forget(expiry);
+                }
             }
 
             return this;
@@ -173,14 +238,17 @@ namespace RuntimeFlow.Testing
         /// <summary>Resolves a service from the session scope (which sees the global one).</summary>
         public T Resolve<T>() => Session.Resolve<T>();
 
-        /// <summary>Disposes the host, tearing both scopes down in order.</summary>
+        /// <summary>
+        /// Disposes the host, tearing both scopes down in order, or joins cleanup that continued after
+        /// <see cref="StartAsync"/> failed. This explicit wait is not bounded by the startup deadline.
+        /// </summary>
         public async ValueTask DisposeAsync()
         {
             if (_host == null) return;
             await _host.DisposeAsync();
         }
 
-        private TestFlow AddOverride(Type serviceType, Action<IContainerBuilder> register)
+        private TestFlow AddOverride(Type serviceType, Action<IContainerBuilder, IReadOnlyList<Type>> register)
         {
             ThrowIfStarted();
             foreach (var existing in _overrides)
@@ -221,7 +289,8 @@ namespace RuntimeFlow.Testing
         }
 
         private static void Forget(Task task)
-            => task.ContinueWith(finished => _ = finished.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            => task.ContinueWith(finished => _ = finished.Exception,
+                CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted, TaskScheduler.Default);
 
         private static string Render(RuntimeFlowStatus status)
         {

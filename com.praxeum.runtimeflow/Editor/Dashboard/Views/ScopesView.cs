@@ -11,7 +11,6 @@ namespace RuntimeFlow.Editor
     internal sealed class ScopesView : VisualElement
     {
         private readonly ScrollView _content;
-        private DashboardSnapshot? _snapshot;
 
         /// <summary>Builds the scrolling card list; the view stays empty until <see cref="Refresh"/> runs.</summary>
         public ScopesView()
@@ -23,38 +22,42 @@ namespace RuntimeFlow.Editor
             Add(_content);
         }
 
-        /// <summary>Raised with the scope name when a card is clicked.</summary>
+        /// <summary>Raised with the captured run identity when a card is clicked.</summary>
         public event Action<string>? ScopeSelected;
 
         /// <summary>Rebuilds the cards from a new snapshot.</summary>
         /// <param name="snapshot">The current snapshot, or null when no host is selected.</param>
         public void Refresh(DashboardSnapshot? snapshot)
         {
-            _snapshot = snapshot;
+            snapshot?.EnsureIdentities();
             // Rebuilt wholesale on every tick, so keep the reader where they were scrolled to.
             var scroll = _content.scrollOffset;
             _content.Clear();
             _content.schedule.Execute(() => _content.scrollOffset = scroll);
 
-            if (_snapshot == null || _snapshot.Scopes.Count == 0)
+            if (snapshot?.HasError == true) _content.Add(ViewHelpers.HostFailure(snapshot));
+
+            if (snapshot == null || snapshot.Scopes.Count == 0)
             {
                 _content.Add(ViewHelpers.Hint(
                     "No scope has been built yet. Enter Play Mode or run the demo to see global and session."));
                 return;
             }
 
-            var summary = ViewHelpers.Card(_snapshot.HostLabel);
-            summary.Add(ViewHelpers.PropertyRow("State", _snapshot.State.ToString()));
-            summary.Add(ViewHelpers.PropertyRow("Progress", ViewHelpers.Percent(_snapshot.Percent)));
-            summary.Add(ViewHelpers.PropertyRow("Restarts", _snapshot.RestartCount.ToString(CultureInfo.InvariantCulture)));
-            summary.Add(ViewHelpers.PropertyRow("Generation", _snapshot.Generation.ToString(CultureInfo.InvariantCulture)));
-            if (_snapshot.HaltReason.Length > 0)
-                summary.Add(ViewHelpers.PropertyRow("Halted by", _snapshot.HaltReason));
+            var summary = ViewHelpers.Card(snapshot.HostLabel);
+            summary.Add(ViewHelpers.PropertyRow("State", snapshot.State.ToString()));
+            summary.Add(ViewHelpers.PropertyRow("Progress", ViewHelpers.Percent(snapshot.Percent)));
+            summary.Add(ViewHelpers.PropertyRow("Restarts", snapshot.RestartCount.ToString(CultureInfo.InvariantCulture)));
+            summary.Add(ViewHelpers.PropertyRow("Generation", snapshot.Generation.ToString(CultureInfo.InvariantCulture)));
+            if (snapshot.Restarting)
+                summary.Add(ViewHelpers.PropertyRow("Restarting", "yes"));
+            if (snapshot.HaltReason.Length > 0)
+                summary.Add(ViewHelpers.PropertyRow("Halted by", snapshot.HaltReason));
             _content.Add(summary);
 
-            for (var i = 0; i < _snapshot.Scopes.Count; i++)
+            for (var i = 0; i < snapshot.Scopes.Count; i++)
             {
-                _content.Add(ScopeCard(_snapshot.Scopes[i], i));
+                _content.Add(ScopeCard(snapshot.Scopes[i], i));
             }
         }
 
@@ -92,7 +95,7 @@ namespace RuntimeFlow.Editor
             card.Add(list);
 
             card.Add(ViewHelpers.Hint("Click to filter the Graph tab to this scope."));
-            card.RegisterCallback<ClickEvent>(_ => ScopeSelected?.Invoke(scope.Name));
+            card.RegisterCallback<ClickEvent>(_ => ScopeSelected?.Invoke(scope.Id));
             return card;
         }
     }

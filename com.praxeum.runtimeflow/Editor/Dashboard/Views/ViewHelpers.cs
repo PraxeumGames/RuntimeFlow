@@ -19,6 +19,18 @@ namespace RuntimeFlow.Editor
             return card;
         }
 
+        /// <summary>A host failure that remains visible even when a failed scope build produced no rows.</summary>
+        public static VisualElement HostFailure(DashboardSnapshot snapshot)
+        {
+            var card = Card("Startup failed — " + snapshot.ErrorType);
+            card.AddToClassList("rf-card--failed");
+            var message = new Label(snapshot.ErrorMessage);
+            message.AddToClassList("rf-error-message");
+            card.Add(message);
+            card.Add(SelectableText(snapshot.ErrorStack.Length > 0 ? snapshot.ErrorStack : "(no stack trace)", "rf-stack"));
+            return card;
+        }
+
         /// <summary>A label/value line inside a card.</summary>
         /// <param name="label">Left-hand caption.</param>
         /// <param name="value">Right-hand value.</param>
@@ -36,16 +48,6 @@ namespace RuntimeFlow.Editor
             row.Add(caption);
             row.Add(text);
             return row;
-        }
-
-        /// <summary>A colored badge naming a service state.</summary>
-        /// <param name="state">The state to render.</param>
-        public static Label StateBadge(ServiceState state)
-        {
-            var badge = new Label(state.ToString().ToLowerInvariant());
-            badge.AddToClassList("rf-badge");
-            badge.AddToClassList(StateClass(state));
-            return badge;
         }
 
         /// <summary>USS modifier class of a service state, for example <c>rf-state--running</c>.</summary>

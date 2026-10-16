@@ -314,5 +314,73 @@ namespace RuntimeFlow.Tests.Testing
             Assert.That(_probe.Constructed, Is.EqualTo(0));
             Assert.That(_probe.Initialized, Has.Count.EqualTo(1), "only the consumer records a line; the fake is a proxy");
         }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task ACallerCancellationSurfacesAsACancellationNotAsATimeout()
+        {
+            var flow = TestFlow
+                .Create(Nothing, builder => builder.Add<HangingService>())
+                .WithStartupTimeout(TimeSpan.FromSeconds(5));
+            using var cts = new CancellationTokenSource();
+
+            var startup = flow.StartAsync(cts.Token);
+            cts.Cancel();
+
+            await AsyncTestAssert.ThrowsAsync<OperationCanceledException>(() => startup);
+            await flow.DisposeAsync();
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AFactoryOverrideGivesEverySessionGenerationAFreshInstance()
+        {
+            await using var app = await TestFlow
+                .Create(Nothing, SessionWithRealBackend)
+                .Override<IBackend>(() => new FakeBackend(_probe))
+                .StartAsync();
+            var first = app.Resolve<IBackend>();
+
+            await app.Host.RestartAsync("fresh");
+
+            Assert.That(app.Resolve<IBackend>(), Is.Not.SameAs(first));
+            Assert.That(app.Resolve<IBackend>().Name, Is.EqualTo("fake"));
+            Assert.That(_probe.Initialized, Is.EqualTo(new[] { "fake", "consumer:fake", "fake", "consumer:fake" }));
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task OverrideMatchesAConcreteServiceRegisteredOnlyAsIAsyncInitializable()
+        {
+            var replacement = new RealBackend(_probe);
+            await using var app = await TestFlow
+                .Create(
+                    Nothing,
+                    builder =>
+                    {
+                        builder.RegisterInstance(_probe);
+                        builder.Register<RealBackend>(Lifetime.Singleton).As<IAsyncInitializable>();
+                    })
+                .Override<RealBackend>(replacement)
+                .StartAsync();
+
+            Assert.That(app.Resolve<RealBackend>(), Is.SameAs(replacement));
+            Assert.That(_probe.Constructed, Is.EqualTo(1), "only the replacement instance was constructed");
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task OverrideByConcreteTypePreservesTheReplacedRegistrationsInterfaces()
+        {
+            var replacement = new RealBackend(_probe);
+            await using var app = await TestFlow
+                .Create(Nothing, SessionWithRealBackend)
+                .Override<RealBackend>(replacement)
+                .StartAsync();
+
+            Assert.That(app.Resolve<RealBackend>(), Is.SameAs(replacement));
+            Assert.That(app.Resolve<IBackend>(), Is.SameAs(replacement));
+            Assert.That(app.Resolve<Consumer>().Backend, Is.SameAs(replacement));
+        }
     }
 }

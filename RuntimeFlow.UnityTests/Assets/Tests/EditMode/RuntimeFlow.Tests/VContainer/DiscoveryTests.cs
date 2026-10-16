@@ -113,6 +113,24 @@ namespace RuntimeFlow.Tests.VContainerIntegration
             public GlobalConfig Config { get; }
         }
 
+        public sealed class ZuluDependency : AutoService { }
+
+        public sealed class AlphaDependency : AutoService { }
+
+        /// <summary>
+        /// Two constructors of equal arity and no [Inject]: VContainer injects the first one reflection
+        /// returns. The first is declared with the type that sorts last, so a tie broken by signature
+        /// picks the other constructor and the graph edge would disagree with the injected dependency.
+        /// </summary>
+        public sealed class AmbiguousConstructors : AutoService
+        {
+            public AmbiguousConstructors(ZuluDependency zulu) => Injected = zulu;
+
+            public AmbiguousConstructors(AlphaDependency alpha) => Injected = alpha;
+
+            public object Injected { get; }
+        }
+
         private CapturingLogger _log = null!;
         private RuntimeFlowOptions _options = null!;
 
@@ -147,7 +165,7 @@ namespace RuntimeFlow.Tests.VContainerIntegration
         }
 
         [Test]
-        public void AnInterfaceParameterWithTwoImplementationsDependsOnBoth()
+        public void AnInterfaceParameterDependsOnTheImplementationVContainerInjects()
         {
             var container = _tracker.Build(b =>
             {
@@ -158,7 +176,10 @@ namespace RuntimeFlow.Tests.VContainerIntegration
 
             var run = _tracker.Create(container, "session", _options);
 
-            Assert.That(Dependencies(run, "ThingUser"), Is.EquivalentTo(new[] { "ThingOne", "ThingTwo" }));
+            // VContainer resolves a single IThing to the last registration exposing it; only a collection
+            // parameter depends on every implementation.
+            Assert.That(container.Resolve<ThingUser>().Thing, Is.TypeOf<ThingTwo>());
+            Assert.That(Dependencies(run, "ThingUser"), Is.EqualTo(new[] { "ThingTwo" }));
         }
 
         [Test]
@@ -177,22 +198,20 @@ namespace RuntimeFlow.Tests.VContainerIntegration
         }
 
         [Test]
-        public void EveryCollectionShapeIsABarrierOverItsElementType()
+        public void OnlyTheCollectionShapesVContainerResolvesAreBarriers()
         {
             Assert.That(DependenciesOf<EnumerableBarrier>(), Is.EquivalentTo(new[] { "TaskOne", "TaskTwo" }),
                 "IEnumerable<X>");
-            Assert.That(DependenciesOf<ArrayBarrier>(), Is.EquivalentTo(new[] { "TaskOne", "TaskTwo" }),
-                "X[]");
-            Assert.That(DependenciesOf<ReadOnlyCollectionBarrier>(), Is.EquivalentTo(new[] { "TaskOne", "TaskTwo" }),
-                "IReadOnlyCollection<X>");
-            Assert.That(DependenciesOf<ListBarrier>(), Is.EquivalentTo(new[] { "TaskOne", "TaskTwo" }),
-                "List<X>");
+            Assert.That(DependenciesOf<Barrier>(), Is.EquivalentTo(new[] { "TaskOne", "TaskTwo" }),
+                "IReadOnlyList<X>");
+
+            // VContainer cannot resolve these shapes: the service fails construction, it has no edges.
+            Assert.That(DependenciesOf<ArrayBarrier>(), Is.Empty, "X[]");
+            Assert.That(DependenciesOf<ReadOnlyCollectionBarrier>(), Is.Empty, "IReadOnlyCollection<X>");
+            Assert.That(DependenciesOf<ListBarrier>(), Is.Empty, "List<X>");
         }
 
-        /// <summary>
-        /// Edges of a single collection-taking service. The graph is built, not run: VContainer resolves
-        /// only some of these shapes, but every one of them is a declared dependency on the element type.
-        /// </summary>
+        /// <summary>Edges of a single collection-taking service; the graph is built, not run.</summary>
         private List<string> DependenciesOf<T>() where T : class, IAsyncInitializable
         {
             var container = _tracker.Build(b =>
@@ -288,6 +307,26 @@ namespace RuntimeFlow.Tests.VContainerIntegration
 
             Assert.That(Dependencies(run, "SessionUser"), Is.EqualTo(new[] { "GlobalConfig" }));
             Assert.That(run.Describe(), Does.Contain("external (from parent scopes): GlobalConfig [parent, initialized]"));
+        }
+
+        [Test]
+        public void EqualArityConstructorsGetTheEdgeOfTheConstructorVContainerInjectsAndAWarning()
+        {
+            var container = _tracker.Build(b =>
+            {
+                b.Add<ZuluDependency>();
+                b.Add<AlphaDependency>();
+                b.Add<AmbiguousConstructors>();
+            });
+
+            var run = _tracker.Create(container, "session", _options);
+            var injected = container.Resolve<AmbiguousConstructors>().Injected.GetType().Name;
+
+            Assert.That(Dependencies(run, "AmbiguousConstructors"), Is.EqualTo(new[] { injected }),
+                "the edge must come from the very constructor VContainer injected");
+            Assert.That(_log.Has(Microsoft.Extensions.Logging.LogLevel.Warning,
+                "[RuntimeFlow] session: AmbiguousConstructors has 2 constructors with 1 parameter and none is marked [Inject]"),
+                Is.True, _log.Dump());
         }
 
         private sealed class LazyBox<T> : ILazy<T>

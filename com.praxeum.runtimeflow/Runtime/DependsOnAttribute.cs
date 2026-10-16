@@ -4,7 +4,8 @@ namespace RuntimeFlow
 {
     /// <summary>
     /// Adds an ordering edge to every initializable service assignable to <see cref="ServiceType"/>.
-    /// Use it when the dependency is not visible as a constructor parameter; unknown targets are a graph error.
+    /// Use it when the dependency is not visible as a constructor parameter; unknown targets are a graph error,
+    /// and so are a null type and an open generic type (name the closed type, for example <c>IRepository&lt;Player&gt;</c>).
     /// </summary>
     [AttributeUsage(AttributeTargets.Class, Inherited = true, AllowMultiple = true)]
     public sealed class DependsOnAttribute : Attribute

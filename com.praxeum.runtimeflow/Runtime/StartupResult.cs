@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 
 namespace RuntimeFlow
 {
@@ -38,7 +39,10 @@ namespace RuntimeFlow
         /// <summary>Name of the scope this result describes.</summary>
         public string Scope { get; }
 
-        /// <summary>Wall-clock duration of the run.</summary>
+        /// <summary>
+        /// Wall-clock duration of the run, time the application spent suspended included (timeouts exclude
+        /// it; see <see cref="InitAttribute.TimeoutSeconds"/>).
+        /// </summary>
         public TimeSpan Elapsed { get; }
 
         /// <summary>
@@ -57,6 +61,6 @@ namespace RuntimeFlow
         /// <inheritdoc />
         public override string ToString() => Outcome == StartupOutcome.Halted
             ? $"{Scope}: halted by {HaltedBy} — '{HaltReason}'"
-            : $"{Scope}: completed in {Elapsed.TotalSeconds:0.0}s";
+            : $"{Scope}: completed in {Elapsed.TotalSeconds.ToString("0.0", CultureInfo.InvariantCulture)}s";
     }
 }

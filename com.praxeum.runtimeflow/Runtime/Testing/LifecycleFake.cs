@@ -115,34 +115,29 @@ namespace RuntimeFlow.Testing
         internal void Record(string entry) => _entries.Add(entry);
     }
 
-    internal sealed class FakeState
-    {
-        public object? Stub { get; set; }
-        public FakeBehavior Behavior { get; set; } = new FakeBehavior();
-        public FakeInvocationLog Log { get; } = new FakeInvocationLog();
-        public int InitializeAttempts;
-        public int DisposeAttempts;
-    }
-
     /// <summary>The DispatchProxy base that implements the fake's behaviour; created by <see cref="LifecycleFake"/>.</summary>
     public class FakeDispatchProxy : DispatchProxy
     {
-        private readonly FakeState _state = new FakeState();
+        private object? _stub;
+        private FakeBehavior _behavior = new FakeBehavior();
+        private readonly FakeInvocationLog _log = new FakeInvocationLog();
+        private int _initializeAttempts;
+        private int _disposeAttempts;
 
         /// <summary>Binds the optional stub and the configured behaviour to this proxy.</summary>
         public FakeDispatchProxy Bind(object? stub, FakeBehavior behavior)
         {
-            _state.Stub = stub;
+            _stub = stub;
 
             // The configured behaviour is taken as it is instead of being replayed through its own
             // setters: replaying dropped everything whose value happened to be the default, so
             // FailInitializeAttempts(0) — "never fail, but use my exception factory" — was silently lost.
-            _state.Behavior = behavior ?? new FakeBehavior();
+            _behavior = behavior ?? new FakeBehavior();
             return this;
         }
 
         /// <summary>The proxy's invocation log.</summary>
-        public FakeInvocationLog Log => _state.Log;
+        public FakeInvocationLog Log => _log;
 
         /// <inheritdoc />
         protected override object? Invoke(MethodInfo? targetMethod, object?[]? args)
@@ -150,15 +145,17 @@ namespace RuntimeFlow.Testing
             if (targetMethod == null) throw new ArgumentNullException(nameof(targetMethod));
 
             if (IsInitializeAsync(targetMethod))
-                return HandleInitializeAsync(args);
+                return HandleInitializeAsync(targetMethod, args);
 
-            if (targetMethod.Name == "DisposeAsync" && targetMethod.ReturnType.Name.StartsWith("ValueTask", StringComparison.Ordinal))
+            if (targetMethod.Name == "DisposeAsync"
+                && targetMethod.ReturnType == typeof(ValueTask)
+                && targetMethod.GetParameters().Length == 0)
                 return HandleValueTaskDispose(targetMethod);
 
             if (targetMethod.Name == nameof(IDisposable.Dispose) && targetMethod.GetParameters().Length == 0)
                 return HandleSyncDispose(targetMethod);
 
-            _state.Log.Record(targetMethod.Name);
+            _log.Record(targetMethod.Name);
             return InvokeStub(targetMethod, args);
         }
 
@@ -171,33 +168,34 @@ namespace RuntimeFlow.Testing
                    && parameters[1].ParameterType == typeof(CancellationToken);
         }
 
-        private object HandleInitializeAsync(object?[]? args)
+        private object HandleInitializeAsync(MethodInfo targetMethod, object?[]? args)
         {
-            var attempt = ++_state.InitializeAttempts;
+            var attempt = ++_initializeAttempts;
             var context = args is { Length: > 0 } ? args[0] as InitContext : null;
             var cancellationToken = args is { Length: > 1 } ? (CancellationToken)args[1]! : default;
-            _state.Log.Record($"initialize#{attempt}");
-            return RunInitializeAsync(context, cancellationToken);
+            _log.Record($"initialize#{attempt}");
+            return RunInitializeAsync(targetMethod, attempt, context, cancellationToken);
         }
 
-        private async Task RunInitializeAsync(InitContext? context, CancellationToken cancellationToken)
+        private async Task RunInitializeAsync(MethodInfo targetMethod, int attempt, InitContext? context, CancellationToken cancellationToken)
         {
-            if (_state.Behavior.InitDelay > TimeSpan.Zero)
-                await Task.Delay(_state.Behavior.InitDelay, cancellationToken);
+            if (_behavior.InitDelay > TimeSpan.Zero)
+                await Task.Delay(_behavior.InitDelay, cancellationToken);
 
-            if (_state.Behavior.Hangs)
+            if (_behavior.Hangs)
                 await Task.Delay(Timeout.Infinite, cancellationToken);
 
-            if (_state.InitializeAttempts <= _state.Behavior.InitFailCount)
-                throw _state.Behavior.InitializeExceptionFactory!(_state.InitializeAttempts);
+            if (attempt <= _behavior.InitFailCount)
+                throw _behavior.InitializeExceptionFactory!(attempt);
 
-            await InvokeStubInitializeAsync(context, cancellationToken);
+            if (InvokeStub(targetMethod, new object?[] { context, cancellationToken }) is Task task)
+                await task;
         }
 
         private object HandleValueTaskDispose(MethodInfo targetMethod)
         {
-            var attempt = ++_state.DisposeAttempts;
-            _state.Log.Record($"disposeAsync#{attempt}");
+            var attempt = ++_disposeAttempts;
+            _log.Record($"disposeAsync#{attempt}");
             return DisposeStubAsync(targetMethod, attempt);
         }
 
@@ -208,44 +206,39 @@ namespace RuntimeFlow.Testing
         /// </summary>
         private async ValueTask DisposeStubAsync(MethodInfo targetMethod, int attempt)
         {
-            if (attempt <= _state.Behavior.DisposeFailCount)
+            if (attempt <= _behavior.DisposeFailCount)
                 throw new InvalidOperationException($"LifecycleFake: dispose attempt {attempt} configured to fail.");
 
-            switch (InvokeStub(targetMethod, Array.Empty<object?>()))
-            {
-                case ValueTask pending:
-                    await pending;
-                    break;
-                case Task task:
-                    await task;
-                    break;
-            }
+            await (ValueTask)InvokeStub(targetMethod, Array.Empty<object?>())!;
         }
 
         private object? HandleSyncDispose(MethodInfo targetMethod)
         {
-            _state.Log.Record("dispose");
+            _log.Record("dispose");
             return InvokeStub(targetMethod, Array.Empty<object?>());
         }
 
-        private async Task InvokeStubInitializeAsync(InitContext? context, CancellationToken cancellationToken)
+        /// <summary>
+        /// What a stub-less member returns: a completed task for <see cref="Task"/> and <c>Task&lt;T&gt;</c>
+        /// (awaiting null would throw), the default for value types, null otherwise.
+        /// </summary>
+        private static object? DefaultResult(Type returnType)
         {
-            var stub = _state.Stub;
-            if (stub == null) return;
-            var method = stub.GetType().GetMethod("InitializeAsync", new[] { typeof(InitContext), typeof(CancellationToken) });
-            if (method == null) return;
-            if (method.Invoke(stub, new object?[] { context, cancellationToken }) is Task task)
-                await task;
+            if (returnType == typeof(void)) return null;
+            if (returnType == typeof(Task)) return Task.CompletedTask;
+            if (returnType.IsGenericType && returnType.GetGenericTypeDefinition() == typeof(Task<>))
+            {
+                var result = returnType.GetGenericArguments()[0];
+                var value = result.IsValueType ? Activator.CreateInstance(result) : null;
+                return typeof(Task).GetMethod(nameof(Task.FromResult))!.MakeGenericMethod(result).Invoke(null, new[] { value });
+            }
+            return returnType.IsValueType ? Activator.CreateInstance(returnType) : null;
         }
 
         private object? InvokeStub(MethodInfo targetMethod, object?[]? args)
         {
-            var stub = _state.Stub;
-            if (stub == null)
-            {
-                var returnType = targetMethod.ReturnType;
-                return returnType.IsValueType && returnType != typeof(void) ? Activator.CreateInstance(returnType) : null;
-            }
+            var stub = _stub;
+            if (stub == null) return DefaultResult(targetMethod.ReturnType);
 
             try
             {

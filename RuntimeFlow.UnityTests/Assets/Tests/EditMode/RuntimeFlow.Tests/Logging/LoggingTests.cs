@@ -101,5 +101,12 @@ namespace RuntimeFlow.Tests.Logging
         {
             Assert.That(new UnityConsoleLogger(LogLevel.Trace).IsEnabled(LogLevel.None), Is.False);
         }
+
+        [Test]
+        public void OptionsLoggerNeverBecomesNull()
+        {
+            var options = new RuntimeFlowOptions { Logger = null! };
+            Assert.That(options.Logger, Is.SameAs(UnityConsoleLogger.Default));
+        }
     }
 }

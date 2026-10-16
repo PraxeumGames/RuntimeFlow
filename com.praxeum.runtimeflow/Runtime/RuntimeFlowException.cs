@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
+using RuntimeFlow.Internal;
 
 namespace RuntimeFlow
 {
@@ -100,9 +101,9 @@ namespace RuntimeFlow
             }
 
             text.Append("Completed (").Append(completed.Count.ToString(CultureInfo.InvariantCulture)).Append("): ")
-                .Append(completed.Count == 0 ? "none" : string.Join(", ", completed)).Append("; ");
+                .Append(completed.Count == 0 ? "none" : Fmt.Capped(completed, 5)).Append("; ");
             text.Append("unfinished (").Append(unfinished.Count.ToString(CultureInfo.InvariantCulture)).Append("): ")
-                .Append(unfinished.Count == 0 ? "none" : string.Join(", ", unfinished)).Append(". ");
+                .Append(unfinished.Count == 0 ? "none" : Fmt.Capped(unfinished, 5)).Append(". ");
             text.Append(failures.Count > 1
                 ? "InnerException is an AggregateException with the original exceptions."
                 : "See InnerException.");

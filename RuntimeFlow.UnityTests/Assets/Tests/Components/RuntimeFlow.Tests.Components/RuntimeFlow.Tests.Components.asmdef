@@ -1,0 +1,19 @@
+{
+    "name": "RuntimeFlow.Tests.Components",
+    "rootNamespace": "RuntimeFlow.Tests.Components",
+    "references": [
+        "RuntimeFlow.Runtime",
+        "VContainer"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [
+        "UNITY_INCLUDE_TESTS"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
