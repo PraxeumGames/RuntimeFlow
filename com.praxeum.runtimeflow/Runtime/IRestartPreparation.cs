@@ -27,7 +27,12 @@ namespace RuntimeFlow
     /// <see cref="RuntimeFlowHost.DisposeAsync"/> or a quit.</para>
     /// <para>Hooks are awaited one after the other on the main thread. A hook that throws is logged and
     /// the restart continues; a hook still running after <see cref="RuntimeFlowOptions.RestartPreparationTimeout"/>
-    /// has its token cancelled and is no longer awaited.</para>
+    /// has its token cancelled and is no longer awaited. The timeout counts active time only: time the
+    /// application spends suspended (backgrounded) does not count.</para>
+    /// <para>A hook must not await <see cref="RuntimeFlowHost.StartAsync"/>, <see cref="RuntimeFlowHost.RestartAsync"/>
+    /// or <see cref="RuntimeFlowHost.DisposeAsync"/> of its host: each of them waits for the restart that is
+    /// waiting for the hook, so the call deadlocks until <see cref="RuntimeFlowOptions.RestartPreparationTimeout"/>
+    /// cuts the hook — forever with <see cref="Timeout.InfiniteTimeSpan"/>. Fire such a call and return.</para>
     /// </remarks>
     public interface IRestartPreparation
     {

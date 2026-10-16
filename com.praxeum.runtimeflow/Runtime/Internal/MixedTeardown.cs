@@ -118,7 +118,9 @@ namespace RuntimeFlow.Internal
         /// Fallback teardown without the lifetime adapter: disposes the graph's <see cref="IAsyncDisposable"/>
         /// services after their dependents, then, when <paramref name="scope"/> is given, disposes it so
         /// VContainer releases every <see cref="IDisposable"/> it tracks. Protected ancestor instances
-        /// are skipped; when their evidence cannot be refreshed, nothing further is released.
+        /// are skipped; when their evidence cannot be refreshed, nothing further is released. A service
+        /// implementing both interfaces is therefore called twice, <c>DisposeAsync</c> then <c>Dispose</c>;
+        /// without the adapter nothing can tell which instances the scope tracks.
         /// </summary>
         internal static async Task ReleaseUntrackedAsync(IObjectResolver? scope, IReadOnlyList<ServiceNode> services,
             ILogger logger, string name, IReadOnlyList<ServiceNode>? preferred = null,

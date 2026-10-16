@@ -335,7 +335,8 @@ namespace RuntimeFlow.Internal
                 $"every scope that resolves it. Resolving it from '{name}' re-injects that scene component with child " +
                 "dependencies and disposes it with the child; the graph cannot use its initialized parent identity. " +
                 $"Register it in '{component.Scope}' as a single instance instead: RegisterComponent(instance), " +
-                "for example RegisterComponent(Object.FindObjectOfType<T>(true)).");
+                "for example RegisterComponent(Object.FindFirstObjectByType<T>(FindObjectsInactive.Include)) " +
+                "or FindAnyObjectByType when any instance will do.");
 
         private static InitGraphException ConstructionError(Registration registration, string name, Exception exception)
         {
@@ -611,8 +612,11 @@ namespace RuntimeFlow.Internal
         /// Adds the constructor edges of instances and factory products once every other edge is known.
         /// They usually describe what the object holds (a decorator and what it wraps) and are kept, in
         /// their original position at the front of the edge list. VContainer never resolved those
-        /// parameters, though, so one that would close a cycle is evidence of nothing: it is dropped with
-        /// a warning instead of failing the graph with a cycle that does not exist.
+        /// parameters, though, so one that would close a cycle of services is evidence of nothing: it is
+        /// dropped with a warning instead of failing the graph with a cycle that does not exist. Only service
+        /// edges count for that check: an edge that closes a cycle only through a phase barrier is a real
+        /// phase-order violation (an early service holding a later-phase one) and is kept, so the cycle
+        /// detection reports it as one.
         /// </summary>
         private static void AddUnresolvedEdges(List<UnresolvedEdge> unresolved, ILogger logger, string scope)
         {
@@ -620,7 +624,7 @@ namespace RuntimeFlow.Internal
             foreach (var edge in unresolved)
             {
                 if (edge.From.DepTargets.Contains(edge.To)) continue;
-                if (Reaches(edge.To, edge.From))
+                if (ReachesThroughServices(edge.To, edge.From))
                 {
                     logger.Warn($"[RuntimeFlow] {scope}: ignoring the edge {edge.From.Name} -> {edge.To.DisplayName} ({edge.Origin}): " +
                                 $"{edge.From.Name} is a registered instance or factory product, so VContainer never resolved that " +
@@ -635,8 +639,11 @@ namespace RuntimeFlow.Internal
             }
         }
 
-        /// <summary>True when <paramref name="goal"/> is reachable from <paramref name="start"/> along the edges added so far.</summary>
-        private static bool Reaches(ServiceNode start, ServiceNode goal)
+        /// <summary>
+        /// True when <paramref name="goal"/> is reachable from <paramref name="start"/> along the service edges
+        /// added so far; phase barriers are not walked through.
+        /// </summary>
+        private static bool ReachesThroughServices(ServiceNode start, ServiceNode goal)
         {
             var pending = new Stack<ServiceNode>();
             var seen = new HashSet<ServiceNode>();
@@ -645,7 +652,7 @@ namespace RuntimeFlow.Internal
             {
                 var node = pending.Pop();
                 if (ReferenceEquals(node, goal)) return true;
-                if (node.Kind == NodeKind.External || !seen.Add(node)) continue;
+                if (node.Kind != NodeKind.Service || !seen.Add(node)) continue;
                 foreach (var edge in node.Deps) pending.Push(edge.Target);
             }
             return false;

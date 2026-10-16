@@ -101,6 +101,9 @@ namespace RuntimeFlow.Tests.Lifecycle
             Assert.That(probe.Error, Is.Not.Null, "the service's StartAsync must fault");
             Assert.That(probe.Error!.Message, Does.StartWith(
                 $"RuntimeFlowHost.StartAsync was called from inside the InitializeAsync of a {scope} service"));
+            Assert.That(_log.Has(LogLevel.Warning,
+                $"[RuntimeFlow] StartAsync refused: RuntimeFlowHost.StartAsync was called from inside the InitializeAsync of a {scope} service"),
+                Is.True, "the refusal is logged, not only returned\n" + _log.Dump());
         }
 
         [Test]
@@ -160,6 +163,30 @@ namespace RuntimeFlow.Tests.Lifecycle
             var restartRefused = await AsyncTestAssert.ThrowsAsync<InvalidOperationException>(() => restart);
             Assert.That(restartRefused.Message, Does.StartWith("RuntimeFlowHost.RestartAsync must be called"));
             Assert.That(host.RestartCount, Is.EqualTo(0));
+
+            // Joining the finished startup off the main thread is refused too: the continuations of the
+            // returned task would run on the thread pool.
+            Task<StartupResult> join;
+            SynchronizationContext.SetSynchronizationContext(null);
+            try
+            {
+                join = host.StartAsync();
+            }
+            finally
+            {
+                SynchronizationContext.SetSynchronizationContext(saved);
+            }
+            await AsyncTestAssert.ThrowsAsync<InvalidOperationException>(() => join);
+
+            // Every refusal is logged once, naming the member: a dropped faulted task must not hide it.
+            var errors = _log.Messages(LogLevel.Error).Where(m => m.Contains("must be called on a thread with a SynchronizationContext")).ToList();
+            Assert.That(errors, Is.EqualTo(new[]
+            {
+                "[RuntimeFlow] StartAsync refused: " + refused.Message,
+                "[RuntimeFlow] DisposeAsync refused: " + disposeRefused.Message,
+                "[RuntimeFlow] RestartAsync refused: " + restartRefused.Message,
+                "[RuntimeFlow] StartAsync refused: " + refused.Message
+            }), _log.Dump());
 
             await host.DisposeAsync();
             Assert.That(host.State, Is.EqualTo(RunState.Disposed));

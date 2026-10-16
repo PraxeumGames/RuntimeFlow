@@ -39,6 +39,21 @@ namespace RuntimeFlow.Tests.Graph
         [Init(Phase = "session")]
         public sealed class LateService : AutoService { }
 
+        /// <summary>Built by user code (an instance or a factory product), holding a service of its own phase.</summary>
+        [Init(Phase = "content")]
+        public sealed class PrebuiltHolder : AutoService
+        {
+            public PrebuiltHolder(HolderUser? user) => User = user;
+
+            public HolderUser? User { get; }
+        }
+
+        [Init(Phase = "content")]
+        public sealed class HolderUser : AutoService
+        {
+            public HolderUser(PrebuiltHolder holder) { }
+        }
+
         private CapturingLogger _log = null!;
 
         private readonly RunTracker _tracker = new RunTracker();
@@ -230,6 +245,57 @@ namespace RuntimeFlow.Tests.Graph
                 "phase 'content' -> EarlyService (phase barrier)."));
             Assert.That(error.Message, Does.Contain(
                 "(EarlyService in phase 'content' depends on LateService in phase 'session'; a service cannot depend on a later phase)"));
+        }
+
+        /// <summary>
+        /// The constructor edge of an instance or a factory product is inferred (VContainer never resolved
+        /// it) and is dropped when it would close a cycle of services. A path through a phase barrier is no
+        /// such cycle: an early-phase object holding a later-phase service is a phase-order error.
+        /// </summary>
+        [TestCase(false)]
+        [TestCase(true)]
+        public void AnInstanceOrFactoryHoldingAServiceOfALaterPhaseIsStillAPhaseError(bool factory)
+        {
+            var container = _tracker.Build(b =>
+            {
+                if (factory)
+                    b.Register(_ => new EarlyService(new LateService()), Lifetime.Singleton).AsSelf().As<IAsyncInitializable>();
+                else
+                    b.RegisterInstance(new EarlyService(new LateService())).AsSelf().As<IAsyncInitializable>();
+                b.Add<LateService>();
+            });
+
+            var error = Assert.Throws<InitGraphException>(
+                () => _tracker.Create(container, "session", Options("content", "session")));
+
+            Assert.That(error!.Message, Does.StartWith(
+                "Initialization graph of scope 'session' has a cycle: EarlyService -> LateService -> phase 'content' -> EarlyService."));
+            Assert.That(error.Message, Does.Contain(
+                "(EarlyService in phase 'content' depends on LateService in phase 'session'; a service cannot depend on a later phase)"));
+            Assert.That(_log.Has(Microsoft.Extensions.Logging.LogLevel.Warning, "ignoring the edge"), Is.False, _log.Dump());
+        }
+
+        [TestCase(false)]
+        [TestCase(true)]
+        [Timeout(10000)]
+        public async Task AnInstanceOrFactoryEdgeClosingACycleOfServicesIsStillDroppedWithPhases(bool factory)
+        {
+            var container = _tracker.Build(b =>
+            {
+                if (factory)
+                    b.Register(_ => new PrebuiltHolder(null), Lifetime.Singleton).AsSelf().As<IAsyncInitializable>();
+                else
+                    b.RegisterInstance(new PrebuiltHolder(null)).AsSelf().As<IAsyncInitializable>();
+                b.Add<HolderUser>();
+                b.Add<PlatformOne>();
+            });
+
+            ScopeRun? run = null;
+            Assert.DoesNotThrow(() => run = _tracker.Create(container, "session", Options("platform", "content")), _log.Dump());
+
+            Assert.That(_log.Find(Microsoft.Extensions.Logging.LogLevel.Warning, "ignoring the edge"),
+                Does.Contain("PrebuiltHolder -> HolderUser"), _log.Dump());
+            Assert.That((await run!.RunAsync()).Outcome, Is.EqualTo(StartupOutcome.Completed));
         }
 
         [Test]

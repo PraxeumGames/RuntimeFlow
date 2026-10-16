@@ -5,10 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-09-03
+## [1.0.0] - 2026-10-16
 
-Complete rewrite. There is no migration path from 0.x by design: the public surface shrank from 234
-types to about 25, and every 0.x concept below is gone.
+Complete rewrite and a hard cut: there is no compatibility layer — no shim, no `[Obsolete]` alias, no
+0.x type kept — and the public surface shrank from 234 types to about 25. Every 0.x concept below is
+gone, but most map onto a 1.0 counterpart: see [Migration](#migration) and the mapping table in the
+README's "Migrating from 0.x" section.
 
 ### Changed
 
@@ -50,6 +52,17 @@ types to about 25, and every 0.x concept below is gone.
 - **Unity 2022.3 is the minimum**, up from 2021.3: the dashboard uses UI Toolkit APIs introduced in
   2022.2. Both API compatibility levels of 2022.3 support the default interface members the package
   relies on, so no project setting has to change.
+- **`IStartable` and `ITickable` are frame-driven and are not run after asynchronous initialization.**
+  0.x ran `IStartable` after every async initializer had finished; 1.0 leaves VContainer's entry points
+  alone, so `IStartable.Start` runs on the first frame after the scope is built, while `InitializeAsync`
+  calls may still be in flight. Code that needs initialized services belongs in an `IAsyncInitializable`
+  that depends on them, or after `StartAsync` returned.
+- **`IInitializable` runs inside `Build()`,** in registration order, before the first `InitializeAsync`
+  of the scope; one that throws fails the run.
+- **No entry-point exclude or prioritize API.** ExcludeInitializable and AddPrioritizedInitializable are
+  gone: what a registration exposes is what VContainer runs. Expose only the interfaces you want
+  (`.As<IFoo>()` instead of `.AsImplementedInterfaces()`) to keep a service out of the entry points or
+  out of the graph.
 - **VContainer must be declared in the consuming project's manifest.** The package still names
   `jp.hadashikick.vcontainer` (upstream, tag 1.15.3, pinned by SHA) in its `dependencies`, but UPM
   resolves git-URL dependencies only from `Packages/manifest.json`, so a consumer adds the same line
@@ -77,10 +90,14 @@ types to about 25, and every 0.x concept below is gone.
   (`WasInitializing`) or frozen before it started. A throwing hook is logged, a hanging one is cut at
   `RestartPreparationTimeout`; disposal and quit never call them. Replaces 0.x's
   IRuntimeSessionRestartPreparationHook.
-- `RestartCoalescing` — `UntilSessionInitialized` (default) coalesces every request made while
-  `IsRestarting` (until the new session's run concluded) into the restart in progress, unbudgeted, so a
-  service of the restarted generation cannot start a restart loop; `UntilSessionBuilt` coalesces only
-  until the new session is built and lets that generation restart again.
+- `RestartCoalescing` — `UntilSessionInitialized` (default): while `IsRestarting` (until the new
+  session's run concluded), a request that repeats the reason of the restart in progress or comes from
+  inside the restarted generation's initialization joins it, unbudgeted, so a service of the restarted
+  generation cannot start a restart loop; a request with another reason from outside restarts again, so
+  a restarted session that never concludes (a user-gated login, a hung service) cannot swallow a
+  "change server" or a "Retry". `UntilSessionBuilt` coalesces only until the new session is built and
+  lets that generation restart again. Unlike 0.x, which dropped every request made while the restart
+  replay initialized.
 - `IRuntimeFlowObserver.OnRestartRequested(RestartRequestInfo)` — raised synchronously for accepted and
   coalesced requests (`Reason`, `Coalesced`, `Generation`), never for refusals.
 - `ScopeRun` — the graph of one resolver: `Create`, `RunAsync`, `CancelAsync`, `GetStatus`, `Describe`,
@@ -304,6 +321,38 @@ now also runs against the VContainer 1.19 fork sfs-client ships.
   with a fix instead of a `NullReferenceException` or a silent mismatch; an open generic registration
   implementing `IAsyncInitializable` (never discoverable) logs a warning.
 
+### Fixed (production-readiness review)
+
+- **Restart coalescing no longer swallows unrelated requests.** Under `UntilSessionInitialized`, every
+  request made while the restarted session initialized was coalesced; a generation stuck on a
+  user-gated service or a hung request then absorbed every later restart and its awaiters never
+  completed. Only a repeat of the same reason or a request from inside that generation joins it now.
+- **Phase order is enforced for instances and factories.** An inferred constructor edge of a
+  `RegisterInstance` object or a factory product whose only path back went through a phase barrier was
+  dropped as a "false cycle"; an early-phase object holding a later-phase service is an
+  `InitGraphException` again ("a service cannot depend on a later phase"). Edges that close a cycle of
+  services are still dropped with a warning.
+- **Global restart preparations are constructed once.** The session's hooks were resolved through the
+  session's collection, which constructed the global entries a second time (a Transient global hook
+  twice per build, a Scoped one as a session instance, on 1.15 a session-local copy of a global
+  singleton whose type the session also registers). Global hooks come from the global scope and only
+  the session's own registrations are resolved from the session.
+- **`RestartPreparationTimeout` counts active time.** Like service timeouts, time spent suspended no
+  longer cuts a hook.
+- **Mobile suspension follows pauses, not focus.** On a mobile platform focus is lost to permission,
+  billing and sign-in dialogs, the notification shade and split screen while the game keeps running;
+  the timeout clock now stops on `OnApplicationPause` (a hidden `DontDestroyOnLoad` hook created at
+  startup) instead. Desktop players keep the focus rule (suspended only without
+  `Application.runInBackground`).
+- **Refusals are logged.** `StartAsync`, `RestartAsync` and `DisposeAsync` called off the main thread
+  log an Error naming the member, and a reentrant `StartAsync` from inside the graph logs a warning, in
+  addition to the faulted task.
+- **Docs.** Fire-and-forget work started inside `InitializeAsync` counts as inside it for the reentrancy
+  guard; a restart preparation must not await its host; in the adapter-failure teardown fallback a
+  service implementing both `IAsyncDisposable` and `IDisposable` gets both calls. The scene-component
+  graph error suggests FindFirstObjectByType / FindAnyObjectByType instead of the obsolete
+  FindObjectOfType.
+
 ### Removed
 
 Everything below existed in 0.x and no longer exists. Nothing is `[Obsolete]`; there are no shims.
@@ -418,6 +467,9 @@ Everything below existed in 0.x and no longer exists. Nothing is `[Obsolete]`; t
   duplicate `scripts/run_unity_playmode_tests.sh` (the EditMode script takes `playmode` as an argument).
 
 ### Migration
+
+The README's "Migrating from 0.x" section has the full type-by-type mapping and a checklist (scripting
+define, VContainer manifest entry, IL2CPP link.xml, cycle check, `IStartable` audit).
 
 - Replace every lifecycle marker interface with `IAsyncInitializable` and move the stage information
   into `[Init(Phase = "…")]` plus `RuntimeFlowOptions.Phases`, or delete it: a service that simply

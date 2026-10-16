@@ -59,7 +59,8 @@ namespace RuntimeFlow
         /// How long each <see cref="IRestartPreparation"/> may take before its token is cancelled and the
         /// restart continues without waiting for it any further (an error names the hook).
         /// <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> waits forever, zero or less does not wait.
-        /// Measured in wall time.
+        /// Counts only the time the application is not suspended, like <see cref="InitAttribute.TimeoutSeconds"/>:
+        /// a player who backgrounds the game while a hook runs does not come back to a hook that was cut.
         /// </summary>
         public TimeSpan RestartPreparationTimeout { get; set; } = TimeSpan.FromSeconds(10);
 
@@ -76,11 +77,15 @@ namespace RuntimeFlow
     public enum RestartCoalescing
     {
         /// <summary>
-        /// Requests coalesce for as long as <see cref="RuntimeFlowHost.IsRestarting"/> is true: until the run
-        /// of the session the restart builds concluded (completed, failed, halted or cancelled). A service of
-        /// the restarted generation that asks for yet another restart while that generation initializes
-        /// joins the restart in progress instead of opening a new generation, so restart loops cannot form.
-        /// Once the new session concluded — failed included, the "Retry" case — requests are accepted again.
+        /// For as long as <see cref="RuntimeFlowHost.IsRestarting"/> is true — until the run of the session
+        /// the restart builds concluded (completed, failed, halted or cancelled) — a request coalesces when
+        /// its reason equals the reason of the restart in progress (ordinal comparison: the same event
+        /// reported twice), or when a service of the restarted generation makes it from inside that
+        /// generation's initialization, so restart loops cannot form. Every other request is accepted as a
+        /// new restart (budgeted) and replaces the generation still initializing: a restarted session that
+        /// never concludes — a user-gated service nobody answers, a hung service without a timeout — cannot
+        /// swallow a "change server" or "Retry". Until the restart has built its session, every request
+        /// coalesces, as with <see cref="UntilSessionBuilt"/>.
         /// </summary>
         UntilSessionInitialized,
 

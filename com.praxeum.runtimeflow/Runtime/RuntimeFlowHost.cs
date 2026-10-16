@@ -91,8 +91,11 @@ namespace RuntimeFlow
 
         // IsRestarting: _restarting is set when a restart is accepted; _restartRun is the run of the session
         // built as that restart, null until it is published. The flag ends with that run or with the chain.
+        // _restartReason is the reason of the request that opened the restart in progress: a request with
+        // the same reason is a duplicate of it and coalesces under RestartCoalescing.UntilSessionInitialized.
         private bool _restarting;
         private ScopeRun? _restartRun;
+        private string? _restartReason;
         private bool _notifyingRestart;
 
         // The IRestartPreparation hooks resolved when the current session was built, and the token source
@@ -239,8 +242,9 @@ namespace RuntimeFlow
         /// that restart builds concluded (completed, failed, halted or cancelled), or until the restart chain
         /// stopped without one (its session failed to build, the global phase it was folded into failed or
         /// halted, the host was disposed or the application quit). False during a plain startup nobody
-        /// asked to restart. Requests arriving meanwhile are coalesced under
-        /// <see cref="RestartCoalescing.UntilSessionInitialized"/>.
+        /// asked to restart. Under <see cref="RestartCoalescing.UntilSessionInitialized"/> a request arriving
+        /// meanwhile is coalesced when it repeats the reason of the restart in progress or comes from inside
+        /// the restarted session's own initialization; any other request restarts again.
         /// </summary>
         public bool IsRestarting
         {
@@ -271,7 +275,12 @@ namespace RuntimeFlow
         /// with <see cref="InvalidOperationException"/> when called on a thread without a
         /// <see cref="SynchronizationContext"/>, or from inside the <see cref="IAsyncInitializable.InitializeAsync"/>
         /// of a global or session service while the startup or restart that waits for it is in flight:
-        /// awaiting the chain from inside it would never finish.
+        /// awaiting the chain from inside it would never finish. Both refusals are logged (an error and a
+        /// warning). The off-thread refusal applies even when a run exists to join, since the continuations
+        /// of the returned task would run off the main thread. Fire-and-forget work a service started from
+        /// its <see cref="IAsyncInitializable.InitializeAsync"/> counts as inside it while that service
+        /// initializes, because the execution context flows into it: start such work after
+        /// <see cref="StartAsync"/> returned, or under <see cref="ExecutionContext.SuppressFlow"/>.
         /// </returns>
         public Task<StartupResult> StartAsync(CancellationToken cancellationToken = default)
         {
@@ -305,10 +314,14 @@ namespace RuntimeFlow
         /// the session's <see cref="IRestartPreparation"/> hooks run, and only then is it disposed.
         /// Accepted and coalesced requests are reported to <see cref="IRuntimeFlowObserver.OnRestartRequested"/>;
         /// <see cref="IsRestarting"/> stays true until the new session's run concluded.</para>
-        /// <para>Under the default <see cref="RestartCoalescing.UntilSessionInitialized"/>, a service of the
-        /// restarted generation that requests a restart while that generation initializes joins the restart
-        /// in progress: nothing tears its session down, so it must finish its initialization normally
-        /// instead of waiting on its token (a warning says so).</para>
+        /// <para>Under the default <see cref="RestartCoalescing.UntilSessionInitialized"/>, while the restarted
+        /// session initializes, two kinds of request join the restart in progress: one with the same reason
+        /// (compared ordinally — "bundles updated" reported twice), and one made by a service of the restarted
+        /// generation from inside its own initialization. Nothing tears that session down, so such a service
+        /// must finish its initialization normally instead of waiting on its token (a warning says so). Any
+        /// other request — a different reason from outside, "change server" or a "Retry" while the restarted
+        /// session waits for the player — is accepted (and budgeted) and replaces the generation still
+        /// initializing, so a session that never concludes cannot swallow later restarts.</para>
         /// <para>A request that arrives before the session exists (during the global phase of the startup)
         /// has no session to cancel: the startup builds its first session directly as the restart
         /// (generation 1). If the global phase fails instead, the request is dropped (and not budgeted) and
@@ -400,13 +413,16 @@ namespace RuntimeFlow
                 return AwaitFinalAsync(_current);
             }
 
-            if (_options.RestartCoalescing == RestartCoalescing.UntilSessionInitialized && IsRestarting)
+            if (_options.RestartCoalescing == RestartCoalescing.UntilSessionInitialized && IsRestarting
+                && (FromRestartedSession() || string.Equals(reason, _restartReason, StringComparison.Ordinal)))
             {
                 // The restart in progress has not finished initializing its session yet: a service of the
-                // new generation asking again joins it instead of opening yet another generation.
+                // new generation asking again, or a repeat of the same request, joins it instead of opening
+                // yet another generation. Any other request falls through and restarts again, so a restarted
+                // session that never concludes (a user-gated login, a hung service) cannot swallow it.
                 _logger.Info($"[RuntimeFlow] restart '{reason}' coalesced with the restart in progress " +
                              "(its session is still being built or initialized)");
-                if (Scheduler.TryGetInitializingToken(out var initializing) && _sessionRun != null && _sessionRun.OwnsToken(initializing))
+                if (FromRestartedSession())
                 {
                     // Nothing tears this session down: a requester that parks on its token or bails out
                     // with a cancellation would stall or fail the very generation the restart is building.
@@ -426,6 +442,7 @@ namespace RuntimeFlow
             _pending = true;
             _restarting = true;
             _restartRun = null;
+            _restartReason = reason;
             if (_building)
             {
                 // No session to cancel: the chain in flight builds its session as this restart.
@@ -458,6 +475,14 @@ namespace RuntimeFlow
             NotifyRestartRequested(reason, coalesced: false);
             return final;
         }
+
+        /// <summary>
+        /// True when the caller runs inside the <see cref="IAsyncInitializable.InitializeAsync"/> flow of a
+        /// service of the session the restart in progress built (fire-and-forget work it started included,
+        /// since the marker travels with the execution context).
+        /// </summary>
+        private bool FromRestartedSession()
+            => _restartRun != null && Scheduler.TryGetInitializingToken(out var initializing) && _restartRun.OwnsToken(initializing);
 
         /// <summary>
         /// Reports a request <see cref="RestartAsync"/> took on to the observers, synchronously. A request
@@ -652,10 +677,12 @@ namespace RuntimeFlow
         /// unbounded when the grace is <see cref="Timeout.InfiniteTimeSpan"/>), so it never builds a scope on
         /// a disposed host; its awaiters complete with <see cref="ObjectDisposedException"/> or a
         /// cancellation. Afterwards <see cref="Global"/> and <see cref="Session"/> throw
-        /// <see cref="ObjectDisposedException"/>. Teardown never throws; concurrent calls share it. The
-        /// first call must come from a thread with a <see cref="SynchronizationContext"/> (the Unity main
-        /// thread): elsewhere it returns a task faulted with <see cref="InvalidOperationException"/> and
-        /// tears nothing down, since the teardown would otherwise continue on the thread pool.
+        /// <see cref="ObjectDisposedException"/>. Once started, the teardown never throws: failures of
+        /// services and scopes are logged and it goes on; concurrent calls share it. The first call must come
+        /// from a thread with a <see cref="SynchronizationContext"/> (the Unity main thread): elsewhere it
+        /// tears nothing down and returns a task faulted with <see cref="InvalidOperationException"/> (also
+        /// logged at Error), since the teardown would otherwise continue on the thread pool — call it again
+        /// from the main thread.
         /// </summary>
         public ValueTask DisposeAsync()
         {
@@ -701,6 +728,7 @@ namespace RuntimeFlow
             }
             _sessionHooks = Array.Empty<IRestartPreparation>();
             _restarting = false;
+            _restartReason = null;
             _restartRun = null;
             DisposeSessionToken();
 
@@ -745,20 +773,27 @@ namespace RuntimeFlow
         /// <summary>
         /// The refusal of a call made on a thread without a <see cref="SynchronizationContext"/>, or null.
         /// Checked before anything is built: every await of the host continues on the caller's context, and
-        /// without one the global container would be built and run on the thread pool.
+        /// without one the global container would be built and run on the thread pool. A refusal is logged
+        /// at Error, once per refused call: the faulted task it returns is easily dropped by a caller that
+        /// fires and forgets.
         /// </summary>
-        private static InvalidOperationException? RequireContext(string member)
+        private InvalidOperationException? RequireContext(string member)
         {
             if (SynchronizationContext.Current != null) return null;
-            return new InvalidOperationException(
+            var refusal = new InvalidOperationException(
                 $"RuntimeFlowHost.{member} must be called on a thread with a SynchronizationContext (the Unity main thread); " +
                 "SynchronizationContext.Current is null, so its continuations would run concurrently on the thread pool.");
+            _logger.Error($"[RuntimeFlow] {member} refused: {refusal.Message}", refusal);
+            return refusal;
         }
 
         /// <summary>
         /// The refusal of a <see cref="StartAsync"/> issued from inside the still running
         /// <see cref="IAsyncInitializable.InitializeAsync"/> of a global or session service while the chain
-        /// is in flight, or null. That chain waits for the very service that would wait for the chain.
+        /// is in flight, or null. That chain waits for the very service that would wait for the chain. The
+        /// marker of the running service is an AsyncLocal, so work the service fired and forgot carries it
+        /// too and is refused as well while that service is still initializing; a refusal is logged as a
+        /// warning.
         /// </summary>
         private InvalidOperationException? ReentrantStart()
         {
@@ -768,10 +803,15 @@ namespace RuntimeFlow
                 : _sessionRun != null && _sessionRun.OwnsToken(token) ? "session"
                 : null;
             if (scope == null) return null;
-            return new InvalidOperationException(
+            var refusal = new InvalidOperationException(
                 $"RuntimeFlowHost.StartAsync was called from inside the InitializeAsync of a {scope} service while the " +
                 "startup or restart in flight waits for that very service: awaiting it would never finish. Return from " +
-                "InitializeAsync and read the outcome from the caller of StartAsync or from an IRuntimeFlowObserver.");
+                "InitializeAsync and read the outcome from the caller of StartAsync or from an IRuntimeFlowObserver. " +
+                "Fire-and-forget work started from InitializeAsync counts as inside it while that service initializes " +
+                "(the execution context flows into it): start it after StartAsync returned, or under " +
+                "ExecutionContext.SuppressFlow() so that its continuations do not carry the context.");
+            _logger.Warn($"[RuntimeFlow] StartAsync refused: {refusal.Message}");
+            return refusal;
         }
 
         private const string GlobalRestartAdvice =
@@ -966,14 +1006,7 @@ namespace RuntimeFlow
                         continue;
                     }
 
-                    Task winner;
-                    using (var timer = new CancellationTokenSource())
-                    {
-                        winner = await Task.WhenAny(call, Task.Delay(timeout, timer.Token));
-                        // Release the timer as soon as the hook returned.
-                        timer.Cancel();
-                    }
-                    if (ReferenceEquals(winner, call))
+                    if (await FinishesWithinActiveTimeAsync(call, timeout))
                     {
                         await call;
                         continue;
@@ -1005,6 +1038,32 @@ namespace RuntimeFlow
             }
         }
 
+        /// <summary>
+        /// Waits for <paramref name="call"/> for at most <paramref name="timeout"/> of active time
+        /// (<see cref="AppSuspension.ActiveTime"/>): time the application spends suspended — a player who sends
+        /// the game to the background while the loading cover goes up — does not count. The wall-clock delay
+        /// is re-armed with the active time still remaining whenever it elapses during a suspension.
+        /// </summary>
+        /// <returns>True when the call finished in time.</returns>
+        private static async Task<bool> FinishesWithinActiveTimeAsync(Task call, TimeSpan timeout)
+        {
+            var deadline = AppSuspension.ActiveTime + timeout;
+            while (!call.IsCompleted)
+            {
+                var remaining = deadline - AppSuspension.ActiveTime;
+                if (remaining <= TimeSpan.Zero) return false;
+                using (var timer = new CancellationTokenSource())
+                {
+                    // Rounded up to whole milliseconds: a sub-millisecond delay completes at once and would spin.
+                    var delay = (int)Math.Min(int.MaxValue, Math.Ceiling(remaining.TotalMilliseconds));
+                    await Task.WhenAny(call, Task.Delay(delay, timer.Token));
+                    // Release the timer as soon as the hook returned.
+                    timer.Cancel();
+                }
+            }
+            return true;
+        }
+
         /// <summary>Cancels the token of the restart preparation in flight, if any (disposal, quit).</summary>
         private void CancelPreparation()
         {
@@ -1017,20 +1076,30 @@ namespace RuntimeFlow
         /// down: those of the global scope (and its ancestors) first, then the session's own, each in
         /// registration order, every instance once. Free when nothing implements the interface.
         /// </summary>
+        /// <remarks>
+        /// Resolving the collection from the session would construct the ancestors' entries a second time
+        /// in the session's context: a Transient global hook anew, a Scoped one as a session instance, and on
+        /// VContainer 1.15 a global Singleton whose implementation type the session registers too as a
+        /// session-local copy. So the global entries are resolved from <see cref="Global"/>, and only the
+        /// session's own registrations — read from its local collection registration, the one VContainer
+        /// builds for every scope — are resolved from the session, one by one.
+        /// </remarks>
         private IReadOnlyList<IRestartPreparation> ResolveRestartPreparations(IScopedObjectResolver session)
         {
             if (!HasRegistration(session, typeof(IRestartPreparation))) return Array.Empty<IRestartPreparation>();
 
-            var inherited = Global.Resolve<IReadOnlyList<IRestartPreparation>>();
-            // VContainer lists a scope's own registrations first, then those of its ancestors: the leading
-            // entries beyond the inherited count are the session's own. The ancestors' tail is not used, so
-            // a transient global hook is not constructed twice.
-            var all = session.Resolve<IReadOnlyList<IRestartPreparation>>();
-            var own = Math.Max(0, all.Count - inherited.Count);
+            var hooks = new List<IRestartPreparation>();
+            foreach (var hook in Global.Resolve<IReadOnlyList<IRestartPreparation>>()) AddOnce(hook);
 
-            var hooks = new List<IRestartPreparation>(inherited.Count + own);
-            foreach (var hook in inherited) AddOnce(hook);
-            for (var i = 0; i < own; i++) AddOnce(all[i]);
+            if (session.TryGetRegistration(typeof(IReadOnlyList<IRestartPreparation>), out var collection) && collection != null)
+            {
+                if (!(collection.Provider is IEnumerable<Registration> own))
+                {
+                    throw new InitGraphException("session",
+                        "Unsupported VContainer version: cannot enumerate the IRestartPreparation registrations of scope 'session'.");
+                }
+                foreach (var registration in own) AddOnce((IRestartPreparation)session.Resolve(registration));
+            }
             return hooks;
 
             void AddOnce(IRestartPreparation? hook)
@@ -1151,6 +1220,7 @@ namespace RuntimeFlow
                 if (ReferenceEquals(_restartRun, session))
                 {
                     _restarting = false;
+                    _restartReason = null;
                     _restartRun = null;
                 }
             }
@@ -1170,6 +1240,7 @@ namespace RuntimeFlow
             if (_foldedRequest != null) _restarts.Remove(_foldedRequest);
             // The chain ends here without a session run of its own: no restart is in progress any more.
             _restarting = false;
+            _restartReason = null;
             _restartRun = null;
             _pending = false;
             _pendingToken = default;

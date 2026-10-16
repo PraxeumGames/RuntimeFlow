@@ -74,6 +74,9 @@ ConfigureAwait
 InternalsVisibleTo
 AssemblyInfo
 RuntimeInitializeOnLoadMethod
+ExecutionContext
+SuppressFlow
+DontDestroyOnLoad
 UnityEngine
 Microsoft
 

@@ -4,6 +4,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using NUnit.Framework;
+using RuntimeFlow.Internal;
 using RuntimeFlow.Testing;
 using RuntimeFlow.Tests.Support;
 using VContainer;
@@ -29,6 +30,9 @@ namespace RuntimeFlow.Tests.Lifecycle
             public bool RequestFromConstructor { get; set; }
             public bool ExplodeHookConstructor { get; set; }
             public int SessionBuilds { get; set; }
+            public int TransientHooksConstructed { get; set; }
+            public int ScopedHooksConstructed { get; set; }
+            public List<string> HookCalls { get; } = new List<string>();
             public Task<StartupResult>? ConstructorRequest { get; set; }
             public TaskCompletionSource<bool> FirstStarted { get; } = new TaskCompletionSource<bool>();
             public TaskCompletionSource<bool> HookEntered { get; } = new TaskCompletionSource<bool>();
@@ -204,6 +208,41 @@ namespace RuntimeFlow.Tests.Lifecycle
             }
         }
 
+        /// <summary>Counts its constructions: a hook of the global scope must not be built again for the session.</summary>
+        public sealed class TransientHook : IRestartPreparation
+        {
+            private readonly Journal _journal;
+
+            public TransientHook(Journal journal)
+            {
+                _journal = journal;
+                journal.TransientHooksConstructed++;
+            }
+
+            public Task PrepareForRestartAsync(RestartPreparationContext context, CancellationToken cancellationToken)
+            {
+                _journal.HookCalls.Add("transient");
+                return Task.CompletedTask;
+            }
+        }
+
+        public sealed class ScopedHook : IRestartPreparation
+        {
+            private readonly Journal _journal;
+
+            public ScopedHook(Journal journal)
+            {
+                _journal = journal;
+                journal.ScopedHooksConstructed++;
+            }
+
+            public Task PrepareForRestartAsync(RestartPreparationContext context, CancellationToken cancellationToken)
+            {
+                _journal.HookCalls.Add("scoped");
+                return Task.CompletedTask;
+            }
+        }
+
         public sealed class ExplodingHook : IRestartPreparation
         {
             public ExplodingHook(Journal journal)
@@ -228,6 +267,10 @@ namespace RuntimeFlow.Tests.Lifecycle
             _options = TestScope.Options(_log);
             _journal = new Journal();
         }
+
+        /// <summary>The suspension clock is process-wide: never leave it stopped for the next test.</summary>
+        [TearDown]
+        public void TearDown() => AppSuspension.Resume();
 
         private static void Hook<T>(IContainerBuilder builder) where T : class, IRestartPreparation
             => builder.Register<T>(Lifetime.Singleton).As<IRestartPreparation>().AsSelf();
@@ -335,6 +378,44 @@ namespace RuntimeFlow.Tests.Lifecycle
             Assert.That(shared.Contexts.Count, Is.EqualTo(2));
         }
 
+        /// <summary>
+        /// The global hooks come from the global scope only: resolving the collection from the session would
+        /// construct a Transient global hook a second time and a Scoped one as a session instance.
+        /// </summary>
+        [Test]
+        [Timeout(15000)]
+        public async Task GlobalHooksAreConstructedOncePerSessionBuildAndNotAgainForTheSession()
+        {
+            await using var host = Host(
+                builder =>
+                {
+                    builder.Register<TransientHook>(Lifetime.Transient).As<IRestartPreparation>();
+                    builder.Register<ScopedHook>(Lifetime.Scoped).As<IRestartPreparation>();
+                },
+                Hook<SessionHookB>);
+            await Within(host.StartAsync(), host, "the startup");
+
+            Assert.That(_journal.TransientHooksConstructed, Is.EqualTo(1), "one construction for the one session build");
+            Assert.That(_journal.ScopedHooksConstructed, Is.EqualTo(1), "the global scope's own instance only");
+
+            await Within(host.RestartAsync("first"), host, "the first restart");
+            await Within(host.RestartAsync("second"), host, "the second restart");
+
+            Assert.That(_journal.TransientHooksConstructed, Is.EqualTo(3), "once per session build, three builds");
+            Assert.That(_journal.ScopedHooksConstructed, Is.EqualTo(1), "the global Scoped hook is resolved from the global scope");
+            Assert.That(_journal.HookCalls, Is.EqualTo(new[] { "transient", "scoped", "transient", "scoped" }), _log.Dump());
+            Assert.That(_journal.Log, Is.EqualTo(new[]
+            {
+                "init:0",
+                "hook:b:first:0:Completed", "hook-done:b",
+                "dispose:0",
+                "init:1",
+                "hook:b:second:1:Completed", "hook-done:b",
+                "dispose:1",
+                "init:2"
+            }), "the session's own hook runs after the global ones, once\n" + _log.Dump());
+        }
+
         [Test]
         [Timeout(15000)]
         public async Task HooksRunForASessionBuiltButFrozenBeforeItsRunStarted()
@@ -423,6 +504,37 @@ namespace RuntimeFlow.Tests.Lifecycle
                 "dispose:0",
                 "init:1"
             }), _log.Dump());
+            Assert.That(_log.Has(LogLevel.Error,
+                "[RuntimeFlow] restart 'bundles-updated': the restart preparation HangingHook did not finish within 0.2s"),
+                Is.True, _log.Dump());
+        }
+
+        /// <summary>
+        /// The hook timeout counts active time, like service timeouts: a player who backgrounds the game
+        /// while the loading cover goes up must not come back to a cut hook.
+        /// </summary>
+        [Test]
+        [Timeout(15000)]
+        public async Task TheHookTimeoutDoesNotCountTimeTheApplicationSpentSuspended()
+        {
+            _options.RestartPreparationTimeout = TimeSpan.FromMilliseconds(200);
+            await using var host = Host(
+                builder => builder.Register<HangingHook>(Lifetime.Singleton).As<IRestartPreparation>().AsSelf());
+            await Within(host.StartAsync(), host, "the startup");
+            var hook = host.Global.Resolve<HangingHook>();
+
+            AppSuspension.Suspend();
+            var restart = host.RestartAsync("bundles-updated");
+            await Task.Delay(TimeSpan.FromMilliseconds(600));
+
+            Assert.That(restart.IsCompleted, Is.False, "three times the timeout passed, all of it suspended\n" + _log.Dump());
+            Assert.That(hook.Token.CanBeCanceled && !hook.Token.IsCancellationRequested, Is.True, "the hook is still waited for");
+
+            AppSuspension.Resume();
+            var result = await Within(restart, host, "the restart");
+
+            Assert.That(result.Outcome, Is.EqualTo(StartupOutcome.Completed));
+            Assert.That(hook.Token.IsCancellationRequested, Is.True, "after resuming, the timeout runs again and cuts the hook");
             Assert.That(_log.Has(LogLevel.Error,
                 "[RuntimeFlow] restart 'bundles-updated': the restart preparation HangingHook did not finish within 0.2s"),
                 Is.True, _log.Dump());

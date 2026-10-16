@@ -8,12 +8,20 @@ namespace RuntimeFlow.Internal
 {
     /// <summary>
     /// The time base of timeouts and stall warnings: a process-wide clock that stops while the application
-    /// is suspended — sent to the background on a mobile platform, or unfocused in a player that does not
-    /// run in the background — so a player who leaves the game during loading does not come back to
-    /// services that timed out while nothing could run. Wall-clock durations (<see cref="StartupResult.Elapsed"/>,
+    /// is suspended, so a player who leaves the game during loading does not come back to services that
+    /// timed out while nothing could run. Wall-clock durations (<see cref="StartupResult.Elapsed"/>,
     /// <see cref="ServiceStatus.Elapsed"/>) keep counting. <see cref="Suspend"/> and <see cref="Resume"/> are
-    /// the seam the Unity hook and the tests drive.
+    /// the seam the Unity hooks and the tests drive.
     /// </summary>
+    /// <remarks>
+    /// What "suspended" means depends on the platform. On a mobile platform
+    /// (<see cref="Application.isMobilePlatform"/>) the clock follows <c>OnApplicationPause</c>, delivered by
+    /// a hidden <see cref="AppSuspensionHook"/>: the application loses focus to permission, billing and
+    /// sign-in dialogs, the notification shade and split screen while it keeps running, so focus says
+    /// nothing there. Elsewhere it follows <see cref="Application.focusChanged"/>: losing focus suspends
+    /// only a player that does not run in the background (<see cref="Application.runInBackground"/> off);
+    /// the editor outside Play Mode never suspends.
+    /// </remarks>
     internal static class AppSuspension
     {
         private static readonly object Gate = new object();
@@ -46,7 +54,7 @@ namespace RuntimeFlow.Internal
         }
 
         /// <summary>
-        /// Re-arms the hook at the start of every player-loop session: with domain reload disabled the
+        /// Re-arms the hooks at the start of every player-loop session: with domain reload disabled the
         /// static state survives, and a suspension left over from the previous session must not stop timeouts.
         /// </summary>
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -57,20 +65,43 @@ namespace RuntimeFlow.Internal
             Resume();
         }
 
-        private static void OnFocusChanged(bool focused)
+        /// <summary>
+        /// Creates the pause hook of a mobile player (or of Play Mode with a mobile platform reported); runs
+        /// in players and Play Mode only, as every <see cref="RuntimeInitializeOnLoadMethodAttribute"/> does.
+        /// </summary>
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.BeforeSceneLoad)]
+        private static void InstallPauseHook()
         {
+            if (!Application.isPlaying || !Application.isMobilePlatform) return;
+            AppSuspensionHook.Install();
+        }
+
+        private static void OnFocusChanged(bool focused)
+            => ApplyFocus(focused, Application.isMobilePlatform, Application.isEditor && !Application.isPlaying,
+                Application.runInBackground);
+
+        /// <summary>The focus rule, with the platform facts passed in so tests can drive every case.</summary>
+        /// <param name="focused">The new focus state.</param>
+        /// <param name="mobile">A mobile platform: focus is ignored there, pauses drive the clock.</param>
+        /// <param name="editorIdle">The editor outside Play Mode, which keeps running whatever has focus.</param>
+        /// <param name="runInBackground">A player that keeps running unfocused still makes progress.</param>
+        internal static void ApplyFocus(bool focused, bool mobile, bool editorIdle, bool runInBackground)
+        {
+            if (mobile) return;
             if (focused)
             {
                 Resume();
                 return;
             }
+            if (editorIdle || runInBackground) return;
+            Suspend();
+        }
 
-            // The editor outside Play Mode keeps running whatever has focus (EditMode tests included).
-            if (Application.isEditor && !Application.isPlaying) return;
-
-            // A player that keeps running unfocused (a desktop build with Run In Background) still makes
-            // progress, so its time counts. Mobile players never run in the background.
-            if (Application.isMobilePlatform || !Application.runInBackground) Suspend();
+        /// <summary>The pause rule of a mobile player: paused suspends, resumed resumes.</summary>
+        internal static void ApplyPause(bool paused)
+        {
+            if (paused) Suspend();
+            else Resume();
         }
     }
 

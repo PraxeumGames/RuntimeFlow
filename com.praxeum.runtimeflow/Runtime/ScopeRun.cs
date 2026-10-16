@@ -326,7 +326,9 @@ namespace RuntimeFlow
         /// an infinite grace a service that ignores its token keeps the teardown pending forever.
         /// When VContainer's private lifetime state cannot be read, teardown logs one error and falls back to
         /// disposing the graph's <see cref="IAsyncDisposable"/> services in dependency order, then (when owned)
-        /// the resolver itself.
+        /// the resolver itself. In that fallback a service implementing both <see cref="IAsyncDisposable"/> and
+        /// <see cref="IDisposable"/> gets both calls — <c>DisposeAsync</c> first, then <c>Dispose</c> from the
+        /// resolver — so make its <c>Dispose</c> idempotent.
         /// </summary>
         /// <exception cref="InitGraphException">A caller-owned scope acquired a synchronous dependent of a
         /// graph-owned asynchronous service after validation. Teardown stops before releasing any service,

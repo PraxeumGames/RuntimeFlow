@@ -44,6 +44,44 @@ namespace RuntimeFlow.Tests.Failure
             _tracker.DisposeAll();
         }
 
+        /// <summary>
+        /// A mobile app loses focus to permission, billing and sign-in dialogs, the notification shade and
+        /// split screen while it keeps running: only a pause suspends it. Elsewhere losing focus suspends a
+        /// player that does not run in the background, never the idle editor.
+        /// </summary>
+        [TestCase(false, false, false, false, true, TestName = "Desktop player without run in background suspends on focus loss")]
+        [TestCase(false, false, false, true, false, TestName = "Desktop player running in background keeps counting")]
+        [TestCase(false, false, true, false, false, TestName = "Idle editor keeps counting")]
+        [TestCase(false, true, false, false, false, TestName = "Mobile focus loss keeps counting")]
+        public void FocusLossSuspendsOnlyWhereThePlayerStops(bool focused, bool mobile, bool editorIdle, bool runInBackground,
+            bool suspended)
+        {
+            AppSuspension.ApplyFocus(focused, mobile, editorIdle, runInBackground);
+
+            Assert.That(AppSuspension.IsSuspended, Is.EqualTo(suspended));
+        }
+
+        [Test]
+        public void RegainingFocusResumesOnDesktopButNotOnMobile()
+        {
+            AppSuspension.Suspend();
+            AppSuspension.ApplyFocus(true, mobile: true, editorIdle: false, runInBackground: false);
+            Assert.That(AppSuspension.IsSuspended, Is.True, "on mobile only the end of the pause resumes the clock");
+
+            AppSuspension.ApplyFocus(true, mobile: false, editorIdle: false, runInBackground: false);
+            Assert.That(AppSuspension.IsSuspended, Is.False);
+        }
+
+        [Test]
+        public void APauseSuspendsAndItsEndResumes()
+        {
+            AppSuspension.ApplyPause(true);
+            Assert.That(AppSuspension.IsSuspended, Is.True);
+
+            AppSuspension.ApplyPause(false);
+            Assert.That(AppSuspension.IsSuspended, Is.False);
+        }
+
         [Test]
         [Timeout(10000)]
         public async Task ATimeoutDoesNotCountTimeTheApplicationSpentSuspended()

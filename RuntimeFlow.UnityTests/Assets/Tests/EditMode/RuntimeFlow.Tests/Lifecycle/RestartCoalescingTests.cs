@@ -25,6 +25,51 @@ namespace RuntimeFlow.Tests.Lifecycle
             public HashSet<int> RequestAt { get; } = new HashSet<int>();
             public int FailGeneration { get; set; } = -1;
             public List<Task<StartupResult>> Requests { get; } = new List<Task<StartupResult>>();
+            public int StuckGeneration { get; set; } = -1;
+            public TaskCompletionSource<bool> StuckEntered { get; } = new TaskCompletionSource<bool>();
+            public TaskCompletionSource<bool>? Answer { get; set; }
+        }
+
+        /// <summary>
+        /// Never finishes in <see cref="Journal.StuckGeneration"/> until <see cref="Journal.Answer"/> is set
+        /// or its token is cancelled: the login screen nobody answers, the request that never returns.
+        /// </summary>
+        public abstract class StuckService : IAsyncInitializable
+        {
+            private readonly Journal _journal;
+
+            protected StuckService(Journal journal) => _journal = journal;
+
+            public async Task InitializeAsync(InitContext context, CancellationToken cancellationToken)
+            {
+                if (context.Generation != _journal.StuckGeneration) return;
+                var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                _journal.Answer = answer;
+                _journal.StuckEntered.TrySetResult(true);
+                using (cancellationToken.Register(() => answer.TrySetCanceled()))
+                {
+                    try
+                    {
+                        await answer.Task;
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        _journal.Log.Add($"stuck-cancelled:{context.Generation}");
+                        throw;
+                    }
+                }
+            }
+        }
+
+        [Init(UserGated = true)]
+        public sealed class GatedLogin : StuckService
+        {
+            public GatedLogin(Journal journal) : base(journal) { }
+        }
+
+        public sealed class HungRequest : StuckService
+        {
+            public HungRequest(Journal journal) : base(journal) { }
         }
 
         /// <summary>Records whether the host says it is restarting, and requests a restart in chosen generations.</summary>
@@ -90,6 +135,15 @@ namespace RuntimeFlow.Tests.Lifecycle
         private RuntimeFlowHost Host() => new RuntimeFlowHost(
             builder => builder.RegisterInstance(_journal),
             builder => builder.Add<Requester>(),
+            _options);
+
+        private RuntimeFlowHost StuckHost(bool userGated) => new RuntimeFlowHost(
+            builder => builder.RegisterInstance(_journal),
+            builder =>
+            {
+                if (userGated) builder.Add<GatedLogin>();
+                else builder.Add<HungRequest>();
+            },
             _options);
 
         private async Task<T> Within<T>(Task<T> task, RuntimeFlowHost host, string what)
@@ -179,6 +233,10 @@ namespace RuntimeFlow.Tests.Lifecycle
             Assert.That(_observer.Requests, Is.EqualTo(new[] { "bundles-updated:accepted:0" }));
         }
 
+        /// <summary>
+        /// The request comes from inside the restarted generation's own initialization, with a reason of its
+        /// own ("again-1", not "bundles-updated"): it is coalesced all the same, so no restart loop forms.
+        /// </summary>
         [Test]
         [Timeout(15000)]
         public async Task ByDefaultARequestDuringTheRestartedGenerationsInitializationIsCoalescedAndNotBudgeted()
@@ -199,6 +257,67 @@ namespace RuntimeFlow.Tests.Lifecycle
             Assert.That(_observer.Requests, Is.EqualTo(new[] { "bundles-updated:accepted:0", "again-1:coalesced:1" }));
             Assert.That(_log.Has(LogLevel.Information,
                 "[RuntimeFlow] restart 'again-1' coalesced with the restart in progress"), Is.True, _log.Dump());
+            Assert.That(host.IsRestarting, Is.False);
+        }
+
+        /// <summary>
+        /// "Change server" or "Retry" while the restarted generation waits forever (a login nobody answers,
+        /// a request without a timeout): coalescing it would hang every awaiter for good, so a request with
+        /// another reason from outside that generation is a restart of its own.
+        /// </summary>
+        [TestCase(true)]
+        [TestCase(false)]
+        [Timeout(15000)]
+        public async Task ByDefaultADifferentReasonWhileTheRestartedGenerationInitializesRestartsAgain(bool userGated)
+        {
+            _options.MaxRestartsPerWindow = 2;
+            _journal.StuckGeneration = 1;
+            await using var host = StuckHost(userGated);
+            await Within(host.StartAsync(), host, "the startup");
+
+            var first = host.RestartAsync("bundles-updated");
+            await Within(_journal.StuckEntered.Task, host, "the stuck generation");
+            Assert.That(host.IsRestarting, Is.True);
+            Assert.That(host.Generation, Is.EqualTo(1));
+
+            var second = host.RestartAsync("change-server");
+            var result = await Within(second, host, "the second restart");
+            var firstResult = await Within(first, host, "the first restart");
+
+            Assert.That(result.Outcome, Is.EqualTo(StartupOutcome.Completed), _log.Dump());
+            Assert.That(firstResult, Is.SameAs(result), "the awaiter of the first restart sees the final outcome");
+            Assert.That(host.Generation, Is.EqualTo(2));
+            Assert.That(host.RestartCount, Is.EqualTo(2), "the accepted request is budgeted");
+            Assert.That(_journal.Log, Is.EqualTo(new[] { "stuck-cancelled:1" }), "the stuck generation was torn down");
+            Assert.That(_observer.Requests, Is.EqualTo(new[] { "bundles-updated:accepted:0", "change-server:accepted:1" }));
+            Assert.That(host.IsRestarting, Is.False);
+        }
+
+        [Test]
+        [Timeout(15000)]
+        public async Task ByDefaultTheSameReasonWhileTheRestartedGenerationInitializesIsCoalescedAndNotBudgeted()
+        {
+            _options.MaxRestartsPerWindow = 1;
+            _journal.StuckGeneration = 1;
+            await using var host = StuckHost(userGated: true);
+            await Within(host.StartAsync(), host, "the startup");
+
+            var first = host.RestartAsync("bundles-updated");
+            await Within(_journal.StuckEntered.Task, host, "the stuck generation");
+            var repeat = host.RestartAsync("bundles-updated");
+
+            Assert.That(repeat.IsCompleted, Is.False, "the repeat waits for the restart it joined");
+            Assert.That(_observer.Requests, Is.EqualTo(new[] { "bundles-updated:accepted:0", "bundles-updated:coalesced:1" }));
+            _journal.Answer!.TrySetResult(true);
+
+            var result = await Within(first, host, "the restart");
+            var joined = await Within(repeat, host, "the repeated request");
+
+            Assert.That(result.Outcome, Is.EqualTo(StartupOutcome.Completed), _log.Dump());
+            Assert.That(joined, Is.SameAs(result));
+            Assert.That(host.Generation, Is.EqualTo(1));
+            Assert.That(host.RestartCount, Is.EqualTo(1));
+            Assert.That(_journal.Log, Is.Empty, "nothing was torn down");
             Assert.That(host.IsRestarting, Is.False);
         }
 

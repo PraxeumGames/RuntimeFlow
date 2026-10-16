@@ -33,7 +33,9 @@ names the same package. Skip the second line and the project stops compiling on 
 `VContainer` references. The pin is upstream `hadashiA/VContainer`, tag 1.15.3, by commit SHA; if your
 project already ships VContainer (a fork, a registry copy, an embedded one), keep yours and omit the
 line, as long as its **API** is a superset of 1.15.3's. That says nothing about behaviour: forks change
-defaults. The suite runs against upstream 1.15.3 and against the Bezarius 1.19.0 fork
+defaults. On Unity 6.x the upstream 1.15.3 editor assembly does not compile (its diagnostics window uses
+the TreeView API that Unity 6 made obsolete-as-error), so Unity 6 projects need a newer VContainer —
+the Bezarius 1.19.0 fork passes the whole suite on Unity 6000.5.7f1. The suite runs against upstream 1.15.3 and against the Bezarius 1.19.0 fork
 (`RUNTIMEFLOW_VCONTAINER=fork scripts/run_unity_editmode_tests.sh`), whose differences RuntimeFlow
 accounts for — its `EnsureDispatcherRegistered` registers `Debug.LogException` as the entry-point
 exception handler of every scope that has none, `RegisterComponentInHierarchy` registers a singleton
@@ -168,7 +170,7 @@ list is empty — is a graph error.
 |---|---|
 | `Optional` | A failure degrades instead of failing the run: warning, state `Degraded`, dependents still start and see the name in `InitContext.DegradedServices` — including dependents in child scopes, since a parent-scope service that degraded stays `Degraded` there. |
 | `UserGated` | The service is waiting for the player: reported as `AwaitingPlayer`, exempt from timeouts and from the stall warning (a run with only gated services in flight logs an informational line instead). Combining it with `TimeoutSeconds` is a graph error. |
-| `TimeoutSeconds` | Deadline in seconds, multiplied by `RuntimeFlowOptions.TimeoutMultiplier` (`1.0` by default, `0` disables every timeout). Must be finite and `>= 0` (`0` means none). There is no default timeout: a service without the attribute is never killed. The deadline counts only time the application is active: while it is suspended — in the background on a mobile platform, or unfocused with `Application.runInBackground` off — it stands still, and so does the stall timer, so a player who leaves the game during loading does not return to a timed-out service. `ServiceStatus.Elapsed` and `StartupResult.Elapsed` stay wall-clock. |
+| `TimeoutSeconds` | Deadline in seconds, multiplied by `RuntimeFlowOptions.TimeoutMultiplier` (`1.0` by default, `0` disables every timeout). Must be finite and `>= 0` (`0` means none). There is no default timeout: a service without the attribute is never killed. The deadline counts only time the application is active: while it is suspended it stands still, and so does the stall timer, so a player who leaves the game during loading does not return to a timed-out service. On a mobile platform "suspended" means paused (`OnApplicationPause`, delivered by a hidden `DontDestroyOnLoad` object the package creates at startup): focus is lost there to permission, billing and sign-in dialogs, the notification shade and split screen while the game keeps running, so focus does not count. On other platforms losing focus suspends a player with `Application.runInBackground` off; the editor outside Play Mode never suspends. `ServiceStatus.Elapsed` and `StartupResult.Elapsed` stay wall-clock. |
 | `Weight` | Relative share of `RuntimeFlowStatus.Percent`; `1.0` by default, `0` removes the service from the progress bar. Must be finite and `>= 0`. |
 
 **Scopes.** `RuntimeFlowHost` owns two: a Global container built once and kept warm, and a Session
@@ -219,7 +221,9 @@ session's entry points too (the session's handler forwards to it). Consequences 
   Ownership is read from VContainer's private lifetime state; if that layout cannot be read (an
   unsupported VContainer build), teardown logs one error and falls back to disposing the graph's
   `IAsyncDisposable` services in dependency order followed by plain scope disposal, instead of leaking
-  the scope. A cleanup error raised while the scope drains never replaces an earlier teardown error.
+  the scope. In that fallback a service implementing both `IAsyncDisposable` and `IDisposable` gets both
+  calls (`DisposeAsync`, then `Dispose` from the scope), so make `Dispose` idempotent. A cleanup error
+  raised while the scope drains never replaces an earlier teardown error.
 - A standalone run over a caller-owned scope still leaves synchronous cleanup to that caller. A
   synchronous dependent requiring earlier cleanup than an async service is a graph error before
   initialization; use an owned scope, or expose that dependent as an `IAsyncInitializable` graph
@@ -340,17 +344,24 @@ services stay warm and are never initialized twice.
   awaited, so it is returned as usual. `StartAsync`, which only joins the chain, is refused instead:
   called from inside the `InitializeAsync` of a global or session service while the startup or restart
   that waits for that service is in flight, it returns a task faulted with `InvalidOperationException`
-  rather than one that never completes.
+  rather than one that never completes, and logs a warning. "Inside" follows the execution context, so
+  fire-and-forget work a service starts from its `InitializeAsync` (`_ = WarmUpAsync()`) counts as inside
+  it while that service initializes: start such work after `StartAsync` returned, or under
+  `ExecutionContext.SuppressFlow()` so that its continuations do not carry the context.
 - **Coalesced.** Requests arriving while a restart is in progress join it; ten clicks produce one
-  rebuild. A coalesced request starts nothing, is not budgeted and is logged at Information. How long
-  "in progress" lasts is `RuntimeFlowOptions.RestartCoalescing`: with the default
-  `RestartCoalescing.UntilSessionInitialized`, for as long as `IsRestarting` is true — until the run of
-  the session the restart builds concluded — so a service of the restarted generation that asks again
-  while it initializes cannot open yet another generation (no restart loops). Such a requester gets
-  nothing torn down: it must finish its `InitializeAsync` normally, not park on its token or throw a
-  cancellation (a warning says so). Once that session concluded — `Failed` included, the "Retry" case —
-  requests are accepted again. `RestartCoalescing.UntilSessionBuilt` coalesces only until the new
-  session is built, so its own services can restart it again (budgeted). `StartAsync` and
+  rebuild. A coalesced request starts nothing, is not budgeted and is logged at Information. Until the
+  restart has built its session, every request joins it. After that, `RuntimeFlowOptions.RestartCoalescing`
+  decides: with the default `RestartCoalescing.UntilSessionInitialized`, for as long as `IsRestarting` is
+  true — until the run of the session the restart builds concluded — a request joins the restart in
+  progress when it repeats its reason (ordinal comparison: "bundles updated" reported twice) or when a
+  service of the restarted generation makes it from inside that generation's initialization, so no
+  restart loop can form. Such a requester gets nothing torn down: it must finish its `InitializeAsync`
+  normally, not park on its token or throw a cancellation (a warning says so). Every other request — a
+  different reason from outside, "change server" or a "Retry" while the restarted session waits on a
+  user-gated login or a request without a timeout — is accepted (and budgeted) and replaces the generation
+  still initializing, so a session that never concludes cannot swallow it. Once that session concluded —
+  `Failed` included — every request is accepted again. `RestartCoalescing.UntilSessionBuilt` coalesces
+  only until the new session is built, so its own services can restart it again (budgeted). `StartAsync` and
   `RestartAsync` both return the result of the *last* run in the chain, so an
   awaiter started before a restart still sees the final outcome. A request arriving before a session
   exists — during the global phase of the startup — makes the startup build its first session directly
@@ -377,10 +388,13 @@ services stay warm and are never initialized twice.
   locators and tear UI navigation down: nothing of the old generation still initializes on them, and
   resetting before calling `RestartAsync` would leave in-flight services running on nulled statics. A
   throwing hook is logged and the restart goes on; a hook still running after
-  `RuntimeFlowOptions.RestartPreparationTimeout` (10 s, `Timeout.InfiniteTimeSpan` = unbounded) has its
-  token cancelled and is no longer awaited. The token is also cancelled when the host is disposed or the
-  application quits. No hook runs when there is no session to tear down (a restart requested during the
-  global phase, or after a failed build), on `DisposeAsync` or on quit.
+  `RuntimeFlowOptions.RestartPreparationTimeout` (10 s of active time — a suspension does not count,
+  like service timeouts; `Timeout.InfiniteTimeSpan` = unbounded) has its token cancelled and is no longer
+  awaited. The token is also cancelled when the host is disposed or the application quits. No hook runs
+  when there is no session to tear down (a restart requested during the global phase, or after a failed
+  build), on `DisposeAsync` or on quit. A hook must not await `StartAsync`, `RestartAsync` or
+  `DisposeAsync` of its host: each waits for the restart that waits for the hook, so the hook deadlocks
+  until the timeout cuts it — forever with `Timeout.InfiniteTimeSpan`. Fire such a call and return.
 - **In progress.** `RuntimeFlowHost.IsRestarting` is true from the accepted request until the new
   session's run concluded (completed, failed, halted, cancelled) or the chain stopped without one; it is
   false during a plain first startup. `IRuntimeFlowObserver.OnRestartRequested(RestartRequestInfo)` is
@@ -391,8 +405,11 @@ services stay warm and are never initialized twice.
   moment (before the session is torn down, also for a session still initializing), now with a
   context, a token and a timeout, and registered as many times as needed in either scope. A 0.x
   "restart in progress" flag or "application restarting" event maps to `IsRestarting` and
-  `OnRestartRequested`. 0.x dropped requests made while the restart replay was initializing; the default
-  `RestartCoalescing.UntilSessionInitialized` coalesces them, which keeps that behaviour without a refusal.
+  `OnRestartRequested`. 0.x dropped every request made while the restart replay was initializing. 1.0
+  differs: the default `RestartCoalescing.UntilSessionInitialized` coalesces only repeats of the same
+  reason and requests from inside the restarted generation; a request with another reason restarts
+  again, so a "change server" during a stuck replay is honoured instead of lost. See
+  [Migrating from 0.x](#migrating-from-0x) for the full mapping.
 - **Tokens.** A token passed to `RestartAsync` cancels the new session run. The requesting service's own
   token (or any token of the run being torn down) is ignored with a warning — it would cancel the new
   generation at birth. A token that is already cancelled yields a cancelled task and changes nothing.
@@ -408,8 +425,11 @@ services stay warm and are never initialized twice.
 - **Refusals are tasks.** Every refusal — not started, quitting, halted global, budget, a disposed host
   (`ObjectDisposedException`) — comes back as a faulted task; only a null reason throws synchronously.
 - **Main thread.** `StartAsync`, `RestartAsync` and the first `DisposeAsync` refuse a thread without a
-  `SynchronizationContext` with a faulted task (`InvalidOperationException`) before building or tearing
-  down anything: every continuation of the host runs on the caller's context.
+  `SynchronizationContext` with a faulted task (`InvalidOperationException`, also logged at Error with the
+  member name) before building or tearing down anything: every continuation of the host runs on the
+  caller's context. `StartAsync` refuses even when it would only join a run that exists, since the
+  continuations of the task it returns would run on the thread pool. A refused `DisposeAsync` tears
+  nothing down; call it again from the main thread.
 - **Visible.** Services see `InitContext.IsRestart` and `InitContext.Generation` (0 for the first run,
   +1 per restart); observers see `OnRunStarted(scope, isRestart: true)`, which is where a UI cover
   belongs.
@@ -515,6 +535,59 @@ constrained to `!RUNTIMEFLOW_EXTERNAL_MEL`: add `RUNTIMEFLOW_EXTERNAL_MEL` to *P
 Scripting Define Symbols* (every platform you build) and the package's copy is excluded. RuntimeFlow's
 assemblies reference the DLL by file name, so they then compile against your copy. The package ships
 8.0.0; it only uses `ILogger`, `LogLevel` and `EventId`, which every version provides.
+
+## Migrating from 0.x
+
+1.0 is a hard cut: no 0.x type survives and there is no compatibility layer or `[Obsolete]` shim, so
+the project stops compiling until every use is replaced. Nearly every 0.x concept has a smaller 1.0
+counterpart, though. 0.x names below are plain text; every name in backticks exists in 1.0.
+
+| 0.x | 1.0 |
+|---|---|
+| ISessionInitializableService, IAsyncInitializableService, ISceneInitializableService, IModuleInitializableService (and the other stage markers) | `IAsyncInitializable`. The scope is the installer that registers the service; ordering comes from constructor parameters, `[DependsOn(typeof(T))]` or `[Init(Phase = …)]` with `RuntimeFlowOptions.Phases`. Expose it: `RegisterInitializable<T>()` or `.As<IAsyncInitializable>()`. |
+| RuntimeFlow.Contexts.DependsOn | `[DependsOn(typeof(T))]`, now in namespace `RuntimeFlow`. A target that is not an initializable service is an `InitGraphException`, not a silent no-op. |
+| IUserInteractionGatedInitializableService | `[Init(UserGated = true)]`: no timeout, no stall warning, `ServiceState.AwaitingPlayer` in the status. |
+| Per-service timeout overrides, the health baseline, RuntimeHealthCriticalException | `[Init(TimeoutSeconds = n)]` where a deadline is wanted (scaled by `RuntimeFlowOptions.TimeoutMultiplier`; there is no default timeout and no watchdog). Retry is app-side: show the failure and call `RuntimeFlowHost.RestartAsync` from a Retry button. |
+| GameContextBuilder, the RuntimePipeline family, RuntimePipelineBootstrapHost, presets | `RuntimeFlowHost` with a global and a session installer (`Action<IContainerBuilder>` receiving the real VContainer builder); `RuntimeFlowHost.From` when a root `LifetimeScope` already builds the global container. |
+| IRuntimeSessionRestartPreparationHook | `IRestartPreparation`, registered in either installer, with `RestartPreparationContext`, a token and `RuntimeFlowOptions.RestartPreparationTimeout`. |
+| IRuntimeRestartLifecycleManager.Snapshot.IsInProgress, the ApplicationRestarting events | `RuntimeFlowHost.IsRestarting`, `IRuntimeFlowObserver.OnRestartRequested` (`RestartRequestInfo`). |
+| RuntimeFlowGameRestartHandler, IGameRestartHandler | A thin app wrapper around `RuntimeFlowHost.RestartAsync`: call it on the main thread and observe the returned task — budget, quit and halted-global refusals arrive through it, never as a throw. |
+| ISessionDisposableService | `IAsyncDisposable` (or `IDisposable`) on the session service; the session teardown calls it in dependency order on every restart and on `DisposeAsync`. |
+| RuntimeFlowLoadingStage types, the stage state provider, reason codes | `IRuntimeFlowObserver` (run, phase and service events) plus `RuntimeFlowHost.GetStatus` (`RuntimeFlowStatus.Phase`, `Percent`, `Running`, `HaltReason`), mapped to the loading screen's own stages in app code. |
+| RuntimeFlowLoadingStageResult.Stop | `InitContext.Halt` from inside a service. From outside one, keep that service's `InitContext` of the current generation and call `Halt` on it; once that generation is gone it throws `ObjectDisposedException`, which the caller catches. |
+| RuntimeFlowReplayScope | `InitContext.IsRestart` and `InitContext.Generation`. |
+| IRuntimeFlowScenario, scene loading | App-owned, for example a global `IAsyncInitializable` that loads the scene and that session services depend on. |
+| ILoggerFactory | `RuntimeFlowOptions.Logger`: one `ILogger` for every message. |
+| ExcludeInitializable, AddPrioritizedInitializable | The registration shape: only what is exposed as `IAsyncInitializable` is initialized, and order comes from edges. Expose only the interfaces a service needs (`.As<IFoo>()` instead of `.AsImplementedInterfaces()`) to keep it out of VContainer's entry points. |
+| ScopeEventBus | Removed, no replacement. |
+
+Behaviour that changed without a type to rename:
+
+- `IStartable` and `ITickable` are frame-driven and are **not** run after asynchronous initialization:
+  0.x ran `IStartable` after every async initializer, 1.0 lets VContainer start it on the first frame
+  after the scope is built, while `InitializeAsync` calls may still be in flight. Code that needs
+  initialized services moves into an `IAsyncInitializable` that depends on them, or runs after
+  `StartAsync` returned.
+- `IInitializable` runs inside `Build()`, in registration order, before the first `InitializeAsync`.
+- A restart requested while a restart is initializing is coalesced only when it repeats the reason or
+  comes from the restarted generation itself (see *Coalesced* under [Restart](#restart)); 0.x dropped
+  every such request.
+
+Checklist:
+
+- If the project ships its own Microsoft.Extensions.Logging.Abstractions, add `RUNTIMEFLOW_EXTERNAL_MEL`
+  to *Player Settings ▸ Scripting Define Symbols* for every platform. A plugin's define constraint sees
+  only those symbols, not a csc.rsp `-define`.
+- Keep the project's own VContainer entry in Packages/manifest.json: the project manifest wins over the
+  package's declared dependency. The suite also runs against the 1.19 fork.
+- IL2CPP with *Managed Stripping Level* above Minimal: RuntimeFlow reads VContainer's internal
+  entry-point handler and private lifetime state through reflection, so preserve the assembly in
+  link.xml with `<assembly fullname="VContainer" preserve="all"/>`.
+- Find constructor-edge cycles before the first device run: build the real session container in an
+  EditMode test and pass it to `ScopeRun.Create(container, "session", options)`. An
+  `InitGraphException` names the cycle with every edge's origin, and `ScopeRun.Describe` renders the
+  graph when it is valid.
+- Audit every `IStartable`: anything that assumed async initialization had finished (see above).
 
 ## Package contents
 
