@@ -119,7 +119,8 @@ namespace RuntimeFlow.Tests.Lifecycle
         /// <summary>
         /// The sfs-client chain: generation 0's AddressablesUpdater and generation 1's AbTestsPrecheck each
         /// request a restart; generation 2 completes. Variants cover what the requester does afterwards,
-        /// the token it passes, and a UI restart that lands in the middle of the chain.
+        /// the token it passes, and a UI restart that lands in the middle of the chain. Runs with
+        /// <see cref="RestartCoalescing.UntilSessionBuilt"/>, which lets generation 1 restart again.
         /// </summary>
         [TestCaseSource(nameof(SfsChains))]
         [Timeout(60000)]
@@ -140,6 +141,42 @@ namespace RuntimeFlow.Tests.Lifecycle
             var final = gameplay[0].Generation;
             Assert.That(final, uiMidChain ? Is.InRange(2, 3) : Is.EqualTo(2), report.Render(1000, 400));
             Assert.That(world.BuildGenerations.Last(), Is.EqualTo(final), report.Render(1000, 400));
+        }
+
+        public static IEnumerable<TestCaseData> SfsDefaultChains()
+        {
+            foreach (var token in new[] { ChaosToken.None, ChaosToken.Own })
+            foreach (var ui in new[] { false, true })
+                yield return new TestCaseData(token, ui);
+        }
+
+        /// <summary>
+        /// The same chain under the default <see cref="RestartCoalescing.UntilSessionInitialized"/>: the
+        /// request of generation 1's AbTestsPrecheck (and a UI restart during that generation) joins the
+        /// restart in progress, so generation 1 is final. The requester completes normally, as it must when
+        /// its request is coalesced.
+        /// </summary>
+        [TestCaseSource(nameof(SfsDefaultChains))]
+        [Timeout(60000)]
+        public async Task ByDefaultTheSfsClientChainEndsInTheFirstRestartedGeneration(ChaosToken token, bool uiMidChain)
+        {
+            var scenario = Sfs(ChaosAct.Complete, token, uiMidChain);
+            scenario.Coalescing = RestartCoalescing.UntilSessionInitialized;
+            var report = await ChaosRunner.Run(scenario);
+            var world = report.World;
+
+            Assert.That(report.Failed, Is.False, report.Render(1000, 400));
+            var start = world.Awaiters.First(a => a.Label == "start");
+            Assert.That(start.Task.IsFaulted || start.Task.IsCanceled, Is.False, report.Render(1000, 400));
+            Assert.That(((Task<StartupResult>)start.Task).Result.Outcome, Is.EqualTo(StartupOutcome.Completed), report.Render(1000, 400));
+
+            var gameplay = world.Instances.Where(i => i.Slot.Name == "Gameplay" && i.InitCalls > 0).ToList();
+            Assert.That(gameplay.Count, Is.EqualTo(1), report.Render(1000, 400));
+            // A UI restart that lands only after generation 1 concluded is accepted as a restart of its own.
+            var final = gameplay[0].Generation;
+            Assert.That(final, uiMidChain ? Is.InRange(1, 2) : Is.EqualTo(1), report.Render(1000, 400));
+            Assert.That(world.BuildGenerations.Last(), Is.EqualTo(final), report.Render(1000, 400));
+            Assert.That(world.Host.RestartCount, Is.EqualTo(final), "coalesced requests are not budgeted");
         }
 
         private static ChaosScenario Sfs(ChaosAct then, ChaosToken token, bool uiMidChain)

@@ -64,11 +64,25 @@ types to about 25, and every 0.x concept below is gone.
 - `DependsOnAttribute` — validated ordering escape hatch.
 - `RuntimeFlowHost` — Global + Session lifecycle: `StartAsync`, `RestartAsync`, `InitializeScopeAsync`,
   `GetStatus`, `Describe`, `Global`, `Session`, `State`, `Generation`, `RestartCount`, `IsQuitting`,
-  `DisposeAsync`, and the `From(existingGlobal, session, options)` factory for projects that already own
+  `IsRestarting`, `DisposeAsync`, and the `From(existingGlobal, session, options)` factory for projects that already own
   a root container.
 - `RuntimeFlowOptions` — `Logger`, `Phases`, `DefaultPhase`, `StallWarningAfter` (10 s),
   `CancellationGrace` (5 s), `TimeoutMultiplier` (1.0), `MaxRestartsPerWindow` (5), `RestartWindow`
-  (60 s), `Observers`.
+  (60 s), `RestartCoalescing` (`UntilSessionInitialized`), `RestartPreparationTimeout` (10 s),
+  `Observers`.
+- `IRestartPreparation` / `RestartPreparationContext` — hooks registered in the global and/or session
+  installer, resolved when a session is built and awaited (global first, then session, each once) by
+  every restart that tears a built session down: after its run and child runs were cancelled and
+  awaited, before anything of it is disposed — also for a session still initializing
+  (`WasInitializing`) or frozen before it started. A throwing hook is logged, a hanging one is cut at
+  `RestartPreparationTimeout`; disposal and quit never call them. Replaces 0.x's
+  IRuntimeSessionRestartPreparationHook.
+- `RestartCoalescing` — `UntilSessionInitialized` (default) coalesces every request made while
+  `IsRestarting` (until the new session's run concluded) into the restart in progress, unbudgeted, so a
+  service of the restarted generation cannot start a restart loop; `UntilSessionBuilt` coalesces only
+  until the new session is built and lets that generation restart again.
+- `IRuntimeFlowObserver.OnRestartRequested(RestartRequestInfo)` — raised synchronously for accepted and
+  coalesced requests (`Reason`, `Coalesced`, `Generation`), never for refusals.
 - `ScopeRun` — the graph of one resolver: `Create`, `RunAsync`, `CancelAsync`, `GetStatus`, `Describe`,
   `DisposeAsync`, usable standalone on any container.
 - `StartupResult` / `StartupOutcome` — `Completed` or `Halted`, with `HaltReason`, `HaltedBy`,

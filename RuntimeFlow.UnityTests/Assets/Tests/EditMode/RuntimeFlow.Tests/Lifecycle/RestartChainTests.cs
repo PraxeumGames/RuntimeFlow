@@ -263,6 +263,9 @@ namespace RuntimeFlow.Tests.Lifecycle
         [Timeout(15000)]
         public async Task TwoSessionRestartsInARowReachGenerationTwo(Reaction reaction)
         {
+            // A chain needs the restarted generation to be allowed to restart again; by default its request
+            // is coalesced into the restart in progress (RestartCoalescingTests covers that).
+            _options.RestartCoalescing = RestartCoalescing.UntilSessionBuilt;
             _world.Addressables = reaction;
             _world.Configs = reaction;
             await using var host = Host();
@@ -288,6 +291,7 @@ namespace RuntimeFlow.Tests.Lifecycle
         [Timeout(15000)]
         public async Task AChainStartedByAGlobalServiceReachesGenerationTwo(Reaction global, Reaction session)
         {
+            _options.RestartCoalescing = RestartCoalescing.UntilSessionBuilt;
             _world.AddressablesInGlobal = true;
             _world.Addressables = global;
             _world.Configs = session;

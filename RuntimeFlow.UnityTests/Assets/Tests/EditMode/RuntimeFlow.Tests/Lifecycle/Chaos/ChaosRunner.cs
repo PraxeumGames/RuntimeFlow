@@ -85,10 +85,12 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
                 CancellationGrace = TimeSpan.FromMilliseconds(scenario.CancellationGraceMs),
                 Phases = new[] { "early", "late" },
                 MaxRestartsPerWindow = scenario.MaxRestarts,
-                RestartWindow = TimeSpan.FromSeconds(60)
+                RestartWindow = TimeSpan.FromSeconds(60),
+                RestartCoalescing = scenario.Coalescing
             };
 
             var world = new ChaosWorld(scenario);
+            options.Observers.Add(world);
             var report = new ChaosReport { Scenario = scenario, World = world, Log = log };
             var host = new RuntimeFlowHost(
                 builder =>

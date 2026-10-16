@@ -707,7 +707,7 @@ framework, and against the roughly 2k lines of glue it had written to work aroun
 | R6 | Weighted progress with sub-progress | `Weight`, `InitContext.ReportProgress`, `RuntimeFlowStatus.Percent` weighted across scopes |
 | R7 | Per-step timeouts with a stable key | `[Init(TimeoutSeconds)]` on the class — no keying by registered interface |
 | R8 | Background work must not look like a hang | No kill by default; stalls are warnings naming what is running and what is blocked |
-| R9 | Restart with ordered reset on the main thread, under a UI cover, without leaks | `RestartAsync`: deferred, coalesced, single-threaded, reverse-order `DisposeAsync`, `OnRunStarted(isRestart)` for the cover |
+| R9 | Restart with ordered reset on the main thread, under a UI cover, without leaks | `RestartAsync`: deferred, coalesced (`RestartCoalescing`), single-threaded, `IRestartPreparation` hooks before teardown, reverse-order `DisposeAsync`, `IsRestarting`, `OnRestartRequested` and `OnRunStarted(isRestart)` for the cover |
 | R10 | A step must know it is a restart | `InitContext.IsRestart` and `InitContext.Generation` |
 | R11 | Scenes are the service's business | No scene loader in 1.0; a service loads what it needs inside `InitializeAsync` |
 | R12 | Test bootstrap without network and without a `MonoBehaviour` | `TestFlow`, or `ScopeRun` directly on a plain container |

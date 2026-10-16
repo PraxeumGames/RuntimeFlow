@@ -42,5 +42,14 @@ namespace RuntimeFlow
         /// or by the host replacing it (a restart, the application quitting).
         /// </summary>
         void OnRunCancelled(string scope) { }
+
+        /// <summary>
+        /// <see cref="RuntimeFlowHost.RestartAsync"/> took on a request: it started a restart, or joined
+        /// the one in progress (<see cref="RestartRequestInfo.Coalesced"/>). Refused requests are not
+        /// reported. Raised synchronously inside <c>RestartAsync</c>, after the doomed session was frozen
+        /// and before anything is cancelled; a restart requested from this callback is coalesced and not
+        /// reported again.
+        /// </summary>
+        void OnRestartRequested(RestartRequestInfo request) { }
     }
 }

@@ -171,6 +171,12 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
         public bool StartWithToken;
         public int CancellationGraceMs = 100;
 
+        /// <summary>
+        /// The coalescing window. Hand-written scenarios default to the narrow one, which lets a restarted
+        /// generation restart again (the chains they model); generated ones alternate by seed parity.
+        /// </summary>
+        public RestartCoalescing Coalescing = RestartCoalescing.UntilSessionBuilt;
+
         public IEnumerable<ChaosSlot> AllSlots => Global.Concat(Session).Concat(Child);
 
         public string Describe()
@@ -181,6 +187,7 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
                 .Append(", grace ").Append(CancellationGraceMs.ToString(CultureInfo.InvariantCulture)).Append("ms");
             if (SessionBuildThrowsAt >= 0) text.Append(", session build #").Append(SessionBuildThrowsAt).Append(" throws");
             if (StartWithToken) text.Append(", start token");
+            text.Append(", coalescing ").Append(Coalescing);
             text.AppendLine();
             foreach (var slot in AllSlots) text.Append("  ").Append(slot.Scope).Append(' ').AppendLine(slot.ToString());
             foreach (var action in Actions) text.Append("  action ").AppendLine(action.ToString());
@@ -193,7 +200,12 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
         public static ChaosScenario Generate(int seed)
         {
             var rng = new Random(seed);
-            var scenario = new ChaosScenario { Seed = seed };
+            // Derived from the seed, not drawn from the generator, so every seed keeps its plan.
+            var scenario = new ChaosScenario
+            {
+                Seed = seed,
+                Coalescing = seed % 2 == 0 ? RestartCoalescing.UntilSessionInitialized : RestartCoalescing.UntilSessionBuilt
+            };
 
             var globals = rng.Next(1, 5);
             var sessions = rng.Next(2, 7);

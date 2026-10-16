@@ -116,6 +116,9 @@ namespace RuntimeFlow.Internal
         public void RunCancelled()
             => Fan(o => o.OnRunCancelled(_scope), nameof(IRuntimeFlowObserver.OnRunCancelled));
 
+        public void RestartRequested(RestartRequestInfo request)
+            => Fan(o => o.OnRestartRequested(request), nameof(IRuntimeFlowObserver.OnRestartRequested));
+
         /// <summary>
         /// Delivers one event to every observer in registration order; an observer that throws is reported
         /// and skipped, so a broken listener can never take the run down with it.

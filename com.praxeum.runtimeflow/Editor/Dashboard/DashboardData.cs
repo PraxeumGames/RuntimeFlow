@@ -154,6 +154,9 @@ namespace RuntimeFlow.Editor
         /// <summary>True when the host has a session scope that can be restarted.</summary>
         public bool CanRestart;
 
+        /// <summary>True while a restart is in progress (<see cref="RuntimeFlowHost.IsRestarting"/>).</summary>
+        public bool Restarting;
+
         /// <summary>True when the snapshot was taken from a live host rather than read back from storage.</summary>
         public bool Live;
 
@@ -330,6 +333,7 @@ namespace RuntimeFlow.Editor
                 RestartCount = host.RestartCount,
                 Generation = host.Generation,
                 CanRestart = host.CanRestart,
+                Restarting = host.IsRestarting,
                 Live = true,
                 HaltReason = aggregate.HaltReason ?? string.Empty,
                 ErrorType = aggregate.Error?.GetType().Name ?? string.Empty,

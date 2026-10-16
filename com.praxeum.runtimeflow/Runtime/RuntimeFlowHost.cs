@@ -89,6 +89,17 @@ namespace RuntimeFlow
         private CancellationToken _pendingToken;
         private RestartRequest? _foldedRequest;
 
+        // IsRestarting: _restarting is set when a restart is accepted; _restartRun is the run of the session
+        // built as that restart, null until it is published. The flag ends with that run or with the chain.
+        private bool _restarting;
+        private ScopeRun? _restartRun;
+        private bool _notifyingRestart;
+
+        // The IRestartPreparation hooks resolved when the current session was built, and the token source
+        // of the hook running right now (cancelled by DisposeAsync and a quit).
+        private IReadOnlyList<IRestartPreparation> _sessionHooks = Array.Empty<IRestartPreparation>();
+        private CancellationTokenSource? _preparation;
+
         private EntryPointCollector? _collecting;
         private bool _externalGlobalFailed;
         private bool _sessionAbortedByQuit;
@@ -224,6 +235,24 @@ namespace RuntimeFlow
         public bool IsQuitting => _quitting;
 
         /// <summary>
+        /// True from the moment <see cref="RestartAsync"/> accepted a restart until the run of the session
+        /// that restart builds concluded (completed, failed, halted or cancelled), or until the restart chain
+        /// stopped without one (its session failed to build, the global phase it was folded into failed or
+        /// halted, the host was disposed or the application quit). False during a plain startup nobody
+        /// asked to restart. Requests arriving meanwhile are coalesced under
+        /// <see cref="RestartCoalescing.UntilSessionInitialized"/>.
+        /// </summary>
+        public bool IsRestarting
+        {
+            get
+            {
+                if (_disposed || !_restarting) return false;
+                var run = _restartRun;
+                return run == null || run.State == RunState.NotStarted || run.State == RunState.Running;
+            }
+        }
+
+        /// <summary>
         /// Builds the global scope (unless it was supplied by <see cref="From"/>), runs its graph, then
         /// creates the session scope and runs its graph. Calling it again returns the current run.
         /// </summary>
@@ -267,11 +296,19 @@ namespace RuntimeFlow
         /// <summary>
         /// Tears the session scope down and builds it again with <see cref="InitContext.IsRestart"/> set.
         /// The work is deferred, so a service may call this from its own initialization; requests that
-        /// arrive while a restart is pending are coalesced into it.
+        /// arrive while a restart is in progress are coalesced into it (how long is set by
+        /// <see cref="RuntimeFlowOptions.RestartCoalescing"/>).
         /// </summary>
         /// <remarks>
         /// <para>Accepting a restart freezes the running session at once — no further service of the doomed
-        /// generation starts — while its tokens are cancelled only after the caller's stack unwound.</para>
+        /// generation starts — while its tokens are cancelled only after the caller's stack unwound. Then
+        /// the session's <see cref="IRestartPreparation"/> hooks run, and only then is it disposed.
+        /// Accepted and coalesced requests are reported to <see cref="IRuntimeFlowObserver.OnRestartRequested"/>;
+        /// <see cref="IsRestarting"/> stays true until the new session's run concluded.</para>
+        /// <para>Under the default <see cref="RestartCoalescing.UntilSessionInitialized"/>, a service of the
+        /// restarted generation that requests a restart while that generation initializes joins the restart
+        /// in progress: nothing tears its session down, so it must finish its initialization normally
+        /// instead of waiting on its token (a warning says so).</para>
         /// <para>A request that arrives before the session exists (during the global phase of the startup)
         /// has no session to cancel: the startup builds its first session directly as the restart
         /// (generation 1). If the global phase fails instead, the request is dropped (and not budgeted) and
@@ -359,6 +396,27 @@ namespace RuntimeFlow
             if (_pending)
             {
                 _logger.Info($"[RuntimeFlow] restart '{reason}' coalesced with the restart already in progress");
+                NotifyRestartRequested(reason, coalesced: true);
+                return AwaitFinalAsync(_current);
+            }
+
+            if (_options.RestartCoalescing == RestartCoalescing.UntilSessionInitialized && IsRestarting)
+            {
+                // The restart in progress has not finished initializing its session yet: a service of the
+                // new generation asking again joins it instead of opening yet another generation.
+                _logger.Info($"[RuntimeFlow] restart '{reason}' coalesced with the restart in progress " +
+                             "(its session is still being built or initialized)");
+                if (Scheduler.TryGetInitializingToken(out var initializing) && _sessionRun != null && _sessionRun.OwnsToken(initializing))
+                {
+                    // Nothing tears this session down: a requester that parks on its token or bails out
+                    // with a cancellation would stall or fail the very generation the restart is building.
+                    _logger.Warn($"[RuntimeFlow] restart '{reason}' was requested from inside the session the restart in " +
+                                 "progress is initializing: it is coalesced and nothing is torn down, so the requesting " +
+                                 "service must finish its InitializeAsync normally — do not wait on its token or throw " +
+                                 "OperationCanceledException. Set RuntimeFlowOptions.RestartCoalescing to UntilSessionBuilt " +
+                                 "to restart again instead.");
+                }
+                NotifyRestartRequested(reason, coalesced: true);
                 return AwaitFinalAsync(_current);
             }
 
@@ -366,17 +424,22 @@ namespace RuntimeFlow
             if (overBudget != null) return Task.FromException<StartupResult>(overBudget);
 
             _pending = true;
+            _restarting = true;
+            _restartRun = null;
             if (_building)
             {
                 // No session to cancel: the chain in flight builds its session as this restart.
                 _pendingToken = cancellationToken;
                 _foldedRequest = accepted;
                 _logger.Info($"[RuntimeFlow] restart requested: '{reason}' (no session yet: the next session is built as a restart)");
-                return AwaitFinalAsync(_current);
+                var folded = AwaitFinalAsync(_current);
+                NotifyRestartRequested(reason, coalesced: false);
+                return folded;
             }
 
             StopConstructions(c => c.UnderSession);
-            var running = _sessionRun?.State == RunState.Running;
+            var sessionState = _sessionRun?.State ?? RunState.NotStarted;
+            var running = sessionState == RunState.Running;
             _logger.Info($"[RuntimeFlow] restart requested: '{reason}' (" +
                          (_sessionRun == null ? "no session: building one"
                              : running ? "session run in progress: cancelling" : "session idle") + ")");
@@ -389,9 +452,28 @@ namespace RuntimeFlow
                 if (child.UnderSession) child.Run.Freeze();
             }
 
-            var task = RestartCoreAsync(cancellationToken);
+            var task = RestartCoreAsync(cancellationToken, reason, sessionState);
             _current = task;
-            return AwaitFinalAsync(task);
+            var final = AwaitFinalAsync(task);
+            NotifyRestartRequested(reason, coalesced: false);
+            return final;
+        }
+
+        /// <summary>
+        /// Reports a request <see cref="RestartAsync"/> took on to the observers, synchronously. A request
+        /// made from inside such a callback is not reported again, so an observer that restarts on every
+        /// report cannot recurse.
+        /// </summary>
+        private void NotifyRestartRequested(string reason, bool coalesced)
+        {
+            if (_notifyingRestart || _options.Observers.Count == 0) return;
+            _notifyingRestart = true;
+            try
+            {
+                new ObserverList(_options.Observers, _logger, "session")
+                    .RestartRequested(new RestartRequestInfo(reason, coalesced, Generation));
+            }
+            finally { _notifyingRestart = false; }
         }
 
         /// <summary>
@@ -603,6 +685,7 @@ namespace RuntimeFlow
             }
             if (_sessionRun?.State == RunState.Running) _ = _sessionRun.CancelAsync();
             if (_globalRun?.State == RunState.Running) _ = _globalRun.CancelAsync();
+            CancelPreparation();
 
             // Construction rollback has no cancellation grace: parent resources must remain alive
             // until every owned asynchronous cleanup finishes, even if initialization was abandoned.
@@ -616,6 +699,9 @@ namespace RuntimeFlow
                 Retire(_session);
                 _sessionRun = null;
             }
+            _sessionHooks = Array.Empty<IRestartPreparation>();
+            _restarting = false;
+            _restartRun = null;
             DisposeSessionToken();
 
             if (_globalRun != null)
@@ -641,6 +727,7 @@ namespace RuntimeFlow
             foreach (var child in _childRuns.ToArray()) _ = child.Run.CancelAsync();
             if (_sessionRun != null) _ = _sessionRun.CancelAsync();
             if (_globalRun != null) _ = _globalRun.CancelAsync();
+            CancelPreparation();
         }
 
         /// <summary>Child runs created by <see cref="InitializeScopeAsync"/> and not disposed yet, in creation order.</summary>
@@ -788,7 +875,9 @@ namespace RuntimeFlow
             return WithGlobalDegraded(await run);
         }
 
-        private async Task<StartupResult> RestartCoreAsync(CancellationToken cancellationToken)
+        /// <param name="reason">Reason of the accepted request, handed to the restart preparations.</param>
+        /// <param name="sessionState">State of the session run when the request was accepted.</param>
+        private async Task<StartupResult> RestartCoreAsync(CancellationToken cancellationToken, string reason, RunState sessionState)
         {
             _building = true;
             Task<StartupResult> run;
@@ -805,12 +894,24 @@ namespace RuntimeFlow
                 {
                     await previous.CancelAsync();
                     ThrowIfAborted();
+                    var hooks = _sessionHooks;
+                    if (hooks.Count > 0)
+                    {
+                        // The hooks see a quiet session: nothing of the doomed generation, child scopes
+                        // included, is still initializing, and nothing of it has been disposed yet.
+                        await CancelChildRunsAsync();
+                        ThrowIfAborted();
+                        await PrepareForRestartAsync(hooks,
+                            new RestartPreparationContext(reason, Generation, _session!, sessionState));
+                        ThrowIfAborted();
+                    }
                     await DisposeChildRunsAsync(sessionOnly: true);
                     ThrowIfAborted();
                     await DisposeRunQuietlyAsync(previous);
                     Retire(_session);
                     _sessionRun = null;
                     _session = null;
+                    _sessionHooks = Array.Empty<IRestartPreparation>();
                     DisposeSessionToken();
                     ThrowIfAborted();
                 }
@@ -824,6 +925,132 @@ namespace RuntimeFlow
             }
 
             return WithGlobalDegraded(await run);
+        }
+
+        /// <summary>Cancels the runs of the session's child scopes, newest first, and waits for each to settle.</summary>
+        private async Task CancelChildRunsAsync()
+        {
+            var snapshot = _childRuns.ToArray();
+            for (var i = snapshot.Length - 1; i >= 0; i--)
+            {
+                if (snapshot[i].UnderSession) await snapshot[i].Run.CancelAsync();
+            }
+        }
+
+        /// <summary>
+        /// Awaits every <see cref="IRestartPreparation"/> of the session being torn down, one after the
+        /// other. A hook that throws is logged; one still running after
+        /// <see cref="RuntimeFlowOptions.RestartPreparationTimeout"/> has its token cancelled and is left
+        /// behind. Never throws: the restart goes on whatever the hooks do.
+        /// </summary>
+        private async Task PrepareForRestartAsync(IReadOnlyList<IRestartPreparation> hooks, RestartPreparationContext context)
+        {
+            var timeout = _options.RestartPreparationTimeout;
+            var unbounded = timeout == Timeout.InfiniteTimeSpan || timeout.TotalMilliseconds > int.MaxValue;
+            if (!unbounded && timeout < TimeSpan.Zero) timeout = TimeSpan.Zero;
+
+            foreach (var hook in hooks)
+            {
+                if (_disposed || _quitting) return;
+                var name = hook.GetType().Name;
+                var source = new CancellationTokenSource();
+                _preparation = source;
+                var abandoned = false;
+                try
+                {
+                    var call = hook.PrepareForRestartAsync(context, source.Token)
+                               ?? throw new InvalidOperationException($"{name}.PrepareForRestartAsync returned null instead of a Task.");
+                    if (unbounded)
+                    {
+                        await call;
+                        continue;
+                    }
+
+                    Task winner;
+                    using (var timer = new CancellationTokenSource())
+                    {
+                        winner = await Task.WhenAny(call, Task.Delay(timeout, timer.Token));
+                        // Release the timer as soon as the hook returned.
+                        timer.Cancel();
+                    }
+                    if (ReferenceEquals(winner, call))
+                    {
+                        await call;
+                        continue;
+                    }
+
+                    abandoned = true;
+                    _logger.Error($"[RuntimeFlow] restart '{context.Reason}': the restart preparation {name} did not finish " +
+                                  $"within {Fmt.S1(timeout)} (RuntimeFlowOptions.RestartPreparationTimeout); its token is " +
+                                  "cancelled and the restart continues without waiting for it.");
+                    Cancellation.Cancel(source, _logger, "session", $"the restart preparation {name}");
+                    _ = call.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.ExecuteSynchronously);
+                }
+                catch (OperationCanceledException) when (source.IsCancellationRequested)
+                {
+                    // Its token was cancelled by a disposal or a quit: the expected way for it to stop.
+                    _logger.Info($"[RuntimeFlow] restart '{context.Reason}': the restart preparation {name} was cancelled.");
+                }
+                catch (Exception exception)
+                {
+                    _logger.Error($"[RuntimeFlow] restart '{context.Reason}': the restart preparation {name} threw " +
+                                  $"{exception.GetType().Name}; the restart continues.", exception);
+                }
+                finally
+                {
+                    if (ReferenceEquals(_preparation, source)) _preparation = null;
+                    // An abandoned hook may still use its token; its source is left to the collector.
+                    if (!abandoned) source.Dispose();
+                }
+            }
+        }
+
+        /// <summary>Cancels the token of the restart preparation in flight, if any (disposal, quit).</summary>
+        private void CancelPreparation()
+        {
+            var source = _preparation;
+            if (source != null) Cancellation.Cancel(source, _logger, "session", "the restart preparation in flight");
+        }
+
+        /// <summary>
+        /// Resolves the <see cref="IRestartPreparation"/> hooks a session will call when a restart tears it
+        /// down: those of the global scope (and its ancestors) first, then the session's own, each in
+        /// registration order, every instance once. Free when nothing implements the interface.
+        /// </summary>
+        private IReadOnlyList<IRestartPreparation> ResolveRestartPreparations(IScopedObjectResolver session)
+        {
+            if (!HasRegistration(session, typeof(IRestartPreparation))) return Array.Empty<IRestartPreparation>();
+
+            var inherited = Global.Resolve<IReadOnlyList<IRestartPreparation>>();
+            // VContainer lists a scope's own registrations first, then those of its ancestors: the leading
+            // entries beyond the inherited count are the session's own. The ancestors' tail is not used, so
+            // a transient global hook is not constructed twice.
+            var all = session.Resolve<IReadOnlyList<IRestartPreparation>>();
+            var own = Math.Max(0, all.Count - inherited.Count);
+
+            var hooks = new List<IRestartPreparation>(inherited.Count + own);
+            foreach (var hook in inherited) AddOnce(hook);
+            for (var i = 0; i < own; i++) AddOnce(all[i]);
+            return hooks;
+
+            void AddOnce(IRestartPreparation? hook)
+            {
+                if (hook == null) return;
+                foreach (var known in hooks)
+                    if (ReferenceEquals(known, hook)) return;
+                hooks.Add(hook);
+            }
+        }
+
+        private static bool HasRegistration(IObjectResolver resolver, Type type)
+        {
+            IObjectResolver? current = resolver;
+            while (current != null)
+            {
+                if (current.TryGetRegistration(type, out _)) return true;
+                current = (current as IScopedObjectResolver)?.Parent;
+            }
+            return false;
         }
 
         /// <summary>
@@ -869,12 +1096,16 @@ namespace RuntimeFlow
                 ThrowOnEntryPointErrors("session");
                 graphOwnsScope = true;
                 session = await ScopeRun.CreateAsync(scope, "session", _options, new[] { _globalRun! }, ownsScope: true);
+                // Resolved now, inside the construction reservation: a failing hook constructor fails this
+                // build, and tearing the session down later never constructs anything.
+                var hooks = ResolveRestartPreparations(scope);
                 ThrowIfAborted();
                 if (construction.StopRequested)
                     throw new OperationCanceledException("The session was stopped while its services were being constructed.");
                 session.RestartCount = RestartCount;
                 _session = scope;
                 _sessionRun = session;
+                _sessionHooks = hooks;
                 _building = false;
             }
             catch (Exception exception)
@@ -897,14 +1128,32 @@ namespace RuntimeFlow
                 // this session is doomed before it starts, so nothing in it starts at all.
                 session.Freeze();
                 var token = _pendingToken;
+                var reason = _foldedRequest?.Reason ?? "restart";
                 _pendingToken = default;
                 _foldedRequest = null; // honoured by the restart below; its budget entry stays
-                _current = RestartCoreAsync(token);
+                _current = RestartCoreAsync(token, reason, RunState.NotStarted);
+            }
+            else if (isRestart)
+            {
+                _restartRun = session;
             }
 
             // The generation counts as started before its first InitializeAsync: a synchronous request
-            // from it finds a published, running session and opens a new generation instead of joining it.
-            return await session.RunAsync(isRestart, Generation, cancellationToken);
+            // from it finds a published, running session (under RestartCoalescing.UntilSessionBuilt, or when
+            // this is not a restart) and opens a new generation instead of joining it.
+            try
+            {
+                return await session.RunAsync(isRestart, Generation, cancellationToken);
+            }
+            finally
+            {
+                // The restart this session was built for is over once its run concluded.
+                if (ReferenceEquals(_restartRun, session))
+                {
+                    _restarting = false;
+                    _restartRun = null;
+                }
+            }
         }
 
         /// <summary>Resets the restart state machine after a chain failed or was aborted before its session ran.</summary>
@@ -919,6 +1168,9 @@ namespace RuntimeFlow
         private void DropFoldedRestart()
         {
             if (_foldedRequest != null) _restarts.Remove(_foldedRequest);
+            // The chain ends here without a session run of its own: no restart is in progress any more.
+            _restarting = false;
+            _restartRun = null;
             _pending = false;
             _pendingToken = default;
             _foldedRequest = null;

@@ -59,7 +59,7 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
     /// The shared state of a chaos case: the plan, the event log, the instance records and the invariant
     /// violations found while it ran. Registered in the global scope, so every generation sees one world.
     /// </summary>
-    public sealed class ChaosWorld
+    public sealed class ChaosWorld : IRuntimeFlowObserver
     {
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private readonly Dictionary<Type, ChaosSlot> _slots = new Dictionary<Type, ChaosSlot>();
@@ -104,6 +104,11 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
         private string _childName = "";
 
         public int Seq() => ++_seq;
+
+        /// <summary>The last request the host reported through <see cref="IRuntimeFlowObserver.OnRestartRequested"/>.</summary>
+        public RestartRequestInfo? LastRequest { get; private set; }
+
+        void IRuntimeFlowObserver.OnRestartRequested(RestartRequestInfo request) => LastRequest = request;
 
         public void Log(string text)
             => Events.Add($"{Seq().ToString(CultureInfo.InvariantCulture),4} {_clock.ElapsedMilliseconds.ToString(CultureInfo.InvariantCulture),5}ms {text}");
@@ -203,7 +208,11 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
             return awaiter;
         }
 
-        /// <summary>Fires a restart the way a service or the UI does; returns false when the host refused it.</summary>
+        /// <summary>
+        /// Fires a restart the way a service or the UI does; returns false when the host refused it, or
+        /// coalesced it into a restart that does not tear the requesting session service down (so nothing
+        /// will cancel its token).
+        /// </summary>
         public bool FireRestart(ChaosInstance? by, ChaosToken kind, CancellationToken own, string label, out ChaosAwaiter? awaiter)
         {
             awaiter = null;
@@ -215,6 +224,7 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
             };
             var reason = $"chaos-{label}";
             Task<StartupResult> task;
+            LastRequest = null;
             try
             {
                 task = Host.RestartAsync(reason, token);
@@ -226,12 +236,19 @@ namespace RuntimeFlow.Tests.Lifecycle.Chaos
             }
 
             var refused = task.IsCompleted;
-            if (!refused)
+            var coalesced = !refused && LastRequest?.Coalesced == true;
+            if (coalesced)
+            {
+                // Joins the restart in progress: whatever that restart dooms is doomed already.
+                Log($"restart {reason} ({kind}) coalesced: session builds up to #{DoomedUpTo} are doomed");
+            }
+            else if (!refused)
             {
                 DoomedUpTo = Math.Max(DoomedUpTo, LatestSessionBuild);
                 Log($"restart {reason} ({kind}) accepted: session builds up to #{LatestSessionBuild} are doomed");
             }
             awaiter = Track($"restart {reason}", task, chain: true, refused: refused);
+            if (coalesced && by != null && by.Slot.Scope == ChaosScope.Session) return by.Build <= DoomedUpTo;
             return !refused;
         }
 

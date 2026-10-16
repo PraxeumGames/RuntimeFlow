@@ -49,6 +49,8 @@ namespace RuntimeFlow.Editor
             summary.Add(ViewHelpers.PropertyRow("Progress", ViewHelpers.Percent(snapshot.Percent)));
             summary.Add(ViewHelpers.PropertyRow("Restarts", snapshot.RestartCount.ToString(CultureInfo.InvariantCulture)));
             summary.Add(ViewHelpers.PropertyRow("Generation", snapshot.Generation.ToString(CultureInfo.InvariantCulture)));
+            if (snapshot.Restarting)
+                summary.Add(ViewHelpers.PropertyRow("Restarting", "yes"));
             if (snapshot.HaltReason.Length > 0)
                 summary.Add(ViewHelpers.PropertyRow("Halted by", snapshot.HaltReason));
             _content.Add(summary);

@@ -341,8 +341,17 @@ services stay warm and are never initialized twice.
   called from inside the `InitializeAsync` of a global or session service while the startup or restart
   that waits for that service is in flight, it returns a task faulted with `InvalidOperationException`
   rather than one that never completes.
-- **Coalesced.** Requests arriving while a restart is already pending join it; ten clicks produce one
-  rebuild. `StartAsync` and `RestartAsync` both return the result of the *last* run in the chain, so an
+- **Coalesced.** Requests arriving while a restart is in progress join it; ten clicks produce one
+  rebuild. A coalesced request starts nothing, is not budgeted and is logged at Information. How long
+  "in progress" lasts is `RuntimeFlowOptions.RestartCoalescing`: with the default
+  `RestartCoalescing.UntilSessionInitialized`, for as long as `IsRestarting` is true — until the run of
+  the session the restart builds concluded — so a service of the restarted generation that asks again
+  while it initializes cannot open yet another generation (no restart loops). Such a requester gets
+  nothing torn down: it must finish its `InitializeAsync` normally, not park on its token or throw a
+  cancellation (a warning says so). Once that session concluded — `Failed` included, the "Retry" case —
+  requests are accepted again. `RestartCoalescing.UntilSessionBuilt` coalesces only until the new
+  session is built, so its own services can restart it again (budgeted). `StartAsync` and
+  `RestartAsync` both return the result of the *last* run in the chain, so an
   awaiter started before a restart still sees the final outcome. A request arriving before a session
   exists — during the global phase of the startup — makes the startup build its first session directly
   as the restart (generation 1); if the global phase fails, the request is dropped (and not budgeted)
@@ -350,9 +359,40 @@ services stay warm and are never initialized twice.
 - **Never waits on a doomed run.** Accepting a restart freezes the running session at once — no
   dependent of the requesting service starts on stale data — and cancels it right after the caller's
   stack unwinds. So a service may request a restart and then return, park on its token, or throw a
-  cancellation: the next generation comes either way. A frozen generation never reports `Completed` —
-  it ends `Cancelled`, even when all of its services happened to finish. Chains work: an addressables service that
-  restarts, then a configs service of the new generation that restarts again, ends in generation 2.
+  cancellation: the next generation comes either way (for a service of a generation that is itself
+  still initializing as a restart, see *Coalesced*). A frozen generation never reports `Completed` —
+  it ends `Cancelled`, even when all of its services happened to finish. With
+  `RestartCoalescing.UntilSessionBuilt` chains work: an addressables service that restarts, then a
+  configs service of the new generation that restarts again, ends in generation 2; with the default the
+  configs request joins the first restart and generation 1 is final.
+- **Prepared.** Implementations of `IRestartPreparation` registered in the global and/or session
+  installer (`builder.Register<LoadingCover>(Lifetime.Singleton).As<IRestartPreparation>()`) are resolved
+  when a session is built — a throwing constructor fails that build — and awaited one after the other,
+  global ones first, then the session's, each in registration order and once, by every restart that tears
+  a built session down: after its constructions were drained and its run and child runs were cancelled
+  and awaited, and before any of it is disposed. `RestartPreparationContext` carries `Reason`,
+  `Generation`, the doomed `Session` (still resolvable) and `SessionState` — `Running` with
+  `WasInitializing` for a session interrupted mid-initialization, `NotStarted` for one frozen before it
+  ran, otherwise how it concluded. That is the place to show a loading cover, null static service
+  locators and tear UI navigation down: nothing of the old generation still initializes on them, and
+  resetting before calling `RestartAsync` would leave in-flight services running on nulled statics. A
+  throwing hook is logged and the restart goes on; a hook still running after
+  `RuntimeFlowOptions.RestartPreparationTimeout` (10 s, `Timeout.InfiniteTimeSpan` = unbounded) has its
+  token cancelled and is no longer awaited. The token is also cancelled when the host is disposed or the
+  application quits. No hook runs when there is no session to tear down (a restart requested during the
+  global phase, or after a failed build), on `DisposeAsync` or on quit.
+- **In progress.** `RuntimeFlowHost.IsRestarting` is true from the accepted request until the new
+  session's run concluded (completed, failed, halted, cancelled) or the chain stopped without one; it is
+  false during a plain first startup. `IRuntimeFlowObserver.OnRestartRequested(RestartRequestInfo)` is
+  raised synchronously inside `RestartAsync` for accepted and coalesced requests (`Reason`, `Coalesced`,
+  `Generation`), never for refusals; a restart requested from that callback is coalesced and not reported
+  again. Use them for "a restart is coming" signals — hold downloads off, stop background work.
+- **Migrating from 0.x.** IRuntimeSessionRestartPreparationHook becomes `IRestartPreparation`: same
+  moment (before the session is torn down, also for a session still initializing), now with a
+  context, a token and a timeout, and registered as many times as needed in either scope. A 0.x
+  "restart in progress" flag or "application restarting" event maps to `IsRestarting` and
+  `OnRestartRequested`. 0.x dropped requests made while the restart replay was initializing; the default
+  `RestartCoalescing.UntilSessionInitialized` coalesces them, which keeps that behaviour without a refusal.
 - **Tokens.** A token passed to `RestartAsync` cancels the new session run. The requesting service's own
   token (or any token of the run being torn down) is ignored with a warning — it would cancel the new
   generation at birth. A token that is already cancelled yields a cancelled task and changes nothing.
@@ -374,8 +414,9 @@ services stay warm and are never initialized twice.
   +1 per restart); observers see `OnRunStarted(scope, isRestart: true)`, which is where a UI cover
   belongs.
 - **Ordered teardown.** The current run is cancelled, every service token with it — including tokens
-  the service kept for background work after `InitializeAsync` returned. Then the child runs below the
-  session are disposed in reverse creation order, then the session run. Graph-owned async cleanup and
+  the service kept for background work after `InitializeAsync` returned. When restart preparations are
+  registered, the child runs below the session are cancelled too and the hooks run. Then the child runs
+  below the session are disposed in reverse creation order, then the session run. Graph-owned async cleanup and
   locally tracked synchronous cleanup follow dependency order, with dependent instances first;
   independent services retain reverse completion priority. Cleanup failures are logged, and remaining
   container resources are released through final scope disposal.
