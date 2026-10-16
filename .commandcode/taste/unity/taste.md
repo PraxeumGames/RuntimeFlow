@@ -1,0 +1,4 @@
+- Prefers Unity Editor windows built with UI Toolkit (`VisualElement`, USS) rather than IMGUI. Confidence: 0.92
+- Editor tools should expose real, useful data (live inspection, not stub/placeholder UIs). Confidence: 0.9
+- Wants interactive demos of editor tooling to include broken-flow cases (a service throwing at startup and a hang/timeout), not only the happy path, so dashboard diagnostic informativeness can be judged. Confidence: 0.88
+- Testing setup: the authoritative test suite is Unity EditMode (asmdef-based; unit tests do NOT run via plain `dotnet test`). Run headless via `./scripts/run_unity_editmode_tests.sh` with `UNITY_BIN=/Applications/Unity/Hub/Editor/<version, e.g. 2022.3.62f2>/Unity.app/Contents/MacOS/Unity`; only `RuntimeFlow.Generators.Tests` runs under dotnet. Long Unity runs fit well in the background while continuing other work. Confidence: 0.8

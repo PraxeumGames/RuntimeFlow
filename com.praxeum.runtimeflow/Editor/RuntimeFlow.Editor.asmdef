@@ -1,0 +1,19 @@
+{
+    "name": "RuntimeFlow.Editor",
+    "rootNamespace": "RuntimeFlow.Editor",
+    "references": [
+        "RuntimeFlow.Runtime",
+        "VContainer"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": false,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}
