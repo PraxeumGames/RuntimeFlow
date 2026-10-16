@@ -9,8 +9,14 @@ namespace RuntimeFlow
     /// </summary>
     public sealed class RuntimeFlowOptions
     {
+        private ILogger _logger = UnityConsoleLogger.Default;
+
         /// <summary>Sink for every diagnostic message; never null, defaults to the Unity console.</summary>
-        public ILogger Logger { get; set; } = UnityConsoleLogger.Default;
+        public ILogger Logger
+        {
+            get => _logger;
+            set => _logger = value ?? UnityConsoleLogger.Default;
+        }
 
         /// <summary>Ordered phase names; empty (the default) means no phase barriers.</summary>
         public IReadOnlyList<string> Phases { get; set; } = Array.Empty<string>();

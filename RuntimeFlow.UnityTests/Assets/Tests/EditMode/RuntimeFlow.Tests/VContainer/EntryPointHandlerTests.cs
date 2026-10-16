@@ -189,5 +189,52 @@ namespace RuntimeFlow.Tests.VContainerIntegration
             var restart = await host.RestartAsync("after-tick");
             Assert.That(restart.Outcome, Is.EqualTo(StartupOutcome.Completed), "a player-loop exception must not fail the next build");
         }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AHostOwnedGlobalScopeWithExplicitDebugLogExceptionHandlerCarriesIntoTheSession()
+        {
+            UnityEngine.TestTools.LogAssert.Expect(
+                UnityEngine.LogType.Exception,
+                new System.Text.RegularExpressions.Regex("^InvalidOperationException: entry point exploded"));
+
+            await using var host = new RuntimeFlowHost(
+                builder => builder.RegisterEntryPointExceptionHandler(UnityEngine.Debug.LogException),
+                builder =>
+                {
+                    builder.Add<SessionService>();
+                    builder.RegisterEntryPoint<ThrowingEntryPoint>();
+                },
+                _options);
+
+            var result = await host.StartAsync();
+
+            Assert.That(result.Outcome, Is.EqualTo(StartupOutcome.Completed));
+            Assert.That(_log.Has(LogLevel.Information, "[RuntimeFlow] global: a custom EntryPointExceptionHandler is registered"),
+                Is.True, _log.Dump());
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task AConsumerHandlerWinsEvenWhenTheInstallerShiftsEarlierRegistrations()
+        {
+            var handled = new List<Exception>();
+            await using var host = new RuntimeFlowHost(
+                builder => { },
+                builder =>
+                {
+                    var marker = builder.Register<SessionService>(Lifetime.Singleton).AsSelf().As<IAsyncInitializable>();
+                    for (var i = builder.Count - 1; i > 0; i--) builder[i] = builder[i - 1];
+                    builder[0] = marker;
+                    builder.RegisterEntryPointExceptionHandler(handled.Add);
+                    builder.RegisterEntryPoint<ThrowingEntryPoint>();
+                },
+                _options);
+
+            var result = await host.StartAsync();
+
+            Assert.That(result.Outcome, Is.EqualTo(StartupOutcome.Completed));
+            Assert.That(handled.Select(e => e.Message), Is.EqualTo(new[] { "entry point exploded" }));
+        }
     }
 }

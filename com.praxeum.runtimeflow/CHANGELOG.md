@@ -352,6 +352,23 @@ now also runs against the VContainer 1.19 fork sfs-client ships.
   service implementing both `IAsyncDisposable` and `IDisposable` gets both calls. The scene-component
   graph error suggests FindFirstObjectByType / FindAnyObjectByType instead of the obsolete
   FindObjectOfType.
+- **Unexposed `[DependsOn]` targets are found across the scope chain.** The "implements
+  IAsyncInitializable but is not registered as one" diagnostic now also finds the forgotten
+  registration in a parent or the root scope, also when that registration does not expose the
+  `[DependsOn]` type itself, instead of falling back to the generic "no initializable service" text.
+- **A null logger cannot break diagnostics.** Setting `RuntimeFlowOptions.Logger` to null restores the
+  Unity console logger, and observer-failure reporting skips a null logger instead of throwing.
+- **Entry-point handler ownership.** When the host owns the global container, a `Debug.LogException`
+  entry-point exception handler registered there is the consumer's explicit choice and is forwarded to
+  the session; only on an external root (`RuntimeFlowHost.From`) is VContainer 1.19's auto-registered
+  default ignored. The collector a consumer handler supersedes is located by reference, so an installer
+  that reorders or removes registrations no longer leaves two competing handlers.
+- **`TestFlow.Override` keeps the replaced contracts.** The replacement is exposed under every contract
+  the replaced registration exposed (when the replacement implements it), and a registration matched
+  by its implementation type is replaced too. `LifecycleFake` forwards `InitializeAsync` to its stub
+  through the same dispatch as every other member.
+- **`RuntimeFlowException` messages stay short.** The completed and unfinished service lists are capped
+  at five names with a count of the rest.
 
 ### Removed
 

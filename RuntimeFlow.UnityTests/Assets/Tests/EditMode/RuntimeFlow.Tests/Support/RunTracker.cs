@@ -42,37 +42,67 @@ namespace RuntimeFlow.Tests.Support
         }
 
         /// <summary>
-        /// Disposes everything, newest first. Teardown never blocks: waiting on a disposal whose
-        /// continuations are posted back to the editor's synchronization context would deadlock the very
-        /// thread that has to pump them, so a disposal that cannot finish synchronously is left to finish
-        /// on the editor loop with its failures observed.
+        /// Disposes everything, newest first: runs are torn down sequentially in reverse order before any
+        /// container is disposed, so asynchronous service teardown never races synchronous container disposal.
+        /// Teardown never blocks the caller: waiting on a disposal whose continuations are posted back to the
+        /// editor's synchronization context would deadlock the very thread that has to pump them.
         /// </summary>
         public void DisposeAll()
         {
-            for (var i = _runs.Count - 1; i >= 0; i--)
+            var runs = _runs.ToArray();
+            var containers = _containers.ToArray();
+            _runs.Clear();
+            _containers.Clear();
+
+            for (var i = runs.Length - 1; i >= 0; i--)
             {
                 try
                 {
-                    Observe(_runs[i].DisposeAsync());
+                    runs[i].Freeze();
+                }
+                catch (Exception)
+                {
+                }
+            }
+
+            if (runs.Length == 0)
+            {
+                DisposeContainers(containers);
+                return;
+            }
+
+            Observe(new ValueTask(DisposeSequenceAsync(runs, containers)));
+        }
+
+        private static async Task DisposeSequenceAsync(ScopeRun[] runs, IObjectResolver[] containers)
+        {
+            for (var i = runs.Length - 1; i >= 0; i--)
+            {
+                try
+                {
+                    await runs[i].DisposeAsync();
                 }
                 catch (Exception)
                 {
                     // Teardown never fails a test that already made its assertions.
                 }
             }
-            _runs.Clear();
 
-            for (var i = _containers.Count - 1; i >= 0; i--)
+            DisposeContainers(containers);
+        }
+
+        private static void DisposeContainers(IObjectResolver[] containers)
+        {
+            for (var i = containers.Length - 1; i >= 0; i--)
             {
                 try
                 {
-                    _containers[i].Dispose();
+                    containers[i].Dispose();
                 }
                 catch (Exception)
                 {
                 }
             }
-            _containers.Clear();
         }
 
         private static void Observe(ValueTask disposal)

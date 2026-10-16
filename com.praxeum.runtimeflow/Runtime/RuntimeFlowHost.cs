@@ -1149,8 +1149,8 @@ namespace RuntimeFlow
             try
             {
                 _entryPointErrors.Clear();
-                var consumer = ConsumerHandlerOf(_global, EntryPointHandlerType, EntryPointHandlerDelegate, _logger,
-                    ref _entryPointReflectionWarned);
+                var consumer = ConsumerHandlerOf(_global, EntryPointHandlerType, EntryPointHandlerDelegate,
+                    ignoreDefaultDebugLogger: !_ownsGlobal, _logger, ref _entryPointReflectionWarned);
                 try
                 {
                     scope = Global.CreateScope(builder =>
@@ -1377,17 +1377,21 @@ namespace RuntimeFlow
             builder.RegisterInstance(this);
             var collector = new EntryPointCollector(this, consumer);
             builder.RegisterEntryPointExceptionHandler(collector.Handle);
-            var index = builder.Count - 1;
-            var ours = builder[index];
+            var ours = builder[builder.Count - 1];
 
             installer(builder);
 
-            if (Inspect(builder, scope) > 1 && index < builder.Count && ReferenceEquals(builder[index], ours))
+            if (Inspect(builder, scope) > 1)
             {
                 // The consumer registered a handler of its own: it supersedes the collector. VContainer 1.15
                 // refuses two singleton handlers ("Conflict implementation type"), so the collector's entry is
                 // replaced by an inert registration instead of competing with the consumer's.
-                builder[index] = new RegistrationBuilder(typeof(SupersededEntryPointCollector), Lifetime.Transient);
+                for (var i = 0; i < builder.Count; i++)
+                {
+                    if (!ReferenceEquals(builder[i], ours)) continue;
+                    builder[i] = new RegistrationBuilder(typeof(SupersededEntryPointCollector), Lifetime.Transient);
+                    break;
+                }
             }
             EntryPointsBuilder.EnsureDispatcherRegistered(builder);
             return collector;
@@ -1420,17 +1424,22 @@ namespace RuntimeFlow
 
         /// <summary>
         /// The consumer's entry-point exception handler that <paramref name="scope"/> (or a scope above it)
-        /// resolves, or null: none, the host's own collector without a consumer behind it, or VContainer
-        /// 1.19's default <c>Debug.LogException</c>, which only logs and is not a consumer's decision.
+        /// resolves, or null: none, the host's own collector without a consumer behind it, or (on an
+        /// external root container, <paramref name="ignoreDefaultDebugLogger"/>) VContainer 1.19's default
+        /// <c>Debug.LogException</c>, which only logs and is not a consumer's decision. When the host owns
+        /// the global container, a <c>Debug.LogException</c> handler there is the consumer's explicit choice
+        /// and is honoured.
         /// VContainer keeps the handler internal; when its type or its delegate field cannot be found or
         /// read (a VContainer version that renamed them, code stripping), a warning is logged once per
         /// process through <paramref name="logger"/> and the host's collector takes charge.
         /// </summary>
         /// <param name="handlerType">VContainer's internal handler type, or null when it was not found.</param>
         /// <param name="handlerField">Its private delegate field, or null when it was not found.</param>
+        /// <param name="ignoreDefaultDebugLogger">True on an external root (<c>RuntimeFlowHost.From</c>), where the
+        /// fork's auto-registered default handler is not the consumer's decision.</param>
         /// <param name="warned">Set once the warning was logged; shared by every caller of a process.</param>
         internal static Action<Exception>? ConsumerHandlerOf(IObjectResolver? scope, Type? handlerType, FieldInfo? handlerField,
-            ILogger logger, ref int warned)
+            bool ignoreDefaultDebugLogger, ILogger logger, ref int warned)
         {
             if (scope == null) return null;
             if (handlerType == null || handlerField == null)
@@ -1447,7 +1456,10 @@ namespace RuntimeFlow
                 if (!(handlerField.GetValue(handler) is Action<Exception> action)) return null;
                 if (action.Target is EntryPointCollector collector) return collector.Consumer;
                 var method = action.Method;
-                if (action.Target == null && method.DeclaringType == typeof(UnityEngine.Debug) && method.Name == "LogException")
+                if (ignoreDefaultDebugLogger
+                    && action.Target == null
+                    && method.DeclaringType == typeof(UnityEngine.Debug)
+                    && method.Name == "LogException")
                     return null;
                 return action;
             }

@@ -145,7 +145,7 @@ namespace RuntimeFlow.Testing
             if (targetMethod == null) throw new ArgumentNullException(nameof(targetMethod));
 
             if (IsInitializeAsync(targetMethod))
-                return HandleInitializeAsync(args);
+                return HandleInitializeAsync(targetMethod, args);
 
             if (targetMethod.Name == "DisposeAsync"
                 && targetMethod.ReturnType == typeof(ValueTask)
@@ -168,16 +168,16 @@ namespace RuntimeFlow.Testing
                    && parameters[1].ParameterType == typeof(CancellationToken);
         }
 
-        private object HandleInitializeAsync(object?[]? args)
+        private object HandleInitializeAsync(MethodInfo targetMethod, object?[]? args)
         {
             var attempt = ++_initializeAttempts;
             var context = args is { Length: > 0 } ? args[0] as InitContext : null;
             var cancellationToken = args is { Length: > 1 } ? (CancellationToken)args[1]! : default;
             _log.Record($"initialize#{attempt}");
-            return RunInitializeAsync(attempt, context, cancellationToken);
+            return RunInitializeAsync(targetMethod, attempt, context, cancellationToken);
         }
 
-        private async Task RunInitializeAsync(int attempt, InitContext? context, CancellationToken cancellationToken)
+        private async Task RunInitializeAsync(MethodInfo targetMethod, int attempt, InitContext? context, CancellationToken cancellationToken)
         {
             if (_behavior.InitDelay > TimeSpan.Zero)
                 await Task.Delay(_behavior.InitDelay, cancellationToken);
@@ -188,7 +188,8 @@ namespace RuntimeFlow.Testing
             if (attempt <= _behavior.InitFailCount)
                 throw _behavior.InitializeExceptionFactory!(attempt);
 
-            await InvokeStubInitializeAsync(context, cancellationToken);
+            if (InvokeStub(targetMethod, new object?[] { context, cancellationToken }) is Task task)
+                await task;
         }
 
         private object HandleValueTaskDispose(MethodInfo targetMethod)
@@ -215,24 +216,6 @@ namespace RuntimeFlow.Testing
         {
             _log.Record("dispose");
             return InvokeStub(targetMethod, Array.Empty<object?>());
-        }
-
-        private async Task InvokeStubInitializeAsync(InitContext? context, CancellationToken cancellationToken)
-        {
-            var stub = _stub;
-            if (stub == null) return;
-            // Interface dispatch covers both implicit and explicit implementations: an explicit
-            // `Task IAsyncInitializable.InitializeAsync(...)` is invisible to GetMethod by name and
-            // the old lookup silently skipped the stub entirely.
-            if (stub is IAsyncInitializable initializable)
-            {
-                await initializable.InitializeAsync(context!, cancellationToken);
-                return;
-            }
-            var method = stub.GetType().GetMethod("InitializeAsync", new[] { typeof(InitContext), typeof(CancellationToken) });
-            if (method == null) return;
-            if (method.Invoke(stub, new object?[] { context, cancellationToken }) is Task task)
-                await task;
         }
 
         /// <summary>

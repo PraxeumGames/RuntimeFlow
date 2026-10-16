@@ -31,6 +31,7 @@ namespace RuntimeFlow.Internal
 
         private static void Write(ILogger logger, LogLevel level, string message, Exception? exception)
         {
+            if (logger == null) return;
             try
             {
                 logger.Log(level, default, message, exception, Formatter);

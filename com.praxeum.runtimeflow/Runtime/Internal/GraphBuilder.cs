@@ -751,16 +751,14 @@ namespace RuntimeFlow.Internal
                 // the run and remains the explanation; an optional one cannot excuse an unknown target.
                 if (services.Any(s => s.ConstructionError != null && !s.Optional && (s.Type.IsInterface || s.Type.IsAbstract))) continue;
 
-                // The target resolves but is not part of any graph: the registration simply forgot to
-                // expose IAsyncInitializable. That is a far more common mistake than a missing service,
-                // and it deserves the fix rather than the generic "nothing is registered" text.
-                if (resolver.TryGetRegistration(attribute.ServiceType, out var registration)
-                    && registration != null
-                    && typeof(IAsyncInitializable).IsAssignableFrom(registration.ImplementationType))
+                // The target resolves or is registered in the scope chain, but is not part of any graph:
+                // the registration simply forgot to expose IAsyncInitializable. That is a far more common
+                // mistake than a missing service, and it deserves the fix rather than the generic text.
+                if (TryFindUnexposedInitializable(resolver, scope, attribute.ServiceType, out var unexposed))
                 {
                     throw new InitGraphException(scope,
                         $"{node.Name} declares [DependsOn(typeof({attribute.ServiceType.Name}))]; " +
-                        $"{registration.ImplementationType.Name} implements IAsyncInitializable but is not registered as one, " +
+                        $"{unexposed.Name} implements IAsyncInitializable but is not registered as one, " +
                         "so it is never initialized. Register it with RegisterInitializable<T>() or add " +
                         ".As<IAsyncInitializable>() to its registration.");
                 }
@@ -815,6 +813,77 @@ namespace RuntimeFlow.Internal
                             "instances is ever initialized. Register each closed type the game uses instead, for example " +
                             $"RegisterInitializable<{type.Name.Split('`')[0]}<Player>>().");
             }
+        }
+
+        private static bool TryFindUnexposedInitializable(
+            IObjectResolver resolver,
+            string scope,
+            Type targetType,
+            out Type implementationType)
+        {
+            if (resolver.TryGetRegistration(targetType, out var direct)
+                && direct != null
+                && !ExposesInitializable(direct)
+                && typeof(IAsyncInitializable).IsAssignableFrom(direct.ImplementationType))
+            {
+                implementationType = direct.ImplementationType;
+                return true;
+            }
+
+            var visited = new List<IObjectResolver>();
+            IObjectResolver? current = resolver;
+            while (current != null && !visited.Contains(current))
+            {
+                visited.Add(current);
+                if (TryFindInScope(current, scope, targetType, out implementationType)) return true;
+                current = (current as IScopedObjectResolver)?.Parent;
+            }
+
+            if (resolver is IScopedObjectResolver scoped && scoped.Root != null && !visited.Contains(scoped.Root))
+            {
+                if (TryFindInScope(scoped.Root, scope, targetType, out implementationType)) return true;
+            }
+
+            implementationType = typeof(void);
+            return false;
+        }
+
+        private static bool TryFindInScope(
+            IObjectResolver resolver,
+            string scope,
+            Type targetType,
+            out Type implementationType)
+        {
+            try
+            {
+                foreach (var registration in VContainerLifetimeTracker.LocalRegistrations(resolver, scope))
+                {
+                    if (ExposesInitializable(registration)) continue;
+                    var candidate = registration.ImplementationType;
+                    if (candidate == null || !typeof(IAsyncInitializable).IsAssignableFrom(candidate)) continue;
+                    if (!targetType.IsAssignableFrom(candidate)) continue;
+                    implementationType = candidate;
+                    return true;
+                }
+            }
+            catch (Exception)
+            {
+                // Best-effort inspection over VContainer's local table; custom resolvers fall back to TryGetRegistration.
+            }
+
+            implementationType = typeof(void);
+            return false;
+        }
+
+        private static bool ExposesInitializable(Registration registration)
+        {
+            var exposed = registration.InterfaceTypes;
+            if (exposed == null) return registration.ImplementationType == typeof(IAsyncInitializable);
+            for (var i = 0; i < exposed.Count; i++)
+            {
+                if (exposed[i] == typeof(IAsyncInitializable)) return true;
+            }
+            return false;
         }
 
         private static string KnownServices(string scope, List<ServiceNode> services, List<ServiceNode> externals)

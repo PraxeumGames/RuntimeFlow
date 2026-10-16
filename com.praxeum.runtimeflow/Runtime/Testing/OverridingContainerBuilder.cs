@@ -11,7 +11,10 @@ namespace RuntimeFlow.Testing
     /// <summary>One replacement requested through <see cref="TestFlow.Override{T}"/>.</summary>
     internal sealed class ServiceOverride
     {
-        public ServiceOverride(Type serviceType, Action<IContainerBuilder> register)
+        private readonly Dictionary<string, List<Type>> _replacedContracts =
+            new Dictionary<string, List<Type>>(StringComparer.Ordinal);
+
+        public ServiceOverride(Type serviceType, Action<IContainerBuilder, IReadOnlyList<Type>> register)
         {
             ServiceType = serviceType;
             Register = register;
@@ -21,10 +24,40 @@ namespace RuntimeFlow.Testing
         public Type ServiceType { get; }
 
         /// <summary>Registers the replacement into a scope that had a matching registration.</summary>
-        public Action<IContainerBuilder> Register { get; }
+        public Action<IContainerBuilder, IReadOnlyList<Type>> Register { get; }
 
         /// <summary>Names of the scopes where a registration exposing <see cref="ServiceType"/> was found.</summary>
         public HashSet<string> MatchedScopes { get; } = new HashSet<string>(StringComparer.Ordinal);
+
+        /// <summary>Records the contracts exposed by a replaced registration in <paramref name="scope"/>.</summary>
+        public void RecordMatch(string scope, Registration registration)
+        {
+            MatchedScopes.Add(scope);
+            if (!_replacedContracts.TryGetValue(scope, out var contracts))
+            {
+                contracts = new List<Type>();
+                _replacedContracts[scope] = contracts;
+            }
+
+            if (registration.InterfaceTypes == null)
+            {
+                AddUnique(contracts, registration.ImplementationType);
+                return;
+            }
+
+            for (var i = 0; i < registration.InterfaceTypes.Count; i++)
+                AddUnique(contracts, registration.InterfaceTypes[i]);
+        }
+
+        /// <summary>Contracts exposed by the registrations this override replaced in <paramref name="scope"/>.</summary>
+        public IReadOnlyList<Type> ContractsIn(string scope)
+            => _replacedContracts.TryGetValue(scope, out var contracts) ? contracts : Array.Empty<Type>();
+
+        private static void AddUnique(List<Type> types, Type? candidate)
+        {
+            if (candidate == null || types.Contains(candidate)) return;
+            types.Add(candidate);
+        }
     }
 
     /// <summary>
@@ -126,7 +159,8 @@ namespace RuntimeFlow.Testing
 
             foreach (var candidate in _overrides)
             {
-                if (candidate.MatchedScopes.Contains(_scope)) candidate.Register(_inner);
+                if (candidate.MatchedScopes.Contains(_scope))
+                    candidate.Register(_inner, candidate.ContractsIn(_scope));
             }
         }
 
@@ -136,7 +170,7 @@ namespace RuntimeFlow.Testing
             foreach (var candidate in _overrides)
             {
                 if (!Exposes(registration, candidate.ServiceType)) continue;
-                candidate.MatchedScopes.Add(_scope);
+                candidate.RecordMatch(_scope, registration);
                 replaced = true;
             }
             return replaced;
@@ -144,8 +178,9 @@ namespace RuntimeFlow.Testing
 
         private static bool Exposes(Registration registration, Type serviceType)
         {
+            if (registration.ImplementationType == serviceType) return true;
             var exposed = registration.InterfaceTypes;
-            if (exposed == null) return registration.ImplementationType == serviceType;
+            if (exposed == null) return false;
             for (var i = 0; i < exposed.Count; i++)
             {
                 if (exposed[i] == serviceType) return true;

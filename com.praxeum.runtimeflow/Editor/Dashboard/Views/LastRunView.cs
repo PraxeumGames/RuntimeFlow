@@ -111,8 +111,9 @@ namespace RuntimeFlow.Editor
             if (snapshot == null) return "none";
             var text = new System.Text.StringBuilder(snapshot.HostLabel)
                 .Append('|').Append(snapshot.State).Append('|').Append(hasLiveHost).Append('|').Append(snapshot.Live)
+                .Append('|').Append(snapshot.RestartCount).Append('|').Append(snapshot.HaltReason)
                 .Append('|').Append(snapshot.ErrorType).Append('|').Append(snapshot.ErrorMessage)
-                .Append('|').Append(snapshot.ErrorStack);
+                .Append('|').Append(snapshot.ErrorStack).Append('|').Append(snapshot.Describe);
             foreach (var scope in snapshot.Scopes)
             {
                 text.Append('|').Append(scope.Id).Append(':').Append(scope.Name).Append(':').Append(scope.State);

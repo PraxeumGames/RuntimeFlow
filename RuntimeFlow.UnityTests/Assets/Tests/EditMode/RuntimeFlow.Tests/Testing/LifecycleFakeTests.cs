@@ -75,6 +75,24 @@ namespace RuntimeFlow.Tests.Testing
             Task<string> NameAsync();
         }
 
+        public interface ICustomInitializable
+        {
+            Task InitializeAsync(InitContext context, CancellationToken cancellationToken);
+        }
+
+        public sealed class ExplicitCustomInitializableStub : ICustomInitializable
+        {
+            public int Calls { get; private set; }
+            public bool ThrowSynchronously { get; set; }
+
+            Task ICustomInitializable.InitializeAsync(InitContext context, CancellationToken cancellationToken)
+            {
+                Calls++;
+                if (ThrowSynchronously) throw new InvalidOperationException("sync init boom");
+                return Task.CompletedTask;
+            }
+        }
+
         private static InitContext? NoContext => null;
 
         private readonly RunTracker _tracker = new RunTracker();
@@ -311,6 +329,22 @@ namespace RuntimeFlow.Tests.Testing
             await fake.SaveAsync();
             Assert.That(await fake.CountAsync(), Is.EqualTo(0));
             Assert.That(await fake.NameAsync(), Is.Null);
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task ExplicitCustomInitializeAsyncStubIsCalledAndUnwrapsSynchronousExceptions()
+        {
+            var stub = new ExplicitCustomInitializableStub();
+            var fake = LifecycleFake.Of<ICustomInitializable>(stub);
+
+            await fake.InitializeAsync(NoContext!, CancellationToken.None);
+            Assert.That(stub.Calls, Is.EqualTo(1));
+
+            stub.ThrowSynchronously = true;
+            var error = await AsyncTestAssert.ThrowsAsync<InvalidOperationException>(
+                () => fake.InitializeAsync(NoContext!, CancellationToken.None));
+            Assert.That(error.Message, Is.EqualTo("sync init boom"));
         }
     }
 }

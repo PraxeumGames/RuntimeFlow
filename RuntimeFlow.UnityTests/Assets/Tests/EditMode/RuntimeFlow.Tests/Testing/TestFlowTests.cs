@@ -347,5 +347,40 @@ namespace RuntimeFlow.Tests.Testing
             Assert.That(app.Resolve<IBackend>().Name, Is.EqualTo("fake"));
             Assert.That(_probe.Initialized, Is.EqualTo(new[] { "fake", "consumer:fake", "fake", "consumer:fake" }));
         }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task OverrideMatchesAConcreteServiceRegisteredOnlyAsIAsyncInitializable()
+        {
+            var replacement = new RealBackend(_probe);
+            await using var app = await TestFlow
+                .Create(
+                    Nothing,
+                    builder =>
+                    {
+                        builder.RegisterInstance(_probe);
+                        builder.Register<RealBackend>(Lifetime.Singleton).As<IAsyncInitializable>();
+                    })
+                .Override<RealBackend>(replacement)
+                .StartAsync();
+
+            Assert.That(app.Resolve<RealBackend>(), Is.SameAs(replacement));
+            Assert.That(_probe.Constructed, Is.EqualTo(1), "only the replacement instance was constructed");
+        }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task OverrideByConcreteTypePreservesTheReplacedRegistrationsInterfaces()
+        {
+            var replacement = new RealBackend(_probe);
+            await using var app = await TestFlow
+                .Create(Nothing, SessionWithRealBackend)
+                .Override<RealBackend>(replacement)
+                .StartAsync();
+
+            Assert.That(app.Resolve<RealBackend>(), Is.SameAs(replacement));
+            Assert.That(app.Resolve<IBackend>(), Is.SameAs(replacement));
+            Assert.That(app.Resolve<Consumer>().Backend, Is.SameAs(replacement));
+        }
     }
 }

@@ -217,8 +217,8 @@ namespace RuntimeFlow.Tests.Lifecycle
             try
             {
                 var warned = 0;
-                Assert.That(RuntimeFlowHost.ConsumerHandlerOf(container, handlerType, null, _log, ref warned), Is.Null);
-                Assert.That(RuntimeFlowHost.ConsumerHandlerOf(container, null, null, _log, ref warned), Is.Null);
+                Assert.That(RuntimeFlowHost.ConsumerHandlerOf(container, handlerType, null, true, _log, ref warned), Is.Null);
+                Assert.That(RuntimeFlowHost.ConsumerHandlerOf(container, null, null, true, _log, ref warned), Is.Null);
 
                 var warnings = _log.Messages(LogLevel.Warning)
                     .Where(m => m.StartsWith("[RuntimeFlow] cannot read VContainer's entry-point exception handler"))

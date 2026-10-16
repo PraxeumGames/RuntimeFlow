@@ -369,6 +369,33 @@ namespace RuntimeFlow.Tests.Editor
             AssertLabel(last, restored.ErrorMessage);
         }
 
+        [Test]
+        public void LastRunViewRefreshesWhenHaltReasonRestartCountOrDescribeChanges()
+        {
+            var snapshot = new DashboardSnapshot
+            {
+                HostLabel = "host #1 (gen 0)",
+                State = RunState.Halted,
+                HaltReason = "initial-halt",
+                RestartCount = 1,
+                Describe = "initial describe"
+            };
+            var last = new LastRunView();
+            last.Refresh(snapshot, false);
+            AssertLabel(last, "initial-halt");
+            AssertLabel(last, "1");
+            Assert.That(last.Query<TextField>().ToList().Exists(field => field.value == "initial describe"), Is.True);
+
+            snapshot.HaltReason = "updated-halt";
+            snapshot.RestartCount = 4;
+            snapshot.Describe = "updated describe";
+            last.Refresh(snapshot, false);
+
+            AssertLabel(last, "updated-halt");
+            AssertLabel(last, "4");
+            Assert.That(last.Query<TextField>().ToList().Exists(field => field.value == "updated describe"), Is.True);
+        }
+
         private static void AssertLabel(VisualElement view, string text)
             => Assert.That(view.Query<Label>().ToList().Exists(label => label.text == text), Is.True, text);
     }

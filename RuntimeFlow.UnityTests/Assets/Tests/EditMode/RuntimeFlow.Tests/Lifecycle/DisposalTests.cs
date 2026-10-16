@@ -215,5 +215,34 @@ namespace RuntimeFlow.Tests.Lifecycle
             Assert.That(_recorder.Disposed, Is.EqualTo(new[] { "First" }));
             Assert.That(run.State, Is.EqualTo(RunState.Disposed));
         }
+
+        [Test]
+        [Timeout(10000)]
+        public async Task RunTrackerDisposesRunsNewestFirstBeforeDisposingTheirContainers()
+        {
+            var tracker = new RunTracker();
+            var global = tracker.Build(b =>
+            {
+                b.RegisterInstance(_recorder);
+                b.Register<SyncOnly>(Lifetime.Singleton).AsSelf();
+                b.Register<First>(Lifetime.Singleton).AsSelf().AsImplementedInterfaces();
+            });
+            global.Resolve<SyncOnly>();
+            var globalRun = tracker.Create(global, "global", _options);
+            await globalRun.RunAsync();
+
+            var session = global.CreateScope(b => b.Register<Second>(Lifetime.Singleton).AsSelf().AsImplementedInterfaces());
+            var sessionRun = tracker.Create(session, "session", _options, new[] { globalRun }, ownsScope: true);
+            await sessionRun.RunAsync();
+
+            tracker.DisposeAll();
+
+            await AsyncTestAssert.Until(
+                () => _recorder.Disposed.Count == 3,
+                TimeSpan.FromSeconds(5),
+                string.Join(", ", _recorder.Disposed));
+
+            Assert.That(_recorder.Disposed, Is.EqualTo(new[] { "Second", "First", "SyncOnly" }));
+        }
     }
 }

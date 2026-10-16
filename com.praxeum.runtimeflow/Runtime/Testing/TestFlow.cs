@@ -65,7 +65,7 @@ namespace RuntimeFlow.Testing
         public TestFlow Override<T>(T instance) where T : class
         {
             if (instance == null) throw new ArgumentNullException(nameof(instance));
-            return AddOverride(typeof(T), builder => RegisterOverride(builder, instance));
+            return AddOverride(typeof(T), (builder, contracts) => RegisterOverride(builder, instance, contracts));
         }
 
         /// <summary>
@@ -76,19 +76,19 @@ namespace RuntimeFlow.Testing
         public TestFlow Override<T>(Func<T> factory) where T : class
         {
             if (factory == null) throw new ArgumentNullException(nameof(factory));
-            return AddOverride(typeof(T), builder =>
+            return AddOverride(typeof(T), (builder, contracts) =>
             {
                 var instance = factory() ?? throw new InvalidOperationException(
                     $"The Override<{typeof(T).Name}> factory returned null.");
-                RegisterOverride(builder, instance);
+                RegisterOverride(builder, instance, contracts);
             });
         }
 
-        private static void RegisterOverride<T>(IContainerBuilder builder, T instance) where T : class
+        private static void RegisterOverride<T>(IContainerBuilder builder, T instance, IReadOnlyList<Type> contracts)
+            where T : class
         {
             var registration = builder.RegisterInstance(instance).As(typeof(T));
-            if (instance is IAsyncInitializable && typeof(T) != typeof(IAsyncInitializable))
-                registration.As<IAsyncInitializable>();
+            ExposeMatchingContracts(registration, instance.GetType(), typeof(T), contracts);
         }
 
         /// <summary>
@@ -97,12 +97,32 @@ namespace RuntimeFlow.Testing
         /// </summary>
         public TestFlow Override<T, TImpl>() where TImpl : class, T
         {
-            return AddOverride(typeof(T), builder =>
+            return AddOverride(typeof(T), (builder, contracts) =>
             {
                 var registration = builder.Register<TImpl>(Lifetime.Singleton).As<T>();
-                if (typeof(IAsyncInitializable).IsAssignableFrom(typeof(TImpl)) && typeof(T) != typeof(IAsyncInitializable))
-                    registration.As<IAsyncInitializable>();
+                ExposeMatchingContracts(registration, typeof(TImpl), typeof(T), contracts);
             });
+        }
+
+        private static void ExposeMatchingContracts(
+            RegistrationBuilder registration,
+            Type implementationType,
+            Type primaryContract,
+            IReadOnlyList<Type> replacedContracts)
+        {
+            if (typeof(IAsyncInitializable).IsAssignableFrom(implementationType)
+                && primaryContract != typeof(IAsyncInitializable))
+            {
+                registration.As<IAsyncInitializable>();
+            }
+
+            for (var i = 0; i < replacedContracts.Count; i++)
+            {
+                var contract = replacedContracts[i];
+                if (contract == primaryContract || contract == typeof(IAsyncInitializable)) continue;
+                if (contract.IsAssignableFrom(implementationType))
+                    registration.As(contract);
+            }
         }
 
         /// <summary>Adjusts the options the host runs with; the capturing logger is replaced if you set one.</summary>
@@ -228,7 +248,7 @@ namespace RuntimeFlow.Testing
             await _host.DisposeAsync();
         }
 
-        private TestFlow AddOverride(Type serviceType, Action<IContainerBuilder> register)
+        private TestFlow AddOverride(Type serviceType, Action<IContainerBuilder, IReadOnlyList<Type>> register)
         {
             ThrowIfStarted();
             foreach (var existing in _overrides)
