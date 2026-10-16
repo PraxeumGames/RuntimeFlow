@@ -101,3 +101,9 @@ Thumbs.db
 ehthumbs.db
 desktop.ini
 $RECYCLE.BIN/
+
+## =========================
+## Local AI tooling
+## =========================
+.serena/
+.commandcode/
