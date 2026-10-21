@@ -532,7 +532,7 @@ namespace RuntimeFlow.Contexts
         private static Type[] BuildExplicitDependencyTypeCatalog()
         {
             var result = new HashSet<Type>();
-            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            foreach (var assembly in ContractImplementationAssemblies.For(typeof(IAsyncInitializableService)))
             {
                 Type[] types;
                 try
