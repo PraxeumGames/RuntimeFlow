@@ -531,13 +531,18 @@ namespace RuntimeFlow.Contexts
 
         private static Type[] BuildExplicitDependencyTypeCatalog()
         {
-            var result = new HashSet<Type>();
+            // Explicit dependencies that don't implement the contract, so no catalog lists them
+            var result = new HashSet<Type>
+            {
+                typeof(RuntimeFlowVContainerEntryPointsStartupPhase),
+                typeof(IRuntimeFlowSessionSyncEntryPointsBootstrapService)
+            };
             foreach (var assembly in ContractImplementationAssemblies.For(typeof(IAsyncInitializableService)))
             {
-                Type[] types;
+                Type[]? types = GeneratedTypeCatalog.AsyncInitializableTypes(assembly);
                 try
                 {
-                    types = assembly.GetTypes();
+                    types ??= assembly.GetTypes();
                 }
                 catch (ReflectionTypeLoadException exception)
                 {

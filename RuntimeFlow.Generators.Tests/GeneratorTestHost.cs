@@ -70,6 +70,13 @@ public static class GeneratorTestHost
         IReadOnlyDictionary<string, string> GeneratedSources,
         IReadOnlyList<Diagnostic> OutputDiagnostics)
         RunGeneratorWithCompilationDiagnostics(params string[] sources)
+        => Run(new InitializationGraphGenerator(), sources);
+
+    public static (
+        IReadOnlyList<Diagnostic> Diagnostics,
+        IReadOnlyDictionary<string, string> GeneratedSources,
+        IReadOnlyList<Diagnostic> OutputDiagnostics)
+        Run(IIncrementalGenerator generator, params string[] sources)
     {
         var syntaxTrees = sources
             .Select(src => CSharpSyntaxTree.ParseText(src,
@@ -85,7 +92,7 @@ public static class GeneratorTestHost
             options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary,
                 nullableContextOptions: NullableContextOptions.Enable));
 
-        GeneratorDriver driver = CSharpGeneratorDriver.Create(new InitializationGraphGenerator());
+        GeneratorDriver driver = CSharpGeneratorDriver.Create(generator);
         driver = driver.RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out _);
 
         var runResult = driver.GetRunResult();

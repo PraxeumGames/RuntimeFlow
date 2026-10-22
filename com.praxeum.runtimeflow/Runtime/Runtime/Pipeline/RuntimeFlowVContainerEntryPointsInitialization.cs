@@ -208,7 +208,7 @@ namespace RuntimeFlow.Contexts
             return InheritedEntryPointServiceTypesCache.GetOrAdd(
                 entryPointType,
                 static type => ContractImplementationAssemblies.For(type)
-                    .SelectMany(GetLoadableTypes)
+                    .SelectMany(assembly => GeneratedTypeCatalog.DerivedInterfaces(assembly) ?? GetLoadableTypes(assembly))
                     .Where(candidate => candidate.IsInterface)
                     .Where(candidate => candidate != type)
                     .Where(candidate => type.IsAssignableFrom(candidate))

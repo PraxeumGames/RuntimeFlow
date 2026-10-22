@@ -87,6 +87,19 @@ namespace RuntimeFlow.Tests
             Assert.That(VContainerEntryPointSessionServiceB.VContainerInitializeCount, Is.EqualTo(1));
         }
 
+        // Discovery reads this catalog instead of reflecting over the assembly; without the generator applied to
+        // Unity assemblies the player falls back to the scan that initializes every class under IL2CPP.
+        [Test]
+        public void GeneratedCatalog_ListsPrivateNestedDiscoveryTypes()
+        {
+            var assembly = typeof(VContainerSessionInitializableDiscoveryTests).Assembly;
+
+            Assert.That(GeneratedTypeCatalog.DerivedInterfaces(assembly),
+                Does.Contain(typeof(IIndirectVContainerInitializableService)));
+            Assert.That(GeneratedTypeCatalog.AsyncInitializableTypes(assembly),
+                Does.Contain(typeof(VContainerEntryPointSessionServiceB)));
+        }
+
         [Test]
         public async Task VContainerInitializableRegisteredOnlyAsInheritedEntryPointInterface_IsInitialized()
         {
