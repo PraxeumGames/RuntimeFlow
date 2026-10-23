@@ -9,15 +9,15 @@ using SFS.Core.GameLoading;
 namespace RuntimeFlow.Tests
 {
     /// <summary>
-    /// A restart requested while an earlier restart is still replaying the session. The replay can be
+    /// A restart requested while an earlier restart is still rebuilding the session. The rebuild can be
     /// waiting on the very initializer that asks for the new restart (it downloaded fresh data and
-    /// needs the session rebuilt on it), so dropping the request as a duplicate leaves the replay
-    /// hanging forever. The new request supersedes: the replay is cancelled and the new restart runs.
+    /// needs the session rebuilt on it), so dropping the request as a duplicate leaves the rebuild
+    /// hanging forever. The new request supersedes the one in flight.
     /// </summary>
     public sealed class RuntimeFlowGameRestartHandlerSupersedeTests
     {
         [Test]
-        public void RestartDuringRestart_CancelsTheReplay_AndRunsTheNewRestart()
+        public void RestartDuringRestart_IsDispatchedAsSupersedingTheOneInFlight()
         {
             var coordinator = new ScriptedCoordinator();
             var handler = CreateHandler(coordinator);
@@ -26,25 +26,27 @@ namespace RuntimeFlow.Tests
             handler.Restart("second", forceSave: false);
 
             Assert.That(coordinator.Started, Has.Count.EqualTo(2), "The second restart must run, not be skipped");
-            Assert.That(coordinator.Started[0].CancellationToken.IsCancellationRequested, Is.True,
-                "The superseded replay must be cancelled: it may be waiting on the requester forever");
+            Assert.That(coordinator.Started[0].RestartRequest.SupersedesInFlight, Is.False);
+            Assert.That(coordinator.Started[1].RestartRequest.SupersedesInFlight, Is.True);
             Assert.That(coordinator.Started[1].RestartRequest.Diagnostic, Is.EqualTo("second"));
         }
 
         [Test]
-        public void SeveralRestartsDuringRestart_RunOnlyTheLatest()
+        public void RestartFromTheReplayedSession_SupersedesTheRestartOfThePreviousSession()
         {
+            // The handler lives in the session scope: the restart rebuilds the session with a new
+            // handler, and the request from the session being rebuilt comes to that one
             var coordinator = new ScriptedCoordinator();
-            var handler = CreateHandler(coordinator);
+            var provider = new FakePipelineProvider(coordinator);
+            var previousSession = CreateHandler(provider);
+            var replayedSession = CreateHandler(provider);
 
-            handler.Restart("first", forceSave: false);
-            handler.Restart("second", forceSave: false);
-            handler.Restart("third", forceSave: false);
+            previousSession.Restart("first", forceSave: false);
+            replayedSession.Restart("second", forceSave: false);
 
-            Assert.That(coordinator.Started, Has.Count.EqualTo(3));
-            Assert.That(coordinator.Started[1].CancellationToken.IsCancellationRequested, Is.True);
-            Assert.That(coordinator.Started[2].RestartRequest.Diagnostic, Is.EqualTo("third"));
-            Assert.That(handler.IsApplicationRestarting, Is.True);
+            Assert.That(coordinator.Started, Has.Count.EqualTo(2), "The second restart must run, not be skipped");
+            Assert.That(coordinator.Started[1].RestartRequest.SupersedesInFlight, Is.True);
+            Assert.That(replayedSession.IsApplicationRestarting, Is.True);
         }
 
         [Test]
@@ -54,52 +56,54 @@ namespace RuntimeFlow.Tests
             var handler = CreateHandler(coordinator);
 
             handler.Restart("first", forceSave: false);
-            coordinator.CompleteLast();
+            coordinator.CompleteAll();
             handler.Restart("second", forceSave: false);
 
             Assert.That(coordinator.Started, Has.Count.EqualTo(2));
-            Assert.That(coordinator.Started[0].CancellationToken.IsCancellationRequested, Is.False,
-                "A finished restart is not cancelled by the next one");
+            Assert.That(coordinator.Started[1].RestartRequest.SupersedesInFlight, Is.False,
+                "A finished restart is not superseded by the next one");
         }
 
-        private static RuntimeFlowGameRestartHandler CreateHandler(ScriptedCoordinator coordinator)
+        private static RuntimeFlowGameRestartHandler CreateHandler(ScriptedCoordinator coordinator) =>
+            CreateHandler(new FakePipelineProvider(coordinator));
+
+        private static RuntimeFlowGameRestartHandler CreateHandler(IRuntimeFlowPipelineProvider provider)
         {
             return new RuntimeFlowGameRestartHandler(
                 new NoopStateSaver(),
                 new NoopGameDataCleaner(),
-                new FakePipelineProvider(coordinator),
+                provider,
                 new NoopStageStateProvider());
         }
 
         /// <summary>
-        /// Starts each request like the real coordinator, when nothing is in flight, and finishes it as
-        /// cancelled when its token is cancelled, the way a replay ends when its token fires.
+        /// Starts each request like the real coordinator: a request is deduplicated against the one in
+        /// flight unless it supersedes it.
         /// </summary>
         private sealed class ScriptedCoordinator : IRuntimeRestartCoordinator
         {
-            private TaskCompletionSource<RuntimeRestartExecutionResult>? _inFlight;
-            private RuntimeRestartCoordinatorRequest? _inFlightRequest;
+            private readonly List<(RuntimeRestartCoordinatorRequest Request, TaskCompletionSource<RuntimeRestartExecutionResult> Completion)> _inFlight =
+                new List<(RuntimeRestartCoordinatorRequest, TaskCompletionSource<RuntimeRestartExecutionResult>)>();
 
             public List<RuntimeRestartCoordinatorRequest> Started { get; } = new List<RuntimeRestartCoordinatorRequest>();
 
             public RuntimeRestartDispatch Dispatch(RuntimeRestartCoordinatorRequest request)
             {
-                if (_inFlight != null && !_inFlight.Task.IsCompleted)
-                    return RuntimeRestartDispatch.Deduplicated(RuntimeRestartDuplicateReason.InFlight, _inFlight.Task);
+                if (_inFlight.Count > 0 && !request.RestartRequest.SupersedesInFlight)
+                    return RuntimeRestartDispatch.Deduplicated(RuntimeRestartDuplicateReason.InFlight, _inFlight[0].Completion.Task);
 
                 var completion = new TaskCompletionSource<RuntimeRestartExecutionResult>();
-                _inFlight = completion;
-                _inFlightRequest = request;
+                _inFlight.Add((request, completion));
                 Started.Add(request);
-                request.CancellationToken.Register(() => completion.TrySetResult(
-                    RuntimeRestartExecutionResult.Failed(request.RestartRequest, new OperationCanceledException())));
                 request.OnBeforeRestartAsync?.Invoke(request.CancellationToken);
                 return RuntimeRestartDispatch.Started(completion.Task);
             }
 
-            public void CompleteLast()
+            public void CompleteAll()
             {
-                _inFlight!.TrySetResult(RuntimeRestartExecutionResult.Completed(_inFlightRequest!.RestartRequest));
+                foreach (var (request, completion) in _inFlight)
+                    completion.TrySetResult(RuntimeRestartExecutionResult.Completed(request.RestartRequest));
+                _inFlight.Clear();
             }
         }
 

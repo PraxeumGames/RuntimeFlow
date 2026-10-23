@@ -21,16 +21,26 @@ namespace RuntimeFlow.Contexts
         public RuntimeRestartRequest(
             string? reasonCode = null,
             string? diagnostic = null,
-            bool allowBeforeReady = false)
+            bool allowBeforeReady = false,
+            bool supersedesInFlight = false)
         {
             ReasonCode = Normalize(reasonCode);
             Diagnostic = Normalize(diagnostic);
             AllowBeforeReady = allowBeforeReady;
+            SupersedesInFlight = supersedesInFlight;
         }
 
         public string? ReasonCode { get; }
         public string? Diagnostic { get; }
         public bool AllowBeforeReady { get; }
+
+        /// <summary>
+        /// The request replaces a restart that is still in progress instead of being deduplicated against it.
+        /// The session that restart is rebuilding may be waiting on the very service that asked for the new
+        /// restart (it fetched fresh data and needs the session rebuilt on it): the in-flight rebuild is
+        /// abandoned, the session is rebuilt again, and the replaced request completes with the new one.
+        /// </summary>
+        public bool SupersedesInFlight { get; }
 
         private static string? Normalize(string? value)
         {

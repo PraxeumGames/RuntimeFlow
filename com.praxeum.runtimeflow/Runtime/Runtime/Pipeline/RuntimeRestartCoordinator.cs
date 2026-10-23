@@ -27,7 +27,8 @@ namespace RuntimeFlow.Contexts
 
             lock (_sync)
             {
-                if (_inFlightTask != null && !_inFlightTask.IsCompleted)
+                var supersedes = request.RestartRequest.SupersedesInFlight;
+                if (!supersedes && _inFlightTask != null && !_inFlightTask.IsCompleted)
                 {
                     return RuntimeRestartDispatch.Deduplicated(
                         RuntimeRestartDuplicateReason.InFlight,
@@ -35,7 +36,7 @@ namespace RuntimeFlow.Contexts
                 }
 
                 var restartLifecycleManager = _restartLifecycleManagerProvider();
-                if (restartLifecycleManager != null && restartLifecycleManager.Snapshot.IsInProgress)
+                if (!supersedes && restartLifecycleManager != null && restartLifecycleManager.Snapshot.IsInProgress)
                 {
                     return RuntimeRestartDispatch.Deduplicated(
                         RuntimeRestartDuplicateReason.LifecycleInProgress,
@@ -62,7 +63,9 @@ namespace RuntimeFlow.Contexts
             try
             {
                 readinessGate = _readinessGateFactory();
-                if (readinessGate != null && !request.RestartRequest.AllowBeforeReady)
+                // A superseding request comes while the runtime is rebuilding the session and is never ready
+                if (readinessGate != null && !request.RestartRequest.AllowBeforeReady
+                    && !request.RestartRequest.SupersedesInFlight)
                 {
                     await readinessGate
                         .WaitUntilReadyAsync(

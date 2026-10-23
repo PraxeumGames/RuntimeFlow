@@ -97,6 +97,7 @@ namespace RuntimeFlow.Contexts
             _healthSupervisor.BeginRun();
             var runner = CreateFlowRunner(sceneLoader, progressNotifier);
             var restartTaskAtOperationStart = _restartLifecycleManager.GetLatestRestartTask();
+            var restartGenerationAtOperationStart = _restartLifecycleManager.RestartGeneration;
 
             try
             {
@@ -133,6 +134,14 @@ namespace RuntimeFlow.Contexts
                     totalSteps: 1,
                     message: cancelMessage);
                 SetStatus(RuntimeExecutionState.Degraded, operationCode: operationCode, message: cancelMessage);
+                throw;
+            }
+            catch (OperationCanceledException) when (operationKind == RuntimeLoadingOperationKind.RestartSession
+                                                     && _restartLifecycleManager.RestartGeneration
+                                                     != restartGenerationAtOperationStart)
+            {
+                // A newer restart rebuilds the session instead of this one and already owns the status
+                // and the loading snapshot; the restart lifecycle ends this one together with it
                 throw;
             }
             catch (OperationCanceledException ex)

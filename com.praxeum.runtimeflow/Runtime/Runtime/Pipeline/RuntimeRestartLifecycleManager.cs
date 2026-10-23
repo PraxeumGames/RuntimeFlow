@@ -25,6 +25,8 @@ namespace RuntimeFlow.Contexts
         private RuntimeRestartLifecycleSnapshot _snapshot;
         private Task? _inFlightRestartTask;
         private Task? _latestRestartTask;
+        private long _restartGeneration;
+        private TaskCompletionSource<bool>? _currentRestartCompletion;
         private long _completedCount;
         private long _failedCount;
         private long _deduplicatedRequestCount;
@@ -65,6 +67,18 @@ namespace RuntimeFlow.Contexts
             return GetRestartReadiness(includeInFlightCheck: true);
         }
 
+        /// <summary>Grows with every restart run, a superseding one included.</summary>
+        internal long RestartGeneration
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _restartGeneration;
+                }
+            }
+        }
+
         internal Task? GetLatestRestartTask()
         {
             lock (_sync)
@@ -80,14 +94,18 @@ namespace RuntimeFlow.Contexts
             Task taskToAwait;
             lock (_sync)
             {
-                if (_inFlightRestartTask != null && !_inFlightRestartTask.IsCompleted)
+                if (_inFlightRestartTask != null && !_inFlightRestartTask.IsCompleted && !request.SupersedesInFlight)
                 {
                     _deduplicatedRequestCount++;
                     taskToAwait = _inFlightRestartTask;
                 }
                 else
                 {
-                    taskToAwait = RunRestartInternalAsync(request, cancellationToken);
+                    // The completion exists before the run starts: a run it supersedes may end inline while
+                    // this one is starting and has to find what to wait for
+                    var completion = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _currentRestartCompletion = completion;
+                    taskToAwait = RunRestartInternalAsync(request, ++_restartGeneration, completion, cancellationToken);
                     _inFlightRestartTask = taskToAwait;
                     _latestRestartTask = taskToAwait;
                 }
@@ -96,14 +114,23 @@ namespace RuntimeFlow.Contexts
             return WaitWithCancellationAsync(taskToAwait, cancellationToken);
         }
 
-        private async Task RunRestartInternalAsync(RuntimeRestartRequest request, CancellationToken cancellationToken)
+        private async Task RunRestartInternalAsync(
+            RuntimeRestartRequest request,
+            long generation,
+            TaskCompletionSource<bool> completion,
+            CancellationToken cancellationToken)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                completion.TrySetCanceled();
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+
             try
             {
                 UpdateSnapshot(RuntimeRestartLifecycleStage.WaitingReadiness, request.ReasonCode, request.Diagnostic);
                 var restartReadiness = GetRestartReadiness(includeInFlightCheck: false);
-                if (!restartReadiness.IsReady && !CanRestartBeforeReady(request))
+                if (!restartReadiness.IsReady && !CanRestartBeforeReady(request) && !request.SupersedesInFlight)
                 {
                     throw new InvalidOperationException(
                         restartReadiness.BlockingReason
@@ -134,6 +161,13 @@ namespace RuntimeFlow.Contexts
                     await _replayOperation(request, cancellationToken).ConfigureAwait(false);
                 }
 
+                if (TryGetSupersedingRestart(generation, out var supersededBy))
+                {
+                    await supersededBy.ConfigureAwait(false);
+                    completion.TrySetResult(true);
+                    return;
+                }
+
                 lock (_sync)
                 {
                     _completedCount++;
@@ -144,9 +178,26 @@ namespace RuntimeFlow.Contexts
                         reasonCode: request.ReasonCode ?? "restart.completed",
                         diagnostic: BuildCompletionDiagnostic());
                 }
+
+                completion.TrySetResult(true);
+            }
+            catch (Exception) when (TryGetSupersedingRestart(generation, out var superseding))
+            {
+                // A newer restart abandoned this one's rebuild: this request is done when that one is
+                try
+                {
+                    await superseding.ConfigureAwait(false);
+                    completion.TrySetResult(true);
+                }
+                catch (Exception supersedingFailure)
+                {
+                    completion.TrySetException(supersedingFailure);
+                    throw;
+                }
             }
             catch (Exception ex)
             {
+                completion.TrySetException(ex);
                 lock (_sync)
                 {
                     _failedCount++;
@@ -165,8 +216,18 @@ namespace RuntimeFlow.Contexts
             {
                 lock (_sync)
                 {
-                    _inFlightRestartTask = null;
+                    if (_restartGeneration == generation)
+                        _inFlightRestartTask = null;
                 }
+            }
+        }
+
+        private bool TryGetSupersedingRestart(long generation, out Task superseding)
+        {
+            lock (_sync)
+            {
+                superseding = _currentRestartCompletion!.Task;
+                return _restartGeneration != generation;
             }
         }
 

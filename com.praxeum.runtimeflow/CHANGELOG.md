@@ -9,10 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - A restart requested while an earlier restart is still in progress now supersedes it instead of being skipped
-  as a duplicate. The replay being run may be waiting on the very initializer that asked for the new restart
-  (it downloaded fresh data and needs the session rebuilt on it), so skipping the request left the replay hanging.
-  `RuntimeFlowGameRestartHandler` cancels the in-flight restart through its request token and runs the latest
-  request once it unwinds, waiting out a lifecycle that is still finishing the cancelled replay.
+  as a duplicate. The session being rebuilt may be waiting on the very initializer that asked for the new restart
+  (it downloaded fresh data and needs the session rebuilt on it), so skipping the request left the rebuild hanging.
+  The handler marks such a request with `RuntimeRestartRequest.SupersedesInFlight`; the coordinator and the restart
+  lifecycle run it instead of deduplicating, the session is rebuilt again (the builder abandons the active rebuild),
+  and the superseded request completes together with the new one. Restarts in flight are tracked per pipeline
+  provider: the handler lives in the session scope, and the request from a session being rebuilt reaches the new
+  session's handler.
 
 ## [0.5.1] - 2026-10-06
 
