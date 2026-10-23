@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A restart requested while an earlier restart is still in progress now supersedes it instead of being skipped
+  as a duplicate. The replay being run may be waiting on the very initializer that asked for the new restart
+  (it downloaded fresh data and needs the session rebuilt on it), so skipping the request left the replay hanging.
+  `RuntimeFlowGameRestartHandler` cancels the in-flight restart through its request token and runs the latest
+  request once it unwinds, waiting out a lifecycle that is still finishing the cancelled replay.
+
 ## [0.5.1] - 2026-10-06
 
 ### Fixed

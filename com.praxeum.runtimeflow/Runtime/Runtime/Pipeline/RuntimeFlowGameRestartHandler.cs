@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -40,6 +41,13 @@ namespace SFS.Core.GameLoading
         private readonly object _restartGate = new();
         private readonly IRuntimeRestartCoordinator _restartCoordinator;
         private bool _isApplicationRestarting;
+
+        // The restart this handler started and that has not finished yet, and the one that arrived
+        // during it. A request during a restart supersedes it: the session being replayed may be
+        // waiting on the very initializer that asked for the new restart, so skipping the request
+        // as a duplicate would leave that replay hanging.
+        private CancellationTokenSource? _inFlightCancellation;
+        private PendingRestart? _pendingRestart;
 
         [Inject]
         public RuntimeFlowGameRestartHandler(
@@ -111,44 +119,76 @@ namespace SFS.Core.GameLoading
                 _stateSaver.SaveAppState();
             }
 
+            CancellationTokenSource? superseded;
             lock (_restartGate)
             {
-                var dispatch = _restartCoordinator.Dispatch(
-                    new RuntimeRestartCoordinatorRequest(
-                        restartRequest: new RuntimeRestartRequest(
-                            reasonCode: SessionRestartReplayingReasonCode,
-                            diagnostic: reason,
-                            allowBeforeReady: IsRuntimeInitializing()),
-                        readinessTimeout: RestartReadinessTimeout,
-                        readinessPollInterval: RestartReadinessPollInterval,
-                        onBeforeRestartAsync: _ =>
-                        {
-                            _logger.LogInformation($"{nameof(Restart)}: run. Reason: {reason}");
-                            _loadingState.StartStage(
-                                SessionRestartStage,
-                                SessionRestartResettingReasonCode,
-                                reason);
-                            callback?.Invoke();
-                            _loadingState.StartStage(
-                                SessionRestartStage,
-                                SessionRestartReplayingReasonCode,
-                                reason);
-                            return Task.CompletedTask;
-                        }));
-
-                if (!RuntimeRestartStageProjector.TryProjectDispatch(
-                        dispatch,
-                        _loadingState,
-                        RestartStageProjectionOptions,
-                        reason))
+                if (_inFlightCancellation == null)
                 {
-                    LogDuplicateRequest(reason, dispatch.DuplicateReason);
+                    if (!TryDispatchLocked(reason, callback, out var duplicateReason))
+                        LogDuplicateRequest(reason, duplicateReason);
                     return;
                 }
 
-                SetApplicationRestarting(true);
-                _ = ObserveRestartOutcomeAsync(reason, dispatch.ExecutionTask);
+                _logger.LogInformation(
+                    $"{nameof(Restart)}: supersedes the restart in progress. Reason: {reason}");
+                _pendingRestart = new PendingRestart(reason, callback);
+                superseded = _inFlightCancellation;
             }
+
+            // Outside the gate: the superseded restart may finish synchronously and dispatch the pending one
+            try
+            {
+                superseded.Cancel();
+            }
+            catch (ObjectDisposedException)
+            {
+                // It finished on its own meanwhile and has already taken the pending request
+            }
+        }
+
+        private bool TryDispatchLocked(string reason, Action? callback, out RuntimeRestartDuplicateReason duplicateReason)
+        {
+            var cancellation = new CancellationTokenSource();
+            var dispatch = _restartCoordinator.Dispatch(
+                new RuntimeRestartCoordinatorRequest(
+                    restartRequest: new RuntimeRestartRequest(
+                        reasonCode: SessionRestartReplayingReasonCode,
+                        diagnostic: reason,
+                        allowBeforeReady: IsRuntimeInitializing()),
+                    readinessTimeout: RestartReadinessTimeout,
+                    readinessPollInterval: RestartReadinessPollInterval,
+                    onBeforeRestartAsync: _ =>
+                    {
+                        _logger.LogInformation($"{nameof(Restart)}: run. Reason: {reason}");
+                        _loadingState.StartStage(
+                            SessionRestartStage,
+                            SessionRestartResettingReasonCode,
+                            reason);
+                        callback?.Invoke();
+                        _loadingState.StartStage(
+                            SessionRestartStage,
+                            SessionRestartReplayingReasonCode,
+                            reason);
+                        return Task.CompletedTask;
+                    },
+                    cancellationToken: cancellation.Token));
+
+            if (!RuntimeRestartStageProjector.TryProjectDispatch(
+                    dispatch,
+                    _loadingState,
+                    RestartStageProjectionOptions,
+                    reason))
+            {
+                cancellation.Dispose();
+                duplicateReason = dispatch.DuplicateReason;
+                return false;
+            }
+
+            duplicateReason = RuntimeRestartDuplicateReason.None;
+            _inFlightCancellation = cancellation;
+            SetApplicationRestarting(true);
+            _ = ObserveRestartOutcomeAsync(reason, dispatch.ExecutionTask, cancellation);
+            return true;
         }
 
         public void Dispose()
@@ -158,11 +198,18 @@ namespace SFS.Core.GameLoading
 
         private async Task ObserveRestartOutcomeAsync(
             string reason,
-            Task<RuntimeRestartExecutionResult> executionTask)
+            Task<RuntimeRestartExecutionResult> executionTask,
+            CancellationTokenSource cancellation)
         {
             try
             {
                 var result = await executionTask.ConfigureAwait(false);
+                if (cancellation.IsCancellationRequested && result.Outcome != RuntimeRestartExecutionOutcome.Completed)
+                {
+                    _logger.LogInformation($"{nameof(Restart)}: superseded by a newer restart. Reason: {reason}");
+                    return;
+                }
+
                 switch (result.Outcome)
                 {
                     case RuntimeRestartExecutionOutcome.Completed:
@@ -211,8 +258,76 @@ namespace SFS.Core.GameLoading
             }
             finally
             {
-                SetApplicationRestarting(false);
+                OnRestartFinished(cancellation);
             }
+        }
+
+        private void OnRestartFinished(CancellationTokenSource cancellation)
+        {
+            PendingRestart? pending;
+            lock (_restartGate)
+            {
+                if (_inFlightCancellation == cancellation)
+                    _inFlightCancellation = null;
+                cancellation.Dispose();
+
+                pending = _pendingRestart;
+                _pendingRestart = null;
+            }
+
+            if (pending is { } superseding)
+            {
+                _ = RunSupersedingRestartAsync(superseding);
+                return;
+            }
+
+            SetApplicationRestarting(false);
+        }
+
+        /// <summary>
+        /// The superseded restart reports cancellation as soon as its token fires, while the replay it
+        /// cancelled may still be unwinding: the coordinator then refuses with LifecycleInProgress for a
+        /// moment. The superseding restart waits that out instead of being skipped.
+        /// </summary>
+        private async Task RunSupersedingRestartAsync(PendingRestart pending)
+        {
+            _logger.LogInformation($"{nameof(Restart)}: run the superseding restart. Reason: {pending.Reason}");
+            var deadline = DateTimeOffset.UtcNow + RestartReadinessTimeout;
+            while (true)
+            {
+                RuntimeRestartDuplicateReason duplicateReason;
+                lock (_restartGate)
+                {
+                    // Another request has started meanwhile: it is the latest and runs instead
+                    if (_inFlightCancellation != null)
+                        return;
+
+                    if (TryDispatchLocked(pending.Reason, pending.Callback, out duplicateReason))
+                        return;
+                }
+
+                if (duplicateReason != RuntimeRestartDuplicateReason.LifecycleInProgress
+                    || DateTimeOffset.UtcNow >= deadline)
+                {
+                    LogDuplicateRequest(pending.Reason, duplicateReason);
+                    SetApplicationRestarting(false);
+                    return;
+                }
+
+                await Task.Delay(RestartReadinessPollInterval).ConfigureAwait(false);
+            }
+        }
+
+        private readonly struct PendingRestart
+        {
+            public PendingRestart(string reason, Action? callback)
+            {
+                Reason = reason;
+                Callback = callback;
+            }
+
+            public string Reason { get; }
+            public Action? Callback { get; }
         }
 
         private void SetApplicationRestarting(bool value)
