@@ -1,5 +1,4 @@
 using System;
-using System.Runtime.CompilerServices;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -38,8 +37,8 @@ namespace SFS.Core.GameLoading
         private readonly IGameDataCleaner _gameDataCleaner;
         private readonly IRuntimeFlowPipelineProvider _pipelineProvider;
         private readonly IRuntimePipelineStageStateProvider<string, RuntimePipelineStageSnapshot<string>> _loadingState;
+        private readonly object _restartGate = new();
         private readonly IRuntimeRestartCoordinator _restartCoordinator;
-        private readonly RestartsInFlight _restartsInFlight;
         private bool _isApplicationRestarting;
 
         [Inject]
@@ -73,7 +72,6 @@ namespace SFS.Core.GameLoading
             _restartCoordinator = _pipelineProvider.CreateRestartCoordinator(
                 runtimeReadinessProvider: BuildReadinessStatus,
                 timestampProvider: () => DateTimeOffset.UtcNow);
-            _restartsInFlight = RestartsInFlight.For(_pipelineProvider);
         }
 
         [Inject]
@@ -113,18 +111,20 @@ namespace SFS.Core.GameLoading
                 _stateSaver.SaveAppState();
             }
 
-            lock (_restartsInFlight)
+            lock (_restartGate)
             {
-                // A request during a restart supersedes it: the session being rebuilt may be waiting on the
-                // very service that asked for the new restart, so skipping the request as a duplicate would
-                // leave that rebuild hanging
+                // A request from the session that a restart is rebuilding supersedes that restart: the session
+                // may be waiting on the very service that asked for the new restart, so skipping the request as
+                // a duplicate would leave the rebuild hanging. The handler lives in the session scope, so that
+                // request comes to a handler with no restart of its own; a repeated request from the session
+                // that started the restart (a double tap, a second error) joins it instead
                 var dispatch = _restartCoordinator.Dispatch(
                     new RuntimeRestartCoordinatorRequest(
                         restartRequest: new RuntimeRestartRequest(
                             reasonCode: SessionRestartReplayingReasonCode,
                             diagnostic: reason,
                             allowBeforeReady: IsRuntimeInitializing(),
-                            supersedesInFlight: _restartsInFlight.Count > 0),
+                            supersedesInFlight: !_isApplicationRestarting),
                         readinessTimeout: RestartReadinessTimeout,
                         readinessPollInterval: RestartReadinessPollInterval,
                         onBeforeRestartAsync: _ =>
@@ -152,7 +152,6 @@ namespace SFS.Core.GameLoading
                     return;
                 }
 
-                _restartsInFlight.Count++;
                 SetApplicationRestarting(true);
                 _ = ObserveRestartOutcomeAsync(reason, dispatch.ExecutionTask);
             }
@@ -218,27 +217,8 @@ namespace SFS.Core.GameLoading
             }
             finally
             {
-                lock (_restartsInFlight)
-                    _restartsInFlight.Count--;
                 SetApplicationRestarting(false);
             }
-        }
-
-        /// <summary>
-        /// Restarts started and not finished yet, shared by every handler of one pipeline provider. A handler
-        /// lives in the session scope and a restart rebuilds the session with a new handler: a restart
-        /// requested from the session being rebuilt comes to that new handler, while the restart it must
-        /// supersede was started by the previous one.
-        /// </summary>
-        private sealed class RestartsInFlight
-        {
-            private static readonly ConditionalWeakTable<IRuntimeFlowPipelineProvider, RestartsInFlight> ByProvider =
-                new ConditionalWeakTable<IRuntimeFlowPipelineProvider, RestartsInFlight>();
-
-            public int Count;
-
-            public static RestartsInFlight For(IRuntimeFlowPipelineProvider provider) =>
-                ByProvider.GetValue(provider, _ => new RestartsInFlight());
         }
 
         private void SetApplicationRestarting(bool value)

@@ -27,7 +27,15 @@ namespace RuntimeFlow.Contexts
 
             lock (_sync)
             {
-                var supersedes = request.RestartRequest.SupersedesInFlight;
+                var restartLifecycleManager = _restartLifecycleManagerProvider();
+                // Only a restart that already rebuilds the session is replaced: one still waiting for
+                // readiness absorbs the request, so the readiness gate keeps holding for both
+                var supersedes = request.RestartRequest.SupersedesInFlight
+                                 && restartLifecycleManager != null
+                                 && restartLifecycleManager.Snapshot.IsRebuildingSession;
+                if (!supersedes)
+                    request = request.WithRestartRequest(request.RestartRequest.WithoutSupersede());
+
                 if (!supersedes && _inFlightTask != null && !_inFlightTask.IsCompleted)
                 {
                     return RuntimeRestartDispatch.Deduplicated(
@@ -35,7 +43,6 @@ namespace RuntimeFlow.Contexts
                         _inFlightTask);
                 }
 
-                var restartLifecycleManager = _restartLifecycleManagerProvider();
                 if (!supersedes && restartLifecycleManager != null && restartLifecycleManager.Snapshot.IsInProgress)
                 {
                     return RuntimeRestartDispatch.Deduplicated(

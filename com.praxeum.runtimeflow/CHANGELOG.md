@@ -8,14 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
-- A restart requested while an earlier restart is still in progress now supersedes it instead of being skipped
-  as a duplicate. The session being rebuilt may be waiting on the very initializer that asked for the new restart
-  (it downloaded fresh data and needs the session rebuilt on it), so skipping the request left the rebuild hanging.
-  The handler marks such a request with `RuntimeRestartRequest.SupersedesInFlight`; the coordinator and the restart
-  lifecycle run it instead of deduplicating, the session is rebuilt again (the builder abandons the active rebuild),
-  and the superseded request completes together with the new one. Restarts in flight are tracked per pipeline
-  provider: the handler lives in the session scope, and the request from a session being rebuilt reaches the new
-  session's handler.
+- A restart requested while an earlier restart is already rebuilding the session now supersedes it instead of
+  being skipped as a duplicate. The session being rebuilt may be waiting on the very initializer that asked for the
+  new restart (it downloaded fresh data and needs the session rebuilt on it), so skipping the request left the
+  rebuild hanging. A request marked with `RuntimeRestartRequest.SupersedesInFlight` (the game restart handler marks
+  every request) replaces a restart whose lifecycle is `Restarting` or `ReplayingFlow`
+  (`RuntimeRestartLifecycleSnapshot.IsRebuildingSession`): the session is rebuilt again (the builder abandons the
+  active rebuild) and the superseded request completes together with the new one, without running its remaining
+  steps or touching the lifecycle snapshot. A restart still waiting for readiness or its guard is not replaced: the
+  request is deduplicated against it as before, so the readiness gate keeps holding.
 
 ## [0.5.1] - 2026-10-06
 

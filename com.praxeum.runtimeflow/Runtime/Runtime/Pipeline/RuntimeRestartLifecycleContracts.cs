@@ -35,12 +35,22 @@ namespace RuntimeFlow.Contexts
         public bool AllowBeforeReady { get; }
 
         /// <summary>
-        /// The request replaces a restart that is still in progress instead of being deduplicated against it.
-        /// The session that restart is rebuilding may be waiting on the very service that asked for the new
-        /// restart (it fetched fresh data and needs the session rebuilt on it): the in-flight rebuild is
-        /// abandoned, the session is rebuilt again, and the replaced request completes with the new one.
+        /// The request may replace a restart that is already rebuilding the session
+        /// (<see cref="RuntimeRestartLifecycleSnapshot.IsRebuildingSession"/>) instead of being deduplicated
+        /// against it. The session being rebuilt may be waiting on the very service that asked for the new
+        /// restart (it fetched fresh data and needs the session rebuilt on it): the rebuild is abandoned, the
+        /// session is rebuilt again, and the replaced request completes with the new one. A restart that has not
+        /// started rebuilding yet (still waiting for readiness or its guard) is not replaced: the request is
+        /// deduplicated against it as any other, so the readiness gate still holds.
         /// </summary>
         public bool SupersedesInFlight { get; }
+
+        internal RuntimeRestartRequest WithoutSupersede()
+        {
+            return SupersedesInFlight
+                ? new RuntimeRestartRequest(ReasonCode, Diagnostic, AllowBeforeReady)
+                : this;
+        }
 
         private static string? Normalize(string? value)
         {
@@ -77,6 +87,10 @@ namespace RuntimeFlow.Contexts
                                     || Stage == RuntimeRestartLifecycleStage.GuardValidation
                                     || Stage == RuntimeRestartLifecycleStage.Restarting
                                     || Stage == RuntimeRestartLifecycleStage.ReplayingFlow;
+
+        /// <summary>The restart has torn the session down and is building or replaying the new one.</summary>
+        public bool IsRebuildingSession => Stage == RuntimeRestartLifecycleStage.Restarting
+                                           || Stage == RuntimeRestartLifecycleStage.ReplayingFlow;
 
         private static string? Normalize(string? value)
         {

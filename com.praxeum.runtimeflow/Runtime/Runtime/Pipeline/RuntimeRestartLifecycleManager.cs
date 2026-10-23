@@ -94,6 +94,11 @@ namespace RuntimeFlow.Contexts
             Task taskToAwait;
             lock (_sync)
             {
+                // Only a restart that already rebuilds the session is replaced; one still waiting for readiness
+                // or its guard absorbs the request, so the readiness check keeps holding
+                if (!_snapshot.IsRebuildingSession)
+                    request = request.WithoutSupersede();
+
                 if (_inFlightRestartTask != null && !_inFlightRestartTask.IsCompleted && !request.SupersedesInFlight)
                 {
                     _deduplicatedRequestCount++;
@@ -126,9 +131,10 @@ namespace RuntimeFlow.Contexts
                 cancellationToken.ThrowIfCancellationRequested();
             }
 
+            Task? superseded = null;
             try
             {
-                UpdateSnapshot(RuntimeRestartLifecycleStage.WaitingReadiness, request.ReasonCode, request.Diagnostic);
+                UpdateSnapshot(generation, RuntimeRestartLifecycleStage.WaitingReadiness, request.ReasonCode, request.Diagnostic);
                 var restartReadiness = GetRestartReadiness(includeInFlightCheck: false);
                 if (!restartReadiness.IsReady && !CanRestartBeforeReady(request) && !request.SupersedesInFlight)
                 {
@@ -137,7 +143,7 @@ namespace RuntimeFlow.Contexts
                         ?? $"Restart is blocked by '{restartReadiness.BlockingReasonCode ?? "unknown"}'.");
                 }
 
-                UpdateSnapshot(RuntimeRestartLifecycleStage.GuardValidation, request.ReasonCode, request.Diagnostic);
+                UpdateSnapshot(generation, RuntimeRestartLifecycleStage.GuardValidation, request.ReasonCode, request.Diagnostic);
                 if (_guard != null)
                 {
                     var guardResult = await _guard
@@ -150,34 +156,43 @@ namespace RuntimeFlow.Contexts
                             guardResult.ReasonCode ?? "restart.guard.denied",
                             guardResult.Reason);
                     }
+
+                    if (await EndWithSupersedingRestartAsync(generation, completion).ConfigureAwait(false))
+                        return;
                 }
 
-                UpdateSnapshot(RuntimeRestartLifecycleStage.Restarting, request.ReasonCode, request.Diagnostic);
+                UpdateSnapshot(generation, RuntimeRestartLifecycleStage.Restarting, request.ReasonCode, request.Diagnostic);
                 await _restartOperation(request, cancellationToken).ConfigureAwait(false);
+                if (await EndWithSupersedingRestartAsync(generation, completion).ConfigureAwait(false))
+                    return;
 
                 if (_replayOperation != null)
                 {
-                    UpdateSnapshot(RuntimeRestartLifecycleStage.ReplayingFlow, request.ReasonCode, request.Diagnostic);
+                    UpdateSnapshot(generation, RuntimeRestartLifecycleStage.ReplayingFlow, request.ReasonCode, request.Diagnostic);
                     await _replayOperation(request, cancellationToken).ConfigureAwait(false);
-                }
-
-                if (TryGetSupersedingRestart(generation, out var supersededBy))
-                {
-                    await supersededBy.ConfigureAwait(false);
-                    completion.TrySetResult(true);
-                    return;
                 }
 
                 lock (_sync)
                 {
-                    _completedCount++;
-                    _lastCompletedAtUtc = _timestampProvider();
-                    _snapshot = new RuntimeRestartLifecycleSnapshot(
-                        RuntimeRestartLifecycleStage.Completed,
-                        _lastCompletedAtUtc,
-                        reasonCode: request.ReasonCode ?? "restart.completed",
-                        diagnostic: BuildCompletionDiagnostic());
+                    // Checked together with the write: a newer restart owns the snapshot from its very start
+                    if (_restartGeneration != generation)
+                    {
+                        superseded = _currentRestartCompletion!.Task;
+                    }
+                    else
+                    {
+                        _completedCount++;
+                        _lastCompletedAtUtc = _timestampProvider();
+                        _snapshot = new RuntimeRestartLifecycleSnapshot(
+                            RuntimeRestartLifecycleStage.Completed,
+                            _lastCompletedAtUtc,
+                            reasonCode: request.ReasonCode ?? "restart.completed",
+                            diagnostic: BuildCompletionDiagnostic());
+                    }
                 }
+
+                if (superseded != null)
+                    await superseded.ConfigureAwait(false);
 
                 completion.TrySetResult(true);
             }
@@ -220,6 +235,20 @@ namespace RuntimeFlow.Contexts
                         _inFlightRestartTask = null;
                 }
             }
+        }
+
+        /// <summary>
+        /// Ends this run together with the restart that superseded it, if any: that one now rebuilds the session
+        /// and owns the snapshot, so this run must neither go on with its own steps nor report a result first.
+        /// </summary>
+        private async Task<bool> EndWithSupersedingRestartAsync(long generation, TaskCompletionSource<bool> completion)
+        {
+            if (!TryGetSupersedingRestart(generation, out var superseding))
+                return false;
+
+            await superseding.ConfigureAwait(false);
+            completion.TrySetResult(true);
+            return true;
         }
 
         private bool TryGetSupersedingRestart(long generation, out Task superseding)
@@ -283,12 +312,17 @@ namespace RuntimeFlow.Contexts
         }
 
         private void UpdateSnapshot(
+            long generation,
             RuntimeRestartLifecycleStage stage,
             string? reasonCode,
             string? diagnostic)
         {
             lock (_sync)
             {
+                // A superseded run must not overwrite the stage of the restart that replaced it
+                if (_restartGeneration != generation)
+                    return;
+
                 _snapshot = new RuntimeRestartLifecycleSnapshot(
                     stage,
                     _timestampProvider(),

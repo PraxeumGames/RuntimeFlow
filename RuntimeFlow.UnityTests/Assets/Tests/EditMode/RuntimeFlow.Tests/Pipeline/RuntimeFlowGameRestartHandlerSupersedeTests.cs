@@ -9,15 +9,16 @@ using SFS.Core.GameLoading;
 namespace RuntimeFlow.Tests
 {
     /// <summary>
-    /// A restart requested while an earlier restart is still rebuilding the session. The rebuild can be
-    /// waiting on the very initializer that asks for the new restart (it downloaded fresh data and
-    /// needs the session rebuilt on it), so dropping the request as a duplicate leaves the rebuild
-    /// hanging forever. The new request supersedes the one in flight.
+    /// Which restart request may supersede the restart in flight. The handler lives in the session scope and a
+    /// restart rebuilds the session with a new handler: a request from the session being rebuilt comes to that
+    /// new handler and may replace the rebuild (it can be waiting on the very initializer that asks), while a
+    /// repeated request from the session that started the restart joins it. Whether the restart in flight is
+    /// already rebuilding is decided by the coordinator (RuntimeRestartLifecycleSupersedeTests).
     /// </summary>
     public sealed class RuntimeFlowGameRestartHandlerSupersedeTests
     {
         [Test]
-        public void RestartDuringRestart_IsDispatchedAsSupersedingTheOneInFlight()
+        public void RepeatedRequest_FromTheSessionThatStartedTheRestart_JoinsIt()
         {
             var coordinator = new ScriptedCoordinator();
             var handler = CreateHandler(coordinator);
@@ -25,17 +26,12 @@ namespace RuntimeFlow.Tests
             handler.Restart("first", forceSave: false);
             handler.Restart("second", forceSave: false);
 
-            Assert.That(coordinator.Started, Has.Count.EqualTo(2), "The second restart must run, not be skipped");
-            Assert.That(coordinator.Started[0].RestartRequest.SupersedesInFlight, Is.False);
-            Assert.That(coordinator.Started[1].RestartRequest.SupersedesInFlight, Is.True);
-            Assert.That(coordinator.Started[1].RestartRequest.Diagnostic, Is.EqualTo("second"));
+            Assert.That(coordinator.Started, Has.Count.EqualTo(1), "A double request is one restart");
         }
 
         [Test]
-        public void RestartFromTheReplayedSession_SupersedesTheRestartOfThePreviousSession()
+        public void RequestFromTheReplayedSession_MaySupersedeTheRestartOfThePreviousSession()
         {
-            // The handler lives in the session scope: the restart rebuilds the session with a new
-            // handler, and the request from the session being rebuilt comes to that one
             var coordinator = new ScriptedCoordinator();
             var provider = new FakePipelineProvider(coordinator);
             var previousSession = CreateHandler(provider);
@@ -44,13 +40,13 @@ namespace RuntimeFlow.Tests
             previousSession.Restart("first", forceSave: false);
             replayedSession.Restart("second", forceSave: false);
 
-            Assert.That(coordinator.Started, Has.Count.EqualTo(2), "The second restart must run, not be skipped");
+            Assert.That(coordinator.Started, Has.Count.EqualTo(2), "The request from the rebuilt session must run");
             Assert.That(coordinator.Started[1].RestartRequest.SupersedesInFlight, Is.True);
             Assert.That(replayedSession.IsApplicationRestarting, Is.True);
         }
 
         [Test]
-        public void CompletedRestart_LeavesNothingToSupersede()
+        public void HandlerWhoseRestartCompleted_MayRequestANewOne()
         {
             var coordinator = new ScriptedCoordinator();
             var handler = CreateHandler(coordinator);
@@ -60,8 +56,6 @@ namespace RuntimeFlow.Tests
             handler.Restart("second", forceSave: false);
 
             Assert.That(coordinator.Started, Has.Count.EqualTo(2));
-            Assert.That(coordinator.Started[1].RestartRequest.SupersedesInFlight, Is.False,
-                "A finished restart is not superseded by the next one");
         }
 
         private static RuntimeFlowGameRestartHandler CreateHandler(ScriptedCoordinator coordinator) =>

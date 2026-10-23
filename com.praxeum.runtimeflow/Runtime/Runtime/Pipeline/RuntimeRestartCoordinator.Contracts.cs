@@ -95,6 +95,18 @@ namespace RuntimeFlow.Contexts
         public TimeSpan? ReadinessPollInterval { get; }
         public Func<CancellationToken, Task>? OnBeforeRestartAsync { get; }
         public CancellationToken CancellationToken { get; }
+
+        internal RuntimeRestartCoordinatorRequest WithRestartRequest(RuntimeRestartRequest restartRequest)
+        {
+            return ReferenceEquals(restartRequest, RestartRequest)
+                ? this
+                : new RuntimeRestartCoordinatorRequest(
+                    restartRequest,
+                    ReadinessTimeout,
+                    ReadinessPollInterval,
+                    OnBeforeRestartAsync,
+                    CancellationToken);
+        }
     }
 
     public sealed class RuntimeRestartExecutionResult
